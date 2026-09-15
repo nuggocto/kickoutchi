@@ -100,7 +100,11 @@ fn workflow_steps(workflow: &Value) -> Vec<&Mapping> {
 fn step_runs(step: &Mapping, command: &str) -> bool {
     mapping_value(step, "run")
         .and_then(Value::as_str)
-        .is_some_and(|script| script.contains(command))
+        .is_some_and(|script| {
+            script.lines().map(str::trim_start).any(|line| {
+                !line.starts_with('#') && line.contains(command)
+            })
+        })
 }
 
 fn step_uses(step: &Mapping, action: &str) -> bool {

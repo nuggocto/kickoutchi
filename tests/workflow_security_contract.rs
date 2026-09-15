@@ -344,10 +344,6 @@ fn homebrew_publication_is_a_scoped_blocking_handoff_to_the_tap() {
             assert!(token.is_none(), "tap token must exist only while pushing");
         }
     }
-
-    let commit = step_script(job_step_running(homebrew, "git add"));
-    assert!(commit.contains("generated-formula/${filename}"));
-    assert!(commit.contains("Formula/${filename}"));
 }
 
 #[test]

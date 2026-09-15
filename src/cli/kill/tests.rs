@@ -100,9 +100,9 @@ fn kill_port_without_readable_pid_exits_permission_denied() {
         &Config::default(),
         &entry_views(&rows),
         KillCollectors {
-            collect_context: no_context,
-            collect_kill_ports: || panic!("missing PID target must fail before revalidation"),
-            collect_visibility_ports: || Ok(Vec::new()),
+            context: &mut no_context,
+            kill_ports: &mut || panic!("missing PID target must fail before revalidation"),
+            visibility_ports: &mut || Ok(Vec::new()),
         },
         |_target, _mode, _requirement| panic!("missing PID target must not prompt"),
         |_pid| -> Result<u32, TerminationOutcome> {
@@ -175,9 +175,9 @@ fn kill_yes_sends_signal_without_prompt_for_unprotected_target() {
         &Config::default(),
         &entry_views(&rows),
         KillCollectors {
-            collect_context: no_context,
-            collect_kill_ports: || Ok(rows.clone()),
-            collect_visibility_ports: || Ok(Vec::new()),
+            context: &mut no_context,
+            kill_ports: &mut || Ok(rows.clone()),
+            visibility_ports: &mut || Ok(Vec::new()),
         },
         |_target, _mode, _requirement| panic!("--yes must skip normal prompts"),
         Ok::<u32, TerminationOutcome>,
@@ -203,9 +203,9 @@ fn protected_process_yes_returns_exit_6_without_signalling() {
         &Config::default(),
         &entry_views(&rows),
         KillCollectors {
-            collect_context: no_context,
-            collect_kill_ports: || Ok(rows.clone()),
-            collect_visibility_ports: || Ok(Vec::new()),
+            context: &mut no_context,
+            kill_ports: &mut || Ok(rows.clone()),
+            visibility_ports: &mut || Ok(Vec::new()),
         },
         |_target, _mode, _requirement| panic!("protected --yes must not prompt"),
         |_pid| -> Result<u32, TerminationOutcome> {
@@ -230,9 +230,9 @@ fn force_kill_uses_force_word_confirmation_when_configured() {
         &Config::default(),
         &entry_views(&rows),
         KillCollectors {
-            collect_context: no_context,
-            collect_kill_ports: || Ok(rows.clone()),
-            collect_visibility_ports: || Ok(Vec::new()),
+            context: &mut no_context,
+            kill_ports: &mut || Ok(rows.clone()),
+            visibility_ports: &mut || Ok(Vec::new()),
         },
         |_target, mode, requirement| {
             prompted = Some((mode, requirement));
@@ -259,9 +259,9 @@ fn declined_confirmation_cancels_without_signalling() {
         &Config::default(),
         &entry_views(&rows),
         KillCollectors {
-            collect_context: no_context,
-            collect_kill_ports: || Ok(rows.clone()),
-            collect_visibility_ports: || Ok(Vec::new()),
+            context: &mut no_context,
+            kill_ports: &mut || Ok(rows.clone()),
+            visibility_ports: &mut || Ok(Vec::new()),
         },
         |_target, _mode, requirement| {
             assert_eq!(requirement, ConfirmationRequirement::Yes);
@@ -292,9 +292,9 @@ fn target_is_revalidated_after_confirmation_before_signal() {
         &Config::default(),
         &entry_views(&rows),
         KillCollectors {
-            collect_context: no_context,
-            collect_kill_ports: || Ok(fresh_rows.clone()),
-            collect_visibility_ports: || Ok(Vec::new()),
+            context: &mut no_context,
+            kill_ports: &mut || Ok(fresh_rows.clone()),
+            visibility_ports: &mut || Ok(Vec::new()),
         },
         |_target, _mode, _requirement| panic!("--yes skips prompts"),
         |pid| {
@@ -323,12 +323,12 @@ fn prepare_failure_stops_before_revalidation_or_signal() {
         &Config::default(),
         &entry_views(&rows),
         KillCollectors {
-            collect_context: no_context,
-            collect_kill_ports: || {
+            context: &mut no_context,
+            kill_ports: &mut || {
                 collected = true;
                 Ok(rows.clone())
             },
-            collect_visibility_ports: || Ok(Vec::new()),
+            visibility_ports: &mut || Ok(Vec::new()),
         },
         |_target, _mode, _requirement| panic!("--yes skips prompts"),
         |_pid| -> Result<u32, TerminationOutcome> { Err(TerminationOutcome::AlreadyExited) },
@@ -355,9 +355,9 @@ fn target_losing_readable_pid_during_revalidation_exits_permission_denied() {
         &Config::default(),
         &entry_views(&rows),
         KillCollectors {
-            collect_context: no_context,
-            collect_kill_ports: || kill_ports_from_snapshot(&snapshot, None, Some(3000)),
-            collect_visibility_ports: || Ok(Vec::new()),
+            context: &mut no_context,
+            kill_ports: &mut || kill_ports_from_snapshot(&snapshot, None, Some(3000)),
+            visibility_ports: &mut || Ok(Vec::new()),
         },
         |_target, _mode, _requirement| panic!("--yes skips prompts"),
         |pid| {
@@ -387,13 +387,13 @@ fn authoritative_snapshot_refusal_reaches_zero_delivery() {
         &Config::default(),
         &entry_views(&rows),
         KillCollectors {
-            collect_context: no_context,
-            collect_kill_ports: || {
+            context: &mut no_context,
+            kill_ports: &mut || {
                 Err(CollectorError::Observation(
                     ObservationError::PartialSocketSet,
                 ))
             },
-            collect_visibility_ports: || Ok(Vec::new()),
+            visibility_ports: &mut || Ok(Vec::new()),
         },
         |_target, _mode, _requirement| panic!("--yes skips prompts"),
         Ok::<u32, TerminationOutcome>,
@@ -423,12 +423,12 @@ fn port_owner_moving_after_handle_preparation_never_signals_old_owner() {
         &Config::default(),
         &entry_views(&rows),
         KillCollectors {
-            collect_context: no_context,
-            collect_kill_ports: || {
+            context: &mut no_context,
+            kill_ports: &mut || {
                 events.borrow_mut().push("collect");
                 Ok(moved.clone())
             },
-            collect_visibility_ports: || Ok(Vec::new()),
+            visibility_ports: &mut || Ok(Vec::new()),
         },
         |_target, _mode, _requirement| panic!("--yes skips prompts"),
         |pid| {
@@ -457,9 +457,9 @@ fn kill_pid_losing_readable_owner_during_revalidation_exits_permission_denied() 
         &Config::default(),
         &entry_views(&rows),
         KillCollectors {
-            collect_context: no_context,
-            collect_kill_ports: || kill_ports_from_snapshot(&snapshot, Some(18_422), None),
-            collect_visibility_ports: || Ok(Vec::new()),
+            context: &mut no_context,
+            kill_ports: &mut || kill_ports_from_snapshot(&snapshot, Some(18_422), None),
+            visibility_ports: &mut || Ok(Vec::new()),
         },
         |_target, _mode, _requirement| panic!("--yes skips prompts"),
         Ok::<u32, TerminationOutcome>,
@@ -486,9 +486,9 @@ fn target_becoming_protected_after_confirmation_blocks_signal() {
         &Config::default(),
         &entry_views(&rows),
         KillCollectors {
-            collect_context: no_context,
-            collect_kill_ports: || Ok(fresh_rows.clone()),
-            collect_visibility_ports: || Ok(Vec::new()),
+            context: &mut no_context,
+            kill_ports: &mut || Ok(fresh_rows.clone()),
+            visibility_ports: &mut || Ok(Vec::new()),
         },
         |_target, _mode, _requirement| panic!("--yes skips prompts"),
         Ok::<u32, TerminationOutcome>,
@@ -514,9 +514,9 @@ fn missing_fresh_protection_name_refuses_without_delivery() {
         &Config::default(),
         &entry_views(&rows),
         KillCollectors {
-            collect_context: no_context,
-            collect_kill_ports: || Ok(vec![fresh.clone()]),
-            collect_visibility_ports: || Ok(Vec::new()),
+            context: &mut no_context,
+            kill_ports: &mut || Ok(vec![fresh.clone()]),
+            visibility_ports: &mut || Ok(Vec::new()),
         },
         |_target, _mode, _requirement| panic!("--yes skips prompts"),
         Ok::<u32, TerminationOutcome>,

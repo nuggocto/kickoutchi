@@ -34,7 +34,9 @@ use crate::process::{
     tree_open_delivery_handle, tree_stop_handle,
 };
 use crate::process_evidence::{FreshProcessEvidence, ProcessEvidenceError};
-use crate::tree::{TreeProcessInfo, TreeProcessOps, TreeSignalResult};
+use crate::tree::{
+    TreeProcessInfo, TreeProcessOps, TreeSignalResult, TreeStopError, TreeStopResult,
+};
 
 use super::{MAX_CHILD_PROCESSES, MAX_PROCESS_ANCESTORS, MAX_RELATED_PROCESS_HINTS};
 
@@ -1606,16 +1608,32 @@ impl TreeProcessOps for LinuxTreeOps {
         self.prepare_delivery(pid, None)
     }
 
-    fn stop(&mut self, pid: u32) -> TreeSignalResult {
+    fn stop(&mut self, pid: u32, deadline: std::time::Instant) -> TreeStopResult {
         let handle = match self.delivery_handles.remove(&pid) {
             Some(handle) => handle,
             None => match tree_open_delivery_handle(pid) {
                 Ok(handle) => handle,
-                Err(result) => return result,
+                Err(TreeSignalResult::NotFound) => return TreeStopResult::NotFound,
+                Err(TreeSignalResult::Denied) => {
+                    return TreeStopResult::Failed {
+                        cleanup_required: false,
+                        rollback_start_time_marker: None,
+                        error: TreeStopError::PermissionDenied,
+                    };
+                }
+                Err(TreeSignalResult::Delivered) => unreachable!("opening a pidfd does not signal"),
             },
         };
-        let result = tree_stop_handle(&handle);
-        if result == TreeSignalResult::Delivered {
+        let result = tree_stop_handle(&handle, deadline);
+        if matches!(
+            result,
+            TreeStopResult::Stopped { .. }
+                | TreeStopResult::Failed {
+                    cleanup_required: true,
+                    ..
+                }
+        ) {
+            // Retain the exact process handle whenever rollback may need it.
             self.delivery_handles.insert(pid, handle);
         }
         result

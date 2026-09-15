@@ -53,13 +53,17 @@ enum TreeConfirmDecision {
     RefuseProtectedYes,
 }
 
-/// Injected collection and process-operation seams for a tree kill.
+/// Collection and confirmation operations shared by tree and group commands.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-struct TreeKillSeams<CollectContext, Prompt, CollectKillPorts, CollectPorts> {
-    collect_context: CollectContext,
-    prompt: Prompt,
-    collect_kill_ports: CollectKillPorts,
-    collect_ports: CollectPorts,
+struct TreeKillIo<'a> {
+    collect_context: &'a mut dyn FnMut(u32) -> ProcessContext,
+    prompt: &'a mut dyn FnMut(
+        &KillTarget,
+        &tree::ProcessTreeTarget,
+        TreeConfirmation,
+    ) -> std::io::Result<bool>,
+    collect_kill_ports: &'a mut dyn FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
+    collect_ports: &'a mut dyn FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -83,11 +87,13 @@ pub(super) fn run_tree_kill(
         entries,
         mode,
         &mut ops,
-        TreeKillSeams {
-            collect_context: platform::collect_process_context,
-            prompt: prompt_tree_confirmation,
-            collect_kill_ports: || collector::collect_kill_ports(args.pid, args.port),
-            collect_ports: || collector::collect_ports_with_profile(MetadataProfile::IdentityOnly),
+        TreeKillIo {
+            collect_context: &mut platform::collect_process_context,
+            prompt: &mut prompt_tree_confirmation,
+            collect_kill_ports: &mut || collector::collect_kill_ports(args.pid, args.port),
+            collect_ports: &mut || {
+                collector::collect_ports_with_profile(MetadataProfile::IdentityOnly)
+            },
         },
     )
 }
@@ -107,20 +113,16 @@ pub(super) fn run_tree_kill(
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn run_tree_kill_with<Ops, CollectContext, Prompt, CollectKillPorts, CollectPorts>(
+fn run_tree_kill_with<Ops>(
     args: &KillArgs,
     config: &Config,
     entries: &[PortEntryView<'_>],
     mode: KillMode,
     ops: &mut Ops,
-    mut seams: TreeKillSeams<CollectContext, Prompt, CollectKillPorts, CollectPorts>,
+    mut io: TreeKillIo<'_>,
 ) -> ExitReason
 where
     Ops: tree::TreeProcessOps,
-    CollectContext: FnMut(u32) -> ProcessContext,
-    Prompt: FnMut(&KillTarget, &tree::ProcessTreeTarget, TreeConfirmation) -> std::io::Result<bool>,
-    CollectKillPorts: FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
-    CollectPorts: FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
 {
     // The preview drives the banner and side-effect-free preflight checks.
     // Execution enumerates again after freezing.
@@ -135,16 +137,11 @@ where
         }
     };
 
-    let root = match resolve_scoped_kill_root(
-        args,
-        config,
-        entries,
-        &snapshot,
-        &mut seams.collect_context,
-    ) {
-        Ok(target) => target,
-        Err(reason) => return reason,
-    };
+    let root =
+        match resolve_scoped_kill_root(args, config, entries, &snapshot, &mut io.collect_context) {
+            Ok(target) => target,
+            Err(reason) => return reason,
+        };
     let preview = match tree::plan_process_tree(
         root.pid,
         &snapshot,
@@ -170,13 +167,13 @@ where
         return reason;
     }
 
-    let confirmation = match confirm_tree_kill(&root, &preview, mode, args.yes, &mut seams.prompt) {
+    let confirmation = match confirm_tree_kill(&root, &preview, mode, args.yes, &mut io.prompt) {
         Ok(confirmation) => confirmation,
         Err(reason) => return reason,
     };
 
     if let Err(outcome) = tree::pin_root_before_revalidation(root.pid, ops) {
-        return map_tree_outcome(&root, mode, &outcome, &mut seams.collect_ports);
+        return map_tree_outcome(&root, mode, &outcome, &mut io.collect_ports);
     }
 
     let fresh_root = match revalidate_tree_root_before_freeze(
@@ -184,12 +181,12 @@ where
         config,
         &root,
         confirmation,
-        &mut seams.collect_context,
-        &mut seams.collect_kill_ports,
+        &mut io.collect_context,
+        &mut io.collect_kill_ports,
         ops,
     ) {
         Ok(root) => root,
-        Err(outcome) => return map_tree_outcome(&root, mode, &outcome, &mut seams.collect_ports),
+        Err(outcome) => return map_tree_outcome(&root, mode, &outcome, &mut io.collect_ports),
     };
 
     let outcome = tree::execute_tree_kill(
@@ -200,7 +197,7 @@ where
         confirmation,
         ops,
     );
-    map_tree_outcome(&fresh_root, mode, &outcome, &mut seams.collect_ports)
+    map_tree_outcome(&fresh_root, mode, &outcome, &mut io.collect_ports)
 }
 
 #[cfg(windows)]
@@ -215,92 +212,60 @@ fn run_windows_tree_kill(
         config,
         entries,
         mode,
-        WindowsTreeKillSeams {
-            collect_tree: crate::platform::windows::collect_tree_process_infos,
-            collect_context: platform::collect_process_context,
-            prompt: prompt_tree_confirmation,
-            collect_kill_ports: || collector::collect_kill_ports(args.pid, args.port),
-            collect_ports: || collector::collect_ports_with_profile(MetadataProfile::IdentityOnly),
-            prepare_root: process::prepare_termination,
-            execute: crate::tree::windows::execute_tree_kill,
+        WindowsTreeKillIo {
+            collect_tree: &mut crate::platform::windows::collect_tree_process_infos,
+            collect_context: &mut platform::collect_process_context,
+            prompt: &mut prompt_tree_confirmation,
+            collect_kill_ports: &mut || collector::collect_kill_ports(args.pid, args.port),
+            collect_ports: &mut || {
+                collector::collect_ports_with_profile(MetadataProfile::IdentityOnly)
+            },
+            prepare_root: &mut process::prepare_termination,
+            execute: &mut crate::tree::windows::execute_tree_kill,
         },
     )
 }
 
 #[cfg(windows)]
-struct WindowsTreeKillSeams<
-    CollectTree,
-    CollectContext,
-    Prompt,
-    CollectKillPorts,
-    CollectPorts,
-    PrepareRoot,
-    Execute,
-> {
-    collect_tree: CollectTree,
-    collect_context: CollectContext,
-    prompt: Prompt,
-    collect_kill_ports: CollectKillPorts,
-    collect_ports: CollectPorts,
-    prepare_root: PrepareRoot,
-    execute: Execute,
-}
-
-#[cfg(windows)]
-fn run_windows_tree_kill_with<
-    CollectTree,
-    CollectContext,
-    Prompt,
-    CollectKillPorts,
-    CollectPorts,
-    PrepareRoot,
-    Execute,
-    RootHandle,
->(
-    args: &KillArgs,
-    config: &Config,
-    entries: &[PortEntryView<'_>],
-    mode: KillMode,
-    mut seams: WindowsTreeKillSeams<
-        CollectTree,
-        CollectContext,
-        Prompt,
-        CollectKillPorts,
-        CollectPorts,
-        PrepareRoot,
-        Execute,
-    >,
-) -> ExitReason
-where
-    CollectTree: FnMut() -> Result<Vec<tree::TreeProcessInfo>, collector::CollectorError>,
-    CollectContext: FnMut(u32) -> ProcessContext,
-    Prompt: FnMut(&KillTarget, &tree::ProcessTreeTarget, TreeConfirmation) -> std::io::Result<bool>,
-    CollectKillPorts: FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
-    CollectPorts: FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
-    PrepareRoot: FnMut(u32) -> Result<RootHandle, TerminationOutcome>,
-    Execute: FnMut(
+struct WindowsTreeKillIo<'a, RootHandle> {
+    collect_tree:
+        &'a mut dyn FnMut() -> Result<Vec<tree::TreeProcessInfo>, collector::CollectorError>,
+    collect_context: &'a mut dyn FnMut(u32) -> ProcessContext,
+    prompt: &'a mut dyn FnMut(
+        &KillTarget,
+        &tree::ProcessTreeTarget,
+        TreeConfirmation,
+    ) -> std::io::Result<bool>,
+    collect_kill_ports: &'a mut dyn FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
+    collect_ports: &'a mut dyn FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
+    prepare_root: &'a mut dyn FnMut(u32) -> Result<RootHandle, TerminationOutcome>,
+    execute: &'a mut dyn FnMut(
         &KillTarget,
         &[String],
         tree::ScopeAuthorization,
     ) -> crate::tree::windows::WindowsTreeKillOutcome,
-{
-    let snapshot = match (seams.collect_tree)() {
+}
+
+#[cfg(windows)]
+fn run_windows_tree_kill_with<RootHandle>(
+    args: &KillArgs,
+    config: &Config,
+    entries: &[PortEntryView<'_>],
+    mode: KillMode,
+    mut io: WindowsTreeKillIo<'_, RootHandle>,
+) -> ExitReason {
+    let snapshot = match (io.collect_tree)() {
         Ok(snapshot) => snapshot,
         Err(error) => {
             eprintln!("error: enumerating the process table failed: {error}");
             return ExitReason::Failure;
         }
     };
-    let root = match resolve_scoped_kill_root(
-        args,
-        config,
-        entries,
-        &snapshot,
-        &mut seams.collect_context,
-    ) {
-        Ok(target) => target,
-        Err(reason) => return reason,
-    };
+    let root =
+        match resolve_scoped_kill_root(args, config, entries, &snapshot, &mut io.collect_context) {
+            Ok(target) => target,
+            Err(reason) => return reason,
+        };
     let preview = match tree::plan_process_tree(
         root.pid,
         &snapshot,
@@ -326,7 +291,7 @@ where
         return reason;
     }
 
-    let confirmation = match confirm_tree_kill(&root, &preview, mode, args.yes, &mut seams.prompt) {
+    let confirmation = match confirm_tree_kill(&root, &preview, mode, args.yes, &mut io.prompt) {
         Ok(confirmation) => confirmation,
         Err(reason) => return reason,
     };
@@ -334,13 +299,13 @@ where
     // A port-selected root must be retained before the final authoritative
     // endpoint collection. PID mode keeps its existing path.
     let prepared_root = if args.port.is_some() {
-        match (seams.prepare_root)(root.pid) {
+        match (io.prepare_root)(root.pid) {
             Ok(handle) => Some(handle),
             Err(outcome) => {
                 let outcome = crate::tree::windows::WindowsTreeKillOutcome::from_precommit_outcome(
                     tree_outcome_from_termination(&root, outcome),
                 );
-                return map_windows_tree_outcome(&root, mode, &outcome, &mut seams.collect_ports);
+                return map_windows_tree_outcome(&root, mode, &outcome, &mut io.collect_ports);
             }
         }
     } else {
@@ -352,19 +317,19 @@ where
         config,
         &root,
         confirmation,
-        &mut seams.collect_tree,
-        &mut seams.collect_context,
-        &mut seams.collect_kill_ports,
+        &mut io.collect_tree,
+        &mut io.collect_context,
+        &mut io.collect_kill_ports,
     ) {
         Ok(root) => root,
         Err(outcome) => {
-            return map_windows_tree_outcome(&root, mode, &outcome, &mut seams.collect_ports);
+            return map_windows_tree_outcome(&root, mode, &outcome, &mut io.collect_ports);
         }
     };
 
-    let outcome = (seams.execute)(&fresh_root, &config.protected_processes, confirmation);
+    let outcome = (io.execute)(&fresh_root, &config.protected_processes, confirmation);
     drop(prepared_root);
-    map_windows_tree_outcome(&fresh_root, mode, &outcome, &mut seams.collect_ports)
+    map_windows_tree_outcome(&fresh_root, mode, &outcome, &mut io.collect_ports)
 }
 
 #[cfg(windows)]
@@ -962,30 +927,28 @@ pub(super) fn run_group_kill(
         entries,
         mode,
         &mut ops,
-        TreeKillSeams {
-            collect_context: platform::collect_process_context,
-            prompt: prompt_group_confirmation,
-            collect_kill_ports: || collector::collect_kill_ports(args.pid, args.port),
-            collect_ports: || collector::collect_ports_with_profile(MetadataProfile::IdentityOnly),
+        TreeKillIo {
+            collect_context: &mut platform::collect_process_context,
+            prompt: &mut prompt_group_confirmation,
+            collect_kill_ports: &mut || collector::collect_kill_ports(args.pid, args.port),
+            collect_ports: &mut || {
+                collector::collect_ports_with_profile(MetadataProfile::IdentityOnly)
+            },
         },
     )
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn run_group_kill_with<Ops, CollectContext, Prompt, CollectKillPorts, CollectPorts>(
+fn run_group_kill_with<Ops>(
     args: &KillArgs,
     config: &Config,
     entries: &[PortEntryView<'_>],
     mode: KillMode,
     ops: &mut Ops,
-    mut seams: TreeKillSeams<CollectContext, Prompt, CollectKillPorts, CollectPorts>,
+    mut io: TreeKillIo<'_>,
 ) -> ExitReason
 where
     Ops: tree::TreeProcessOps,
-    CollectContext: FnMut(u32) -> ProcessContext,
-    Prompt: FnMut(&KillTarget, &tree::ProcessTreeTarget, TreeConfirmation) -> std::io::Result<bool>,
-    CollectKillPorts: FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
-    CollectPorts: FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
 {
     // The preview is informational. Execution enumerates again after freezing.
     let snapshot = match ops.snapshot() {
@@ -999,16 +962,11 @@ where
         }
     };
 
-    let root = match resolve_scoped_kill_root(
-        args,
-        config,
-        entries,
-        &snapshot,
-        &mut seams.collect_context,
-    ) {
-        Ok(target) => target,
-        Err(reason) => return reason,
-    };
+    let root =
+        match resolve_scoped_kill_root(args, config, entries, &snapshot, &mut io.collect_context) {
+            Ok(target) => target,
+            Err(reason) => return reason,
+        };
     let group = match tree::plan_process_group(
         root.pid,
         &snapshot,
@@ -1037,19 +995,13 @@ where
         return reason;
     }
 
-    let confirmation = match confirm_group_kill(&root, &group, mode, args.yes, &mut seams.prompt) {
+    let confirmation = match confirm_group_kill(&root, &group, mode, args.yes, &mut io.prompt) {
         Ok(confirmation) => confirmation,
         Err(reason) => return reason,
     };
 
     if let Err(outcome) = tree::pin_root_before_revalidation(root.pid, ops) {
-        return map_group_outcome(
-            &root,
-            group.pgid(),
-            mode,
-            &outcome,
-            &mut seams.collect_ports,
-        );
+        return map_group_outcome(&root, group.pgid(), mode, &outcome, &mut io.collect_ports);
     }
 
     let fresh_root = match revalidate_group_root_before_freeze(
@@ -1060,19 +1012,13 @@ where
             pgid: group.pgid(),
             confirmation,
         },
-        &mut seams.collect_context,
-        &mut seams.collect_kill_ports,
+        &mut io.collect_context,
+        &mut io.collect_kill_ports,
         ops,
     ) {
         Ok(root) => root,
         Err(outcome) => {
-            return map_group_outcome(
-                &root,
-                group.pgid(),
-                mode,
-                &outcome,
-                &mut seams.collect_ports,
-            );
+            return map_group_outcome(&root, group.pgid(), mode, &outcome, &mut io.collect_ports);
         }
     };
 
@@ -1090,7 +1036,7 @@ where
         group.pgid(),
         mode,
         &outcome,
-        &mut seams.collect_ports,
+        &mut io.collect_ports,
     )
 }
 

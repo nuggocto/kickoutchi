@@ -2,6 +2,8 @@ use crate::model::PortEntryView;
 use crate::model::entry_views;
 use std::net::{IpAddr, Ipv4Addr};
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use super::macos::macos_tree_stop_result;
 use super::{
     ConfirmationRequirement, KillMode, KillTarget, KillWarning, TerminationOutcome,
     UnsafePidReason, WarningScope, confirmation_input_matches, confirmation_requirement,
@@ -10,15 +12,15 @@ use super::{
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::{
     UnixProcessState, UnixProcessStatus, finish_stopped_termination, macos_cont_if_matches_with,
-    macos_stop_observation_result, macos_tree_stop_result, outcome_after_thaw,
-    refuse_stopped_termination, run_before_stop_deadline,
+    macos_stop_observation_result, outcome_after_thaw, refuse_stopped_termination,
+    run_before_stop_deadline,
 };
 #[cfg(target_os = "macos")]
 use super::{finish_macos_stopped_process, macos_status_is_exited};
 #[cfg(target_os = "linux")]
 use super::{
     linux_process_state, linux_stop_observation_result, parse_linux_process_state,
-    take_tree_stop_result, tree_cont_handle, tree_open_delivery_handle, tree_stop_handle,
+    tree_cont_handle, tree_open_delivery_handle, tree_stop_handle,
 };
 #[cfg(windows)]
 use super::{native_utf16_prefix, windows_api_outcome};
@@ -83,12 +85,11 @@ fn linux_tree_stop_returns_only_after_stopped_state_is_observable() {
     let handle = tree_open_delivery_handle(pid).expect("open child pidfd");
 
     assert_eq!(
-        tree_stop_handle(&handle),
-        crate::tree::TreeSignalResult::Delivered
-    );
-    assert_eq!(
-        take_tree_stop_result(pid),
-        Some(crate::tree::TreeStopResult::Stopped { transitioned: true })
+        tree_stop_handle(
+            &handle,
+            std::time::Instant::now() + super::UNIX_STOP_ACKNOWLEDGEMENT_MAX
+        ),
+        crate::tree::TreeStopResult::Stopped { transitioned: true }
     );
     assert_eq!(
         linux_process_state(pid)
@@ -371,9 +372,8 @@ fn macos_pre_stopped_identity_replacement_is_guardedly_thawed_when_observed_stop
     assert!(failure.cleanup_required);
     assert_eq!(failure.rollback_start_time_marker, Some(replacement));
 
-    let (signal, stop) = macos_tree_stop_result(Err(failure));
+    let stop = macos_tree_stop_result(Err(failure));
 
-    assert_eq!(signal, crate::tree::TreeSignalResult::Denied);
     assert_eq!(
         stop,
         crate::tree::TreeStopResult::Failed {

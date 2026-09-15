@@ -6,10 +6,12 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
 use super::{SIGNAL_POLL_INTERVAL, Theme, append_status_field, bounded_event_wait, draw};
-use crate::app::{App, Modal};
+
+use crate::app::{App, ModalKind};
 use crate::config::Config;
 use crate::input::Action;
 use crate::labels::{LabelInput, LabelRegistry};
+use crate::test_support::command as test_command;
 
 #[cfg(unix)]
 static CUSTOM_SIGNAL_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -286,16 +288,16 @@ fn small_terminal_cancels_a_single_process_confirmation() {
     let config = Config::default();
     let mut app = App::new_fake(&config);
     app.apply_action(Action::RequestForceKill);
-    assert_eq!(app.modal(), Modal::ConfirmKill);
+    assert_eq!(app.modal(), ModalKind::ConfirmKill);
 
     let text = render_text(&mut app, 40, 10);
 
     assert!(text.contains("Terminal too small"), "{text}");
-    assert_eq!(app.modal(), Modal::None);
+    assert_eq!(app.modal(), ModalKind::None);
     assert!(app.kill_confirmation().is_none());
     assert_eq!(app.kill_status(), Some("kill cancelled"));
     app.apply_action(Action::SubmitKillConfirmation);
-    assert_eq!(app.modal(), Modal::None);
+    assert_eq!(app.modal(), ModalKind::None);
 }
 
 #[test]
@@ -680,6 +682,74 @@ fn worker_panic_after_terminal_activation_is_reported_by_owner_only() {
     assert!(!stderr.contains("panic hook printed"), "{stderr}");
 }
 
+#[test]
+fn abandoned_worker_panic_is_reported_after_the_tui_session_ends() {
+    use std::process::Command;
+    use std::sync::atomic::Ordering;
+    use std::sync::mpsc;
+
+    const CHILD_ENV: &str = "KICKOUTCHI_TEST_ABANDONED_WORKER_PANIC";
+    if std::env::var_os(CHILD_ENV).is_some() {
+        struct Unwinding(mpsc::Sender<()>);
+        impl Drop for Unwinding {
+            fn drop(&mut self) {
+                self.0.send(()).unwrap();
+            }
+        }
+
+        std::panic::set_hook(Box::new(|_| eprintln!("original panic hook")));
+        let handle = super::run_owned(|| {
+            super::TERMINAL_ACTIVE.store(true, Ordering::Release);
+            let (release, start) = mpsc::channel();
+            let (unwinding, observed) = mpsc::channel();
+            let worker = super::spawn_worker(
+                std::thread::Builder::new().name("abandoned-refresh".to_owned()),
+                move || {
+                    start.recv().unwrap();
+                    let _unwinding = Unwinding(unwinding);
+                    panic!("abandoned refresh failed");
+                },
+            )
+            .unwrap();
+            let super::Worker { receiver, handle } = worker;
+            drop(receiver);
+            release.send(()).unwrap();
+            observed.recv_timeout(Duration::from_secs(5)).unwrap();
+            super::TERMINAL_ACTIVE.store(false, Ordering::Release);
+            eprintln!("owner ended terminal session");
+            handle
+        })
+        .unwrap();
+        assert!(handle.join().is_err());
+        return;
+    }
+
+    let output = test_command::run_command_with_deadline(
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "ui::tests::abandoned_worker_panic_is_reported_after_the_tui_session_ends",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1"),
+        None,
+        Duration::from_secs(10),
+    )
+    .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(output.status.success(), "{stderr}");
+    let restored = stderr.find("owner ended terminal session").unwrap();
+    let reported = stderr
+        .find("TUI worker abandoned-refresh panicked: abandoned refresh failed")
+        .unwrap_or_else(|| panic!("missing abandoned-worker diagnostic: {stderr}"));
+    assert!(restored < reported, "{stderr}");
+    assert!(!stderr.contains("original panic hook"), "{stderr}");
+    assert!(
+        !stderr.contains('\u{1b}'),
+        "worker must not restore the terminal: {stderr}"
+    );
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn tree_confirmation_modal_renders_loading_then_preview() {
@@ -771,16 +841,16 @@ fn small_terminal_cancels_a_tree_confirmation() {
     let config = Config::default();
     let mut app = App::new_fake(&config);
     app.apply_action(Action::RequestTreeForceKill);
-    assert_eq!(app.modal(), Modal::ConfirmTreeKill);
+    assert_eq!(app.modal(), ModalKind::ConfirmTreeKill);
 
     let text = render_text(&mut app, 40, 10);
 
     assert!(text.contains("Terminal too small"), "{text}");
-    assert_eq!(app.modal(), Modal::None);
+    assert_eq!(app.modal(), ModalKind::None);
     assert!(app.tree_confirmation().is_none());
     assert_eq!(app.kill_status(), Some("tree kill cancelled"));
     app.apply_action(Action::SubmitKillConfirmation);
-    assert_eq!(app.modal(), Modal::None);
+    assert_eq!(app.modal(), ModalKind::None);
 }
 
 #[test]

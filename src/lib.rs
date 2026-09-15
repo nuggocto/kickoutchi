@@ -18,10 +18,8 @@ mod display;
 mod docker;
 mod error;
 mod input;
-mod labels;
-// The read-only family inspection view. It renders data from the process-tree
-// snapshot; Windows omits POSIX process-group sections.
 mod inspect;
+mod labels;
 mod model;
 mod observation;
 mod output;
@@ -36,8 +34,6 @@ mod query;
 mod release_archive_path;
 #[cfg(test)]
 mod test_support;
-// Shared process-tree planning. Unix freeze-first and Windows Job Object
-// execution remain platform-specific.
 mod tree;
 mod ui;
 mod watch;
@@ -59,12 +55,6 @@ use crate::display::sanitize_multiline;
 /// Binary bootstrap entry point shared by `kickoutchi` and `kick`.
 ///
 /// This remains public only because Cargo builds each binary as a separate crate.
-/// It is hidden from generated documentation and is not a stable
-/// embedding contract: it parses process-global arguments and writes directly to
-/// standard I/O. The TUI temporarily owns process-wide signal handlers, and watch
-/// uses one process-global Ctrl-C owner whose cancellation remains latched for the
-/// process lifetime.
-///
 /// Argument errors are rendered here rather than by clap's process-exiting helper
 /// so untrusted argv text passes through the terminal sanitizer.
 #[doc(hidden)]
@@ -75,9 +65,8 @@ pub fn run() -> ExitCode {
         return tree::windows::run_freeze_probe_child();
     }
 
-    // Install tracing before clap renders errors. Repeated calls must still
-    // respect an embedder-owned subscriber. The exact boolean flag can be
-    // recognized without interpreting or retaining any other argv content.
+    // Install tracing before clap renders errors, without replacing an existing
+    // subscriber or interpreting other argv content.
     init_tracing(verbose_requested());
     let args = match Cli::try_parse() {
         Ok(args) => args,
@@ -139,7 +128,7 @@ pub fn run() -> ExitCode {
 
 /// Run the TUI path. [`ui::run_owned`] scopes terminal restoration and the panic
 /// hook to this path. The headless CLI path never enters the alternate screen
-/// and keeps the embedder's hook.
+/// and keeps the existing hook.
 ///
 /// Order matters for safety: install the panic hook *before* entering the
 /// alternate screen, so a panic during setup or rendering still restores the

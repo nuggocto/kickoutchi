@@ -89,8 +89,7 @@ impl Drop for KillCancellationGuard {
 }
 
 #[cfg(test)]
-#[path = "../../tests/support/command.rs"]
-mod test_command;
+use crate::test_support::command as test_command;
 
 #[cfg(test)]
 mod tests {

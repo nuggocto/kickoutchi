@@ -45,9 +45,9 @@ pub(super) fn run_kill(
         config,
         entries,
         KillCollectors {
-            collect_context: platform::collect_process_context,
-            collect_kill_ports: || collector::collect_kill_ports(args.pid, args.port),
-            collect_visibility_ports: || {
+            context: &mut platform::collect_process_context,
+            kill_ports: &mut || collector::collect_kill_ports(args.pid, args.port),
+            visibility_ports: &mut || {
                 collector::collect_ports_with_profile(POST_KILL_VISIBILITY_PROFILE)
             },
         },
@@ -57,47 +57,27 @@ pub(super) fn run_kill(
     )
 }
 
-#[expect(
-    clippy::struct_field_names,
-    reason = "the shared collect_ prefix names the seam each field injects"
-)]
-struct KillCollectors<CollectContext, CollectKillPorts, CollectVisibilityPorts> {
-    collect_context: CollectContext,
-    collect_kill_ports: CollectKillPorts,
-    collect_visibility_ports: CollectVisibilityPorts,
+struct KillCollectors<'a> {
+    context: &'a mut dyn FnMut(u32) -> ProcessContext,
+    kill_ports: &'a mut dyn FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
+    visibility_ports: &'a mut dyn FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
 }
 
-fn run_kill_with<
-    CollectContext,
-    CollectKillPorts,
-    CollectVisibilityPorts,
-    Prompt,
-    Prepare,
-    Terminate,
-    Handle,
->(
+fn run_kill_with<Handle>(
     args: &KillArgs,
     config: &Config,
     entries: &[PortEntryView<'_>],
-    mut collectors: KillCollectors<CollectContext, CollectKillPorts, CollectVisibilityPorts>,
-    mut prompt: Prompt,
-    mut prepare: Prepare,
-    mut terminate: Terminate,
-) -> ExitReason
-where
-    CollectContext: FnMut(u32) -> ProcessContext,
-    CollectKillPorts: FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
-    CollectVisibilityPorts: FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
-    Prompt: FnMut(&KillTarget, KillMode, ConfirmationRequirement) -> std::io::Result<bool>,
-    Prepare: FnMut(u32) -> Result<Handle, TerminationOutcome>,
-    Terminate: FnMut(&Handle, &KillTarget, &[String], KillMode) -> TerminationOutcome,
-{
+    mut collectors: KillCollectors<'_>,
+    mut prompt: impl FnMut(&KillTarget, KillMode, ConfirmationRequirement) -> std::io::Result<bool>,
+    mut prepare: impl FnMut(u32) -> Result<Handle, TerminationOutcome>,
+    mut terminate: impl FnMut(&Handle, &KillTarget, &[String], KillMode) -> TerminationOutcome,
+) -> ExitReason {
     let mode = if args.force {
         KillMode::Force
     } else {
         KillMode::Terminate
     };
-    let target = match resolve_kill_target(args, entries, &mut collectors.collect_context) {
+    let target = match resolve_kill_target(args, entries, &mut collectors.context) {
         Ok(target) => target,
         Err(error) => return print_target_error(error),
     };
@@ -146,8 +126,8 @@ where
         args,
         config,
         &target,
-        &mut collectors.collect_context,
-        &mut collectors.collect_kill_ports,
+        &mut collectors.context,
+        &mut collectors.kill_ports,
     ) {
         Ok(target) => target,
         Err(outcome) => {
@@ -158,7 +138,7 @@ where
     let outcome = terminate(&handle, &target, &config.protected_processes, mode);
     print_termination_outcome(&target, mode, &outcome);
     if outcome == TerminationOutcome::Success {
-        print_post_kill_refresh_status(&target, &mut collectors.collect_visibility_ports);
+        print_post_kill_refresh_status(&target, &mut collectors.visibility_ports);
     }
     exit_reason_for_outcome(&outcome)
 }

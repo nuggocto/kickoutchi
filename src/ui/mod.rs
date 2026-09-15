@@ -33,7 +33,7 @@ use ratatui::widgets::{Block, Paragraph};
 use ratatui::{Frame, Terminal};
 use unicode_width::UnicodeWidthChar;
 
-use crate::app::{App, Modal};
+use crate::app::{App, ModalKind};
 use crate::config::Config;
 use crate::display::sanitize;
 use crate::error::AppResult;
@@ -471,11 +471,8 @@ pub(crate) fn spawn_worker<T: Send + 'static>(
             }
             Err(payload) => {
                 let failure = WorkerFailure::from_panic(payload.as_ref());
-                if result_sender.send(Err(failure)).is_err() {
-                    // No owner remains to report the typed failure. Re-raise
-                    // with the marker cleared so the normal panic hook reports
-                    // the programmer error instead of silently dropping it.
-                    IS_TUI_WORKER.with(|worker| worker.set(false));
+                if let Err(mpsc::SendError(Err(failure))) = result_sender.send(Err(failure)) {
+                    report_abandoned_worker_failure(&failure);
                     resume_unwind(payload);
                 }
             }
@@ -524,6 +521,17 @@ pub(crate) fn spawn_worker<T: Send + 'static>(
             handle: worker,
         })
     }
+}
+
+fn report_abandoned_worker_failure(failure: &WorkerFailure) {
+    use std::io::Write;
+
+    // The receiver is gone, so its owner cannot join this worker. Wait until
+    // the session releases the terminal before writing the fallback diagnostic.
+    let _session = TUI_SESSION_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _ = writeln!(io::stderr().lock(), "{failure}");
 }
 
 /// Enter the TUI and run the event loop until the user quits.
@@ -765,7 +773,9 @@ fn poll_workers(app: &mut App) -> Option<WorkerFailure> {
 }
 
 fn handle_modal_scroll(app: &mut App, key: KeyEvent) -> bool {
-    if key.kind != KeyEventKind::Press || !matches!(app.modal(), Modal::Details | Modal::Help) {
+    if key.kind != KeyEventKind::Press
+        || !matches!(app.modal(), ModalKind::Details | ModalKind::Help)
+    {
         return false;
     }
     match key.code {
@@ -826,12 +836,12 @@ fn draw(frame: &mut Frame, app: &mut App, theme: Theme, details_text: &mut detai
 
     let modal_area = centered_rect(76, 76, area);
     match app.modal() {
-        Modal::None => {}
-        Modal::Details => details::render_modal(frame, modal_area, app, theme, details_text),
-        Modal::Help => help::render(frame, centered_rect(90, 90, area), app, theme),
-        Modal::ConfirmKill => confirm::render(frame, modal_area, app, theme),
+        ModalKind::None => {}
+        ModalKind::Details => details::render_modal(frame, modal_area, app, theme, details_text),
+        ModalKind::Help => help::render(frame, centered_rect(90, 90, area), app, theme),
+        ModalKind::ConfirmKill => confirm::render(frame, modal_area, app, theme),
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        Modal::ConfirmTreeKill => {
+        ModalKind::ConfirmTreeKill => {
             if !confirm::render_tree(frame, centered_rect(76, 90, area), app, theme) {
                 app.cancel_confirmation_for_layout();
             }
@@ -841,9 +851,9 @@ fn draw(frame: &mut Frame, app: &mut App, theme: Theme, details_text: &mut detai
 
 fn cancel_hidden_confirmation(app: &mut App) {
     let destructive_confirmation = match app.modal() {
-        Modal::ConfirmKill => true,
+        ModalKind::ConfirmKill => true,
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        Modal::ConfirmTreeKill => true,
+        ModalKind::ConfirmTreeKill => true,
         _ => false,
     };
     if destructive_confirmation {

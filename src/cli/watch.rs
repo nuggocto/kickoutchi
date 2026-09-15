@@ -34,9 +34,7 @@ use crate::watch::{
 
 use super::ExitReason;
 
-/// The default poll interval, spelled as the duration token the parser accepts
-/// so clap and `parse_duration_token` share one source of truth. Its resolved
-/// value is pinned by `default_interval_is_one_second_and_scope_requires_ipv6_address`.
+/// Clap passes this default through the same duration parser as user input.
 const WATCH_INTERVAL_DEFAULT_TOKEN: &str = "1s";
 const WATCH_INTERVAL_MIN: Duration = Duration::from_millis(100);
 const WATCH_INTERVAL_MAX: Duration = Duration::from_mins(1);
@@ -112,9 +110,6 @@ impl ProtocolSelection {
 
 impl WatchOptions {
     fn parse(args: &WatchArgs) -> Result<Self, String> {
-        // The clap default is a duration token like any other, so it parses
-        // through the same path as a user-supplied value. No separate default
-        // branch keeps parsing aligned with the declared default.
         let interval = parse_duration_token(&args.interval, WATCH_INTERVAL_MIN, WATCH_INTERVAL_MAX)
             .map_err(|error| format!("invalid --interval: {error}"))?;
         let duration = args
@@ -260,43 +255,9 @@ fn run_watch_loop(
         return flush_exit(output, diagnostics, ExitReason::Success);
     }
 
-    let initial_started = match runtime.wall_now() {
-        Ok(value) => value,
-        Err(error) => return clock_failure(diagnostics, &error),
-    };
-    let initial_result = runtime.collect();
-    let initial_completed = match runtime.wall_now() {
-        Ok(value) => value,
-        Err(error) => return clock_failure(diagnostics, &error),
-    };
-    if let Err(error) = validate_wall_interval(initial_started, initial_completed) {
-        return clock_failure(diagnostics, &error);
-    }
-    if let Some(error) = collector_clock_error(&initial_result) {
-        return clock_failure(diagnostics, error);
-    }
-    if let Err(error) = &initial_result {
-        write_diagnostic(
-            diagnostics,
-            &format!(
-                "initial collection failed: {}",
-                sanitize(&error.to_string())
-            ),
-        );
-        return ExitReason::Failure;
-    }
-    let mut previous = match initial_result {
-        Ok(snapshot) if snapshot.socket_set_diff_safe() => snapshot,
-        Ok(snapshot) => {
-            let detail = if snapshot.completeness == SnapshotCompleteness::Raced {
-                "initial observation raced"
-            } else {
-                "initial observation has a partial socket set"
-            };
-            write_diagnostic(diagnostics, detail);
-            return ExitReason::Failure;
-        }
-        Err(_) => unreachable!("initial collection errors return before snapshot validation"),
+    let mut previous = match collect_initial_snapshot(runtime, diagnostics) {
+        Ok(snapshot) => snapshot,
+        Err(reason) => return reason,
     };
     if should_stop(
         runtime.cancelled(),
@@ -304,76 +265,73 @@ fn run_watch_loop(
     ) {
         return flush_exit(output, diagnostics, ExitReason::Success);
     }
-    let mut sequence = 0_u64;
-    let mut batch_count = 0usize;
-    let mut previous_gap_index = GapIndex::new(&previous);
-    let mut previous_filter_cache = FilterCache::default();
+    let mut writer = EventWriter {
+        output,
+        diagnostics,
+        sequence: 0,
+    };
+    let mut previous_index = SnapshotIndex::new(&previous);
     let initial_times = match observation_times(
         None,
         previous.capture_started_at,
         previous.capture_completed_at,
     ) {
         Ok(times) => times,
-        Err(error) => return output_failure(diagnostics, &error),
+        Err(error) => return output_failure(writer.diagnostics, &error),
     };
     let baseline = match baseline_events(&previous) {
         Ok(events) => events,
         Err(error) => {
-            write_diagnostic(diagnostics, &error.to_string());
+            write_diagnostic(writer.diagnostics, &error.to_string());
             return ExitReason::Failure;
         }
     };
-    let mut no_previous_cache = None;
-    let mut initial_cache = Some(&mut previous_filter_cache);
     if let Some(reason) = write_ordered_events(
         baseline.map(baseline_event_result),
         options,
         config,
         runtime,
-        output,
-        diagnostics,
         deadline,
-        &mut sequence,
-        &mut batch_count,
-        &mut no_previous_cache,
-        &mut initial_cache,
-        None,
-        Some(&previous_gap_index),
-        initial_times,
+        &mut writer,
+        EventBatch {
+            previous: None,
+            current: &mut previous_index,
+            observation: initial_times,
+        },
     ) {
         return reason;
     }
-    if let Err(error) = output.flush() {
-        return io_failure(diagnostics, &error);
+    if let Err(error) = writer.output.flush() {
+        return io_failure(writer.diagnostics, &error);
     }
 
     let mut consecutive_failures = 0u8;
     let Some(mut next_poll) = next_poll_after(runtime.monotonic_now(), options.interval) else {
-        write_diagnostic(diagnostics, "watch poll deadline overflowed");
+        write_diagnostic(writer.diagnostics, "watch poll deadline overflowed");
         return ExitReason::Failure;
     };
     loop {
         if wait_until(runtime, next_poll, deadline) {
-            return flush_exit(output, diagnostics, ExitReason::Success);
+            return flush_exit(writer.output, writer.diagnostics, ExitReason::Success);
         }
         let attempt_monotonic = runtime.monotonic_now();
         let attempt_started = match runtime.wall_now() {
             Ok(value) => value,
-            Err(error) => return clock_failure(diagnostics, &error),
+            Err(error) => return clock_failure(writer.diagnostics, &error),
         };
         if let Err(error) = validate_wall_interval(previous.capture_completed_at, attempt_started) {
-            return clock_failure(diagnostics, &error);
+            return clock_failure(writer.diagnostics, &error);
         }
         let collected = runtime.collect();
         let attempt_completed = match runtime.wall_now() {
             Ok(value) => value,
-            Err(error) => return clock_failure(diagnostics, &error),
+            Err(error) => return clock_failure(writer.diagnostics, &error),
         };
         if let Err(error) = validate_wall_interval(attempt_started, attempt_completed) {
-            return clock_failure(diagnostics, &error);
+            return clock_failure(writer.diagnostics, &error);
         }
         if let Some(error) = collector_clock_error(&collected) {
-            return clock_failure(diagnostics, error);
+            return clock_failure(writer.diagnostics, error);
         }
         let gap_times = match observation_times(
             Some(previous.capture_completed_at),
@@ -381,7 +339,7 @@ fn run_watch_loop(
             attempt_completed,
         ) {
             Ok(times) => times,
-            Err(error) => return output_failure(diagnostics, &error),
+            Err(error) => return output_failure(writer.diagnostics, &error),
         };
 
         let current = match collected {
@@ -390,23 +348,29 @@ fn run_watch_loop(
                 consecutive_failures = match consecutive_failures.checked_add(1) {
                     Some(value) => value,
                     None => {
-                        write_diagnostic(diagnostics, "watch failure count overflowed");
+                        write_diagnostic(writer.diagnostics, "watch failure count overflowed");
                         return ExitReason::Failure;
                     }
                 };
                 let gap = gap_from_result(&result, consecutive_failures);
-                match write_gap(output, options.json, sequence, gap_times, &gap) {
+                match write_gap(
+                    writer.output,
+                    options.json,
+                    writer.sequence,
+                    gap_times,
+                    &gap,
+                ) {
                     Ok(()) => {}
                     Err(OutputError::BrokenPipe) => return ExitReason::Success,
-                    Err(error) => return output_failure(diagnostics, &error),
+                    Err(error) => return output_failure(writer.diagnostics, &error),
                 }
-                if let Err(error) = output.flush() {
-                    return io_failure(diagnostics, &error);
+                if let Err(error) = writer.output.flush() {
+                    return io_failure(writer.diagnostics, &error);
                 }
-                sequence = match sequence.checked_add(1) {
+                writer.sequence = match writer.sequence.checked_add(1) {
                     Some(value) => value,
                     None => {
-                        write_diagnostic(diagnostics, "watch sequence overflowed");
+                        write_diagnostic(writer.diagnostics, "watch sequence overflowed");
                         return ExitReason::Failure;
                     }
                 };
@@ -417,12 +381,12 @@ fn run_watch_loop(
                     runtime.cancelled(),
                     deadline.map(|end| (runtime.monotonic_now(), end)),
                 ) {
-                    return flush_exit(output, diagnostics, ExitReason::Success);
+                    return flush_exit(writer.output, writer.diagnostics, ExitReason::Success);
                 }
                 next_poll = match next_poll_after(runtime.monotonic_now(), options.interval) {
                     Some(value) => value,
                     None => {
-                        write_diagnostic(diagnostics, "watch poll deadline overflowed");
+                        write_diagnostic(writer.diagnostics, "watch poll deadline overflowed");
                         return ExitReason::Failure;
                     }
                 };
@@ -432,67 +396,100 @@ fn run_watch_loop(
         if let Err(error) =
             validate_wall_interval(previous.capture_completed_at, current.capture_started_at)
         {
-            return clock_failure(diagnostics, &error);
+            return clock_failure(writer.diagnostics, &error);
         }
         if should_stop(
             runtime.cancelled(),
             deadline.map(|end| (runtime.monotonic_now(), end)),
         ) {
-            return flush_exit(output, diagnostics, ExitReason::Success);
+            return flush_exit(writer.output, writer.diagnostics, ExitReason::Success);
         }
 
         consecutive_failures = 0;
-        let current_gap_index = GapIndex::new(&current);
-        let mut current_filter_cache = FilterCache::default();
+        let mut current_index = SnapshotIndex::new(&current);
         let event_times = match observation_times(
             Some(previous.capture_completed_at),
             current.capture_started_at,
             current.capture_completed_at,
         ) {
             Ok(times) => times,
-            Err(error) => return output_failure(diagnostics, &error),
+            Err(error) => return output_failure(writer.diagnostics, &error),
         };
         let diff = match diff_snapshots(&previous, &current) {
             Ok(diff) => diff,
             Err(error) => {
-                write_diagnostic(diagnostics, &error.to_string());
+                write_diagnostic(writer.diagnostics, &error.to_string());
                 return ExitReason::Failure;
             }
         };
-        batch_count = 0;
-        let mut previous_cache = Some(&mut previous_filter_cache);
-        let mut current_cache = Some(&mut current_filter_cache);
         if let Some(reason) = write_ordered_events(
             diff,
             options,
             config,
             runtime,
-            output,
-            diagnostics,
             deadline,
-            &mut sequence,
-            &mut batch_count,
-            &mut previous_cache,
-            &mut current_cache,
-            Some(&previous_gap_index),
-            Some(&current_gap_index),
-            event_times,
+            &mut writer,
+            EventBatch {
+                previous: Some(&mut previous_index),
+                current: &mut current_index,
+                observation: event_times,
+            },
         ) {
             return reason;
         }
-        if let Err(error) = output.flush() {
-            return io_failure(diagnostics, &error);
+        if let Err(error) = writer.output.flush() {
+            return io_failure(writer.diagnostics, &error);
         }
         previous = current;
-        previous_gap_index = current_gap_index;
-        previous_filter_cache = current_filter_cache;
+        previous_index = current_index;
         next_poll = match next_poll_after(attempt_monotonic, options.interval) {
             Some(value) => value,
             None => {
-                write_diagnostic(diagnostics, "watch poll deadline overflowed");
+                write_diagnostic(writer.diagnostics, "watch poll deadline overflowed");
                 return ExitReason::Failure;
             }
         };
+    }
+}
+
+fn collect_initial_snapshot(
+    runtime: &mut impl WatchRuntime,
+    diagnostics: &mut impl Write,
+) -> Result<NetworkSnapshot, ExitReason> {
+    let started = runtime
+        .wall_now()
+        .map_err(|error| clock_failure(diagnostics, &error))?;
+    let collected = runtime.collect();
+    let completed = runtime
+        .wall_now()
+        .map_err(|error| clock_failure(diagnostics, &error))?;
+    validate_wall_interval(started, completed)
+        .map_err(|error| clock_failure(diagnostics, &error))?;
+    if let Some(error) = collector_clock_error(&collected) {
+        return Err(clock_failure(diagnostics, error));
+    }
+
+    match collected {
+        Ok(snapshot) if snapshot.socket_set_diff_safe() => Ok(snapshot),
+        Ok(snapshot) => {
+            let detail = if snapshot.completeness == SnapshotCompleteness::Raced {
+                "initial observation raced"
+            } else {
+                "initial observation has a partial socket set"
+            };
+            write_diagnostic(diagnostics, detail);
+            Err(ExitReason::Failure)
+        }
+        Err(error) => {
+            write_diagnostic(
+                diagnostics,
+                &format!(
+                    "initial collection failed: {}",
+                    sanitize(&error.to_string())
+                ),
+            );
+            Err(ExitReason::Failure)
+        }
     }
 }
 
@@ -524,30 +521,61 @@ const fn baseline_event_result(event: WatchEvent<'_>) -> Result<WatchEvent<'_>, 
     Ok(event)
 }
 
+struct SnapshotIndex {
+    filter: FilterCache,
+    gaps: GapIndex,
+}
+
+impl SnapshotIndex {
+    fn new(snapshot: &NetworkSnapshot) -> Self {
+        Self {
+            filter: FilterCache::default(),
+            gaps: GapIndex::new(snapshot),
+        }
+    }
+}
+
+struct EventBatch<'a> {
+    previous: Option<&'a mut SnapshotIndex>,
+    current: &'a mut SnapshotIndex,
+    observation: ObservationTimes,
+}
+
+struct EventWriter<'a, Output, Diagnostics> {
+    output: &'a mut Output,
+    diagnostics: &'a mut Diagnostics,
+    sequence: u64,
+}
+
 #[expect(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
-    reason = "ordered streaming keeps runtime, output, caches, gaps, and sequence ownership explicit"
+    reason = "bounded rescanning and emission share one ordered group cursor"
 )]
 fn write_ordered_events<'a, I>(
     mut events: I,
     options: &WatchOptions,
     config: &Config,
     runtime: &mut impl WatchRuntime,
-    output: &mut impl Write,
-    diagnostics: &mut impl Write,
     deadline: Option<Duration>,
-    sequence: &mut u64,
-    batch_count: &mut usize,
-    previous_cache: &mut Option<&mut FilterCache>,
-    current_cache: &mut Option<&mut FilterCache>,
-    previous_gap_index: Option<&GapIndex>,
-    current_gap_index: Option<&GapIndex>,
-    observation: ObservationTimes,
+    writer: &mut EventWriter<'_, impl Write, impl Write>,
+    batch: EventBatch<'_>,
 ) -> Option<ExitReason>
 where
     I: Iterator<Item = Result<WatchEvent<'a>, DiffError>> + Clone,
 {
+    let EventWriter {
+        output,
+        diagnostics,
+        sequence,
+    } = writer;
+    let (mut previous_cache, previous_gap_index) = match batch.previous {
+        Some(index) => (Some(&mut index.filter), Some(&index.gaps)),
+        None => (None, None),
+    };
+    let mut current_cache = Some(&mut batch.current.filter);
+    let current_gap_index = Some(&batch.current.gaps);
+    let observation = batch.observation;
+    let mut batch_count = 0;
     let mut scanned_since_check = 0usize;
     loop {
         let group_start = events.clone();
@@ -595,13 +623,9 @@ where
         }
         events = group_end;
 
-        // One emission pass per rank present in the group, re-scanning the
-        // group from `group_start` each time. Collecting the group once and
-        // sorting it would be fewer passes, but a group is bounded only by
-        // WATCH_EVENTS_PER_POLL_MAX, so buffering it would trade a fixed-memory
-        // stream for an allocation that grows with the poll. Passes are capped
-        // at EVENT_ORDER_RANK_COUNT and groups are one event in the common
-        // case, so the re-scan is the cheaper bound to keep.
+        // Re-scan once per rank to keep memory independent of group size.
+        // There are at most EVENT_ORDER_RANK_COUNT passes; most groups contain
+        // one event. Buffering a group could retain an entire poll's events.
         for rank in 0..EVENT_ORDER_RANK_COUNT {
             if rank_mask & (1 << rank) == 0 {
                 continue;
@@ -658,12 +682,12 @@ where
                     return Some(flush_exit(output, diagnostics, ExitReason::Failure));
                 };
                 *sequence = next_sequence;
-                *batch_count += 1;
-                if *batch_count == WATCH_EVENT_BATCH_MAX {
+                batch_count += 1;
+                if batch_count == WATCH_EVENT_BATCH_MAX {
                     if let Err(error) = output.flush() {
                         return Some(io_failure(diagnostics, &error));
                     }
-                    *batch_count = 0;
+                    batch_count = 0;
                 }
             }
         }

@@ -7,9 +7,8 @@ use crate::process_evidence::{FreshProcessEvidence, ProcessEvidenceError};
 #[cfg(target_os = "macos")]
 use super::{
     KillMode, KillTarget, TerminationHandle, UNIX_STOP_ACKNOWLEDGEMENT_MAX, check_final_evidence,
-    finish_stopped_termination, outcome_after_thaw, record_tree_stop_result,
-    refuse_stopped_termination, run_before_stop_deadline, tree_cont, tree_send_signal,
-    tree_stop_deadline, unix_signal,
+    finish_stopped_termination, outcome_after_thaw, refuse_stopped_termination,
+    run_before_stop_deadline, tree_cont, tree_send_signal, unix_signal,
 };
 use super::{
     StopFailure, TerminationOutcome, UnixProcessState, UnixProcessStatus, stop_deadline_failure,
@@ -407,27 +406,21 @@ fn macos_signal_outcome(operation: &str, error: &std::io::Error) -> TerminationO
 #[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
 pub(super) fn macos_tree_stop_result(
     result: Result<bool, StopFailure>,
-) -> (crate::tree::TreeSignalResult, crate::tree::TreeStopResult) {
-    use crate::tree::{TreeSignalResult, TreeStopResult};
+) -> crate::tree::TreeStopResult {
+    use crate::tree::TreeStopResult;
 
     match result {
-        Ok(transitioned) => (
-            TreeSignalResult::Delivered,
-            TreeStopResult::Stopped { transitioned },
-        ),
+        Ok(transitioned) => TreeStopResult::Stopped { transitioned },
         Err(StopFailure {
             outcome: TerminationOutcome::AlreadyExited | TerminationOutcome::TargetChanged,
             cleanup_required: false,
             ..
-        }) => (TreeSignalResult::NotFound, TreeStopResult::NotFound),
-        Err(failure) => (
-            TreeSignalResult::Denied,
-            TreeStopResult::Failed {
-                cleanup_required: failure.cleanup_required,
-                rollback_start_time_marker: failure.rollback_start_time_marker,
-                error: tree_stop_error(failure.outcome),
-            },
-        ),
+        }) => TreeStopResult::NotFound,
+        Err(failure) => TreeStopResult::Failed {
+            cleanup_required: failure.cleanup_required,
+            rollback_start_time_marker: failure.rollback_start_time_marker,
+            error: tree_stop_error(failure.outcome),
+        },
     }
 }
 
@@ -436,11 +429,8 @@ pub(super) fn macos_tree_stop_result(
 /// macOS stops by PID and verifies identity after the stop. Linux uses pidfds
 /// through `tree_stop_handle` instead.
 #[cfg(target_os = "macos")]
-pub(crate) fn tree_stop(pid: u32) -> crate::tree::TreeSignalResult {
-    let (signal_result, stop_result) =
-        macos_tree_stop_result(macos_stop_process(pid, None, tree_stop_deadline()));
-    record_tree_stop_result(pid, stop_result);
-    signal_result
+pub(crate) fn tree_stop(pid: u32, deadline: std::time::Instant) -> crate::tree::TreeStopResult {
+    macos_tree_stop_result(macos_stop_process(pid, None, deadline))
 }
 
 /// macOS delivery preparation: probe that the stopped process still exists.

@@ -126,7 +126,7 @@ the package manager commands above when you choose to check for an update.
 
 An unqualified Git or Linux Nix GitHub source follows the repository's default branch,
 which can contain changes newer than the latest stable release. For a
-reproducible stable source install, select an explicit tag such as `v1.4.4` and
+reproducible stable source install, select an explicit tag such as `v1.4.5` and
 replace that tag deliberately when upgrading. Direct-archive installs must be
 replaced manually after verifying the new archive.
 

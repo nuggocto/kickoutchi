@@ -10,7 +10,7 @@ use std::rc::Rc;
 use super::tree_outcome_from_termination;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::{
-    GROUP_YES_SKIP_MAX_PROCESSES, TreeConfirmDecision, TreeKillSeams, confirm_tree_kill,
+    GROUP_YES_SKIP_MAX_PROCESSES, TreeConfirmDecision, TreeKillIo, confirm_tree_kill,
     group_confirmation, kill_target_from_tree_info, run_group_kill_with, run_tree_kill_with,
     tree_confirmation,
 };
@@ -137,18 +137,18 @@ fn windows_tree_authority_refusal_precedes_job_assignment() {
         &Config::default(),
         &entry_views(&[entry(3000)]),
         crate::process::KillMode::Terminate,
-        super::WindowsTreeKillSeams {
-            collect_tree: || Ok(process_snapshot.clone()),
-            collect_context: no_context,
-            prompt: confirm_windows_tree_prompt,
-            collect_kill_ports: || {
+        super::WindowsTreeKillIo {
+            collect_tree: &mut || Ok(process_snapshot.clone()),
+            collect_context: &mut no_context,
+            prompt: &mut confirm_windows_tree_prompt,
+            collect_kill_ports: &mut || {
                 crate::collector::kill_ports_from_snapshot(&snapshot, Some(18_422), None)
             },
-            collect_ports: || panic!("refusal must not visibility-poll ports"),
-            prepare_root: |_pid| -> Result<u32, TerminationOutcome> {
+            collect_ports: &mut || panic!("refusal must not visibility-poll ports"),
+            prepare_root: &mut |_pid| -> Result<u32, TerminationOutcome> {
                 panic!("PID mode must preserve its existing preparation path")
             },
-            execute: panic_windows_tree_execute,
+            execute: &mut panic_windows_tree_execute,
         },
     );
 
@@ -181,23 +181,23 @@ fn windows_port_tree_root_exit_during_preparation_is_no_match() {
         &Config::default(),
         &entry_views(&[entry(3000)]),
         crate::process::KillMode::Terminate,
-        super::WindowsTreeKillSeams {
-            collect_tree: || Ok(process_snapshot.clone()),
-            collect_context: no_context,
-            prompt: confirm_windows_tree_prompt,
-            collect_kill_ports: || {
+        super::WindowsTreeKillIo {
+            collect_tree: &mut || Ok(process_snapshot.clone()),
+            collect_context: &mut no_context,
+            prompt: &mut confirm_windows_tree_prompt,
+            collect_kill_ports: &mut || {
                 panic!("root preparation refusal must precede final endpoint collection")
             },
-            collect_ports: || {
+            collect_ports: &mut || {
                 events.borrow_mut().push("visibility");
                 Ok(Vec::new())
             },
-            prepare_root: |pid| -> Result<u32, TerminationOutcome> {
+            prepare_root: &mut |pid| -> Result<u32, TerminationOutcome> {
                 assert_eq!(pid, 18_422);
                 events.borrow_mut().push("prepare");
                 Err(TerminationOutcome::AlreadyExited)
             },
-            execute: panic_windows_tree_execute,
+            execute: &mut panic_windows_tree_execute,
         },
     );
 
@@ -243,26 +243,27 @@ fn windows_port_owner_move_after_root_prepare_never_commits_job() {
         &Config::default(),
         &entry_views(&[entry(3000)]),
         crate::process::KillMode::Terminate,
-        super::WindowsTreeKillSeams {
-            collect_tree: || Ok(process_snapshot.clone()),
-            collect_context: |_pid| context(),
-            prompt: confirm_windows_tree_prompt,
-            collect_kill_ports: || {
+        super::WindowsTreeKillIo {
+            collect_tree: &mut || Ok(process_snapshot.clone()),
+            collect_context: &mut |_pid| context(),
+            prompt: &mut confirm_windows_tree_prompt,
+            collect_kill_ports: &mut || {
                 events.borrow_mut().push("collect");
                 Ok(moved.clone())
             },
-            collect_ports: || panic!("refusal must not visibility-poll ports"),
-            prepare_root: |pid| {
+            collect_ports: &mut || panic!("refusal must not visibility-poll ports"),
+            prepare_root: &mut |pid| {
                 assert_eq!(pid, 18_422);
                 events.borrow_mut().push("prepare");
                 Ok::<u32, TerminationOutcome>(pid)
             },
-            execute: |_root: &KillTarget,
+            execute:
+                &mut |_root: &KillTarget,
                       _protected: &[String],
                       _authorization: crate::tree::ScopeAuthorization| {
-                events.borrow_mut().push("commit");
-                panic!("moved endpoint must prevent Job Object commit")
-            },
+                    events.borrow_mut().push("commit");
+                    panic!("moved endpoint must prevent Job Object commit")
+                },
         },
     );
 
@@ -530,7 +531,7 @@ impl TreeProcessOps for PreviewOnlyTreeOps {
         Ok(self.0.clone())
     }
 
-    fn stop(&mut self, _pid: u32) -> TreeSignalResult {
+    fn stop(&mut self, _pid: u32, _deadline: std::time::Instant) -> crate::tree::TreeStopResult {
         panic!("no process may be stopped for an unresolved root")
     }
 
@@ -593,10 +594,10 @@ impl TreeProcessOps for RecordingTreeOps {
         TreeSignalResult::Delivered
     }
 
-    fn stop(&mut self, pid: u32) -> TreeSignalResult {
+    fn stop(&mut self, pid: u32, _deadline: std::time::Instant) -> crate::tree::TreeStopResult {
         self.stops.push(pid);
         self.events.borrow_mut().push(RecordingTreeEvent::Stop(pid));
-        TreeSignalResult::Delivered
+        crate::tree::TreeStopResult::Stopped { transitioned: true }
     }
 
     fn cont(&mut self, _pid: u32) -> TreeSignalResult {
@@ -654,13 +655,13 @@ fn tree_kill_of_missing_pid_reports_no_match_without_touching_processes() {
         &[],
         KillMode::Terminate,
         &mut PreviewOnlyTreeOps(Vec::new()),
-        TreeKillSeams {
-            collect_context: no_context,
-            prompt: |_target: &KillTarget, _tree: &ProcessTreeTarget, _requirement| {
+        TreeKillIo {
+            collect_context: &mut no_context,
+            prompt: &mut |_target: &KillTarget, _tree: &ProcessTreeTarget, _requirement| {
                 panic!("unresolved root must not prompt")
             },
-            collect_kill_ports: || panic!("unresolved root must not re-collect ports"),
-            collect_ports: || panic!("unresolved root must not re-collect ports"),
+            collect_kill_ports: &mut || panic!("unresolved root must not re-collect ports"),
+            collect_ports: &mut || panic!("unresolved root must not re-collect ports"),
         },
     );
 
@@ -860,14 +861,14 @@ fn port_selected_tree_pins_old_root_before_endpoint_move_and_sends_no_signal() {
         &entry_views(&rows),
         KillMode::Terminate,
         &mut ops,
-        TreeKillSeams {
-            collect_context: no_context,
-            prompt: confirm_tree_prompt,
-            collect_kill_ports: || {
+        TreeKillIo {
+            collect_context: &mut no_context,
+            prompt: &mut confirm_tree_prompt,
+            collect_kill_ports: &mut || {
                 events.borrow_mut().push(RecordingTreeEvent::CollectPorts);
                 Ok(fresh_rows.clone())
             },
-            collect_ports: || Ok(Vec::new()),
+            collect_ports: &mut || Ok(Vec::new()),
         },
     );
 
@@ -905,14 +906,14 @@ fn tree_losing_readable_owner_during_revalidation_exits_permission_denied() {
         &entry_views(&rows),
         KillMode::Terminate,
         &mut ops,
-        TreeKillSeams {
-            collect_context: no_context,
-            prompt: confirm_tree_prompt,
-            collect_kill_ports: || {
+        TreeKillIo {
+            collect_context: &mut no_context,
+            prompt: &mut confirm_tree_prompt,
+            collect_kill_ports: &mut || {
                 events.borrow_mut().push(RecordingTreeEvent::CollectPorts);
                 Ok(fresh_rows.clone())
             },
-            collect_ports: || Ok(Vec::new()),
+            collect_ports: &mut || Ok(Vec::new()),
         },
     );
 
@@ -941,13 +942,13 @@ fn tree_authority_refusal_has_zero_stop_or_delivery() {
         &entry_views(&rows),
         KillMode::Terminate,
         &mut ops,
-        TreeKillSeams {
-            collect_context: no_context,
-            prompt: confirm_tree_prompt,
-            collect_kill_ports: || {
+        TreeKillIo {
+            collect_context: &mut no_context,
+            prompt: &mut confirm_tree_prompt,
+            collect_kill_ports: &mut || {
                 crate::collector::kill_ports_from_snapshot(&snapshot, Some(18_422), None)
             },
-            collect_ports: || panic!("refusal must not visibility-poll ports"),
+            collect_ports: &mut || panic!("refusal must not visibility-poll ports"),
         },
     );
 
@@ -986,11 +987,11 @@ fn fresh_tree_warning_after_yes_skip_refuses_before_any_stop() {
         &[],
         KillMode::Terminate,
         &mut ops,
-        TreeKillSeams {
-            collect_context: no_context,
-            prompt: panic_tree_prompt,
-            collect_kill_ports: || panic!("portless tree root must not re-collect ports"),
-            collect_ports: || panic!("portless tree root must not re-collect ports"),
+        TreeKillIo {
+            collect_context: &mut no_context,
+            prompt: &mut panic_tree_prompt,
+            collect_kill_ports: &mut || panic!("portless tree root must not re-collect ports"),
+            collect_ports: &mut || panic!("portless tree root must not re-collect ports"),
         },
     );
 
@@ -1024,11 +1025,11 @@ fn protected_tree_descendant_refuses_before_prompt_or_stop_even_with_yes() {
         &entry_views(&rows),
         KillMode::Terminate,
         &mut PreviewOnlyTreeOps(snapshot),
-        TreeKillSeams {
-            collect_context: no_context,
-            prompt: panic_tree_prompt,
-            collect_kill_ports: || panic!("protected descendant must not re-collect ports"),
-            collect_ports: || panic!("protected descendant must not re-collect ports"),
+        TreeKillIo {
+            collect_context: &mut no_context,
+            prompt: &mut panic_tree_prompt,
+            collect_kill_ports: &mut || panic!("protected descendant must not re-collect ports"),
+            collect_ports: &mut || panic!("protected descendant must not re-collect ports"),
         },
     );
 
@@ -1100,11 +1101,11 @@ fn root_turning_protected_between_confirmation_and_freeze_refuses_with_exit_6() 
         &entry_views(&rows),
         KillMode::Terminate,
         &mut ops,
-        TreeKillSeams {
-            collect_context: no_context,
-            prompt: confirm_tree_prompt,
-            collect_kill_ports: || Ok(rows.clone()),
-            collect_ports: || Ok(rows.clone()),
+        TreeKillIo {
+            collect_context: &mut no_context,
+            prompt: &mut confirm_tree_prompt,
+            collect_kill_ports: &mut || Ok(rows.clone()),
+            collect_ports: &mut || Ok(rows.clone()),
         },
     );
 
@@ -1159,17 +1160,17 @@ fn completed_protected_confirmation_passes_the_root_protection_gate() {
         &entry_views(&rows),
         KillMode::Terminate,
         &mut ops,
-        TreeKillSeams {
-            collect_context: no_context,
-            prompt: |_target: &KillTarget, _tree: &ProcessTreeTarget, _requirement| {
+        TreeKillIo {
+            collect_context: &mut no_context,
+            prompt: &mut |_target: &KillTarget, _tree: &ProcessTreeTarget, _requirement| {
                 prompts += 1;
                 Ok(true)
             },
-            collect_kill_ports: || {
+            collect_kill_ports: &mut || {
                 authority_collections += 1;
                 Ok(rows.clone())
             },
-            collect_ports: || {
+            collect_ports: &mut || {
                 visibility_polls += 1;
                 Ok(Vec::new())
             },
@@ -1328,11 +1329,11 @@ fn group_kill_refuses_kernel_domain_roots_without_touching_processes() {
         &[],
         KillMode::Terminate,
         &mut PreviewOnlyTreeOps(snapshot),
-        TreeKillSeams {
-            collect_context: no_context,
-            prompt: panic_tree_prompt,
-            collect_kill_ports: || panic!("untargetable group must not re-collect ports"),
-            collect_ports: || panic!("untargetable group must not re-collect ports"),
+        TreeKillIo {
+            collect_context: &mut no_context,
+            prompt: &mut panic_tree_prompt,
+            collect_kill_ports: &mut || panic!("untargetable group must not re-collect ports"),
+            collect_ports: &mut || panic!("untargetable group must not re-collect ports"),
         },
     );
 
@@ -1361,14 +1362,14 @@ fn group_losing_readable_owner_during_revalidation_exits_permission_denied() {
         &entry_views(&rows),
         KillMode::Terminate,
         &mut ops,
-        TreeKillSeams {
-            collect_context: no_context,
-            prompt: confirm_tree_prompt,
-            collect_kill_ports: || {
+        TreeKillIo {
+            collect_context: &mut no_context,
+            prompt: &mut confirm_tree_prompt,
+            collect_kill_ports: &mut || {
                 events.borrow_mut().push(RecordingTreeEvent::CollectPorts);
                 Ok(fresh_rows.clone())
             },
-            collect_ports: || Ok(Vec::new()),
+            collect_ports: &mut || Ok(Vec::new()),
         },
     );
 
@@ -1406,18 +1407,18 @@ fn port_selected_group_success_separates_authority_from_visibility_polling() {
         &entry_views(&rows),
         KillMode::Terminate,
         &mut ops,
-        TreeKillSeams {
-            collect_context: no_context,
-            prompt: |_target: &KillTarget, members: &ProcessTreeTarget, _requirement| {
+        TreeKillIo {
+            collect_context: &mut no_context,
+            prompt: &mut |_target: &KillTarget, members: &ProcessTreeTarget, _requirement| {
                 prompts += 1;
                 assert_eq!(members.len(), 2, "the prompt must name the full count");
                 Ok(true)
             },
-            collect_kill_ports: || {
+            collect_kill_ports: &mut || {
                 authority_collections += 1;
                 Ok(rows.clone())
             },
-            collect_ports: || {
+            collect_ports: &mut || {
                 visibility_polls += 1;
                 Ok(Vec::new())
             },

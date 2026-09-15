@@ -15,7 +15,6 @@ use crate::process_evidence::{FreshProcessEvidence, ProcessEvidenceError};
 
 use super::{KillMode, KillTarget, TerminationHandle, TerminationOutcome, check_final_evidence};
 
-#[cfg(windows)]
 pub(super) fn prepare_termination_platform(
     pid: u32,
 ) -> Result<TerminationHandle, TerminationOutcome> {
@@ -42,7 +41,6 @@ pub(super) fn prepare_termination_platform(
     })
 }
 
-#[cfg(windows)]
 fn terminate_handle_platform(handle: &TerminationHandle, _mode: KillMode) -> TerminationOutcome {
     if !windows_process_is_alive(handle) {
         return TerminationOutcome::AlreadyExited;
@@ -67,7 +65,6 @@ fn terminate_handle_platform(handle: &TerminationHandle, _mode: KillMode) -> Ter
     windows_api_outcome("TerminateProcess", &error)
 }
 
-#[cfg(windows)]
 pub(super) fn terminate_handle_checked_platform(
     handle: &TerminationHandle,
     target: &KillTarget,
@@ -81,7 +78,6 @@ pub(super) fn terminate_handle_checked_platform(
     terminate_handle_platform(handle, mode)
 }
 
-#[cfg(windows)]
 fn windows_fresh_process_evidence(
     handle: &TerminationHandle,
 ) -> Result<FreshProcessEvidence, ProcessEvidenceError> {
@@ -131,17 +127,13 @@ fn windows_fresh_process_evidence(
     })
 }
 
-#[cfg(windows)]
 pub(super) fn native_utf16_prefix(buffer: &[u16], reported_length: u32) -> Option<&[u16]> {
     buffer.get(..usize::try_from(reported_length).ok()?)
 }
 
-#[cfg(windows)]
 const WINDOWS_TERMINATE_EXIT_CODE: u32 = 1;
-#[cfg(windows)]
 const WINDOWS_TERMINATE_WAIT_MS: u32 = 5_000;
 
-#[cfg(windows)]
 fn wait_for_windows_process_exit(handle: &TerminationHandle) -> TerminationOutcome {
     let result = unsafe {
         // SAFETY: the process handle is owned by `TerminationHandle` and was
@@ -173,7 +165,6 @@ fn wait_for_windows_process_exit(handle: &TerminationHandle) -> TerminationOutco
     }
 }
 
-#[cfg(windows)]
 fn windows_process_is_alive(handle: &TerminationHandle) -> bool {
     match windows_wait_status(handle, 0) {
         // Signaled: the process has already exited.
@@ -188,7 +179,6 @@ fn windows_process_is_alive(handle: &TerminationHandle) -> bool {
     }
 }
 
-#[cfg(windows)]
 fn windows_wait_status(
     handle: &TerminationHandle,
     milliseconds: u32,
@@ -208,7 +198,6 @@ fn windows_wait_status(
     }
 }
 
-#[cfg(windows)]
 fn windows_exit_code(handle: &TerminationHandle) -> Result<Option<u32>, TerminationOutcome> {
     let mut exit_code = 0_u32;
     let result = unsafe {
@@ -227,12 +216,10 @@ fn windows_exit_code(handle: &TerminationHandle) -> Result<Option<u32>, Terminat
     }
 }
 
-#[cfg(windows)]
 fn windows_still_active_exit_code() -> u32 {
     u32::try_from(STILL_ACTIVE).expect("STILL_ACTIVE must fit in a process exit code")
 }
 
-#[cfg(windows)]
 pub(super) fn windows_api_outcome(operation: &str, error: &std::io::Error) -> TerminationOutcome {
     match windows_error_code(error) {
         Some(ERROR_INVALID_PARAMETER) => TerminationOutcome::AlreadyExited,
@@ -244,7 +231,6 @@ pub(super) fn windows_api_outcome(operation: &str, error: &std::io::Error) -> Te
     }
 }
 
-#[cfg(windows)]
 fn windows_error_code(error: &std::io::Error) -> Option<u32> {
     error
         .raw_os_error()

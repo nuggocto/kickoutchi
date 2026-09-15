@@ -849,16 +849,14 @@ impl NetworkSnapshot {
                 let protected = match owner {
                     OwnerObservation::Verified(identity) => {
                         *protection_by_identity.entry(*identity).or_insert_with(|| {
-                            self.processes
-                                .get(identity)
-                                .and_then(|process| process.name.as_deref())
-                                .is_some_and(|name| {
-                                    crate::protection::is_protected_process_name(
-                                        platform,
-                                        name,
-                                        protected_names,
-                                    )
-                                })
+                            self.processes.get(identity).is_some_and(|process| {
+                                crate::protection::is_protected_process(
+                                    platform,
+                                    process.name.as_deref(),
+                                    process.executable_path.as_deref(),
+                                    protected_names,
+                                )
+                            })
                         })
                     }
                     OwnerObservation::UnverifiedPid { .. } => false,

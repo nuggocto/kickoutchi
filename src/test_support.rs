@@ -12,6 +12,9 @@ use crate::observation::{
     OwnerCompleteness, OwnerObservation, UnverifiedOwnerReason,
 };
 
+#[path = "../tests/support/command.rs"]
+pub(crate) mod command;
+
 pub(crate) fn port_entry(port: u16, pid: Option<u32>, protocol: Protocol, name: &str) -> PortEntry {
     PortEntry {
         protocol,

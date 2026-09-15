@@ -165,46 +165,38 @@ impl TreeProcessOps for FakeOps {
         Ok(self.snapshots.get(index).cloned().unwrap_or_default())
     }
 
-    fn stop(&mut self, pid: u32) -> TreeSignalResult {
-        self.events.push(Event::Stop(pid));
-        if self.deny_stop.contains(&pid) {
-            return TreeSignalResult::Denied;
-        }
-        if self.missing_stop.contains(&pid) {
-            return TreeSignalResult::NotFound;
-        }
-        TreeSignalResult::Delivered
-    }
-
-    fn stop_checked(&mut self, pid: u32, deadline: std::time::Instant) -> TreeStopResult {
+    fn stop(&mut self, pid: u32, deadline: std::time::Instant) -> TreeStopResult {
         self.stop_deadlines.push(deadline);
         self.stop_clock += self.stop_elapsed;
         if self.stop_clock >= deadline {
             return stop_deadline_expired();
         }
-        match self.stop(pid) {
-            TreeSignalResult::Delivered if self.uncertain_stop.contains(&pid) => {
-                TreeStopResult::Failed {
-                    cleanup_required: true,
-                    rollback_start_time_marker: self
-                        .rollback_markers_after_stop
-                        .get(&pid)
-                        .copied()
-                        .flatten(),
-                    error: TreeStopError::ObservationFailed(
-                        "stopped-state observation failed".to_owned(),
-                    ),
-                }
-            }
-            TreeSignalResult::Delivered => TreeStopResult::Stopped {
-                transitioned: !self.pre_stopped.contains(&pid),
-            },
-            TreeSignalResult::NotFound => TreeStopResult::NotFound,
-            TreeSignalResult::Denied => TreeStopResult::Failed {
+        self.events.push(Event::Stop(pid));
+        if self.deny_stop.contains(&pid) {
+            return TreeStopResult::Failed {
                 cleanup_required: false,
                 rollback_start_time_marker: None,
                 error: TreeStopError::PermissionDenied,
-            },
+            };
+        }
+        if self.missing_stop.contains(&pid) {
+            return TreeStopResult::NotFound;
+        }
+        if self.uncertain_stop.contains(&pid) {
+            return TreeStopResult::Failed {
+                cleanup_required: true,
+                rollback_start_time_marker: self
+                    .rollback_markers_after_stop
+                    .get(&pid)
+                    .copied()
+                    .flatten(),
+                error: TreeStopError::ObservationFailed(
+                    "stopped-state observation failed".to_owned(),
+                ),
+            };
+        }
+        TreeStopResult::Stopped {
+            transitioned: !self.pre_stopped.contains(&pid),
         }
     }
 

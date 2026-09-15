@@ -48,24 +48,11 @@ struct RefreshWorker {
     stale: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum PendingRefresh {
-    #[default]
-    None,
-    PostKill,
-}
-
 #[derive(Debug)]
 struct ContextWorker {
     key: RowKey,
     receiver: Receiver<Result<ProcessContext, crate::ui::WorkerFailure>>,
     stale: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ContextRequestState {
-    Idle,
-    PendingLatest,
 }
 
 /// In-flight enumeration of the selected root's process tree, so the full
@@ -79,13 +66,24 @@ struct TreePreviewWorker {
 
 /// Whichever modal is currently sitting over the main table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Modal {
+pub(crate) enum ModalKind {
     None,
     Details,
     Help,
     ConfirmKill,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     ConfirmTreeKill,
+}
+
+#[derive(Debug, Default)]
+enum Modal {
+    #[default]
+    None,
+    Details,
+    Help,
+    ConfirmKill(KillConfirmation),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    ConfirmTreeKill(TreeKillConfirmation),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,55 +198,6 @@ impl TreeKillConfirmation {
     }
 }
 
-/// How strict force-kill confirmation should be, taken from
-/// `Config::confirm_force_kill`.
-///
-/// Selects the force-confirmation mode. A named type keeps the policy explicit
-/// at call sites; the TUI always confirms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ForceKillConfirmation {
-    TypedForce,
-    YesOnly,
-}
-
-impl ForceKillConfirmation {
-    fn from_config(confirm_force_kill: bool) -> Self {
-        if confirm_force_kill {
-            Self::TypedForce
-        } else {
-            Self::YesOnly
-        }
-    }
-
-    fn confirm_force_kill(self) -> bool {
-        self == Self::TypedForce
-    }
-}
-
-/// Whether selected-row context collection may request optional Docker details.
-///
-/// A named policy keeps external-process permission explicit when it crosses
-/// from configuration into the background worker.
-#[derive(Debug, Clone, Copy)]
-enum DockerEnrichmentPolicy {
-    Enabled,
-    Disabled,
-}
-
-impl DockerEnrichmentPolicy {
-    fn from_config(enabled: bool) -> Self {
-        if enabled {
-            Self::Enabled
-        } else {
-            Self::Disabled
-        }
-    }
-
-    fn enabled(self) -> bool {
-        matches!(self, Self::Enabled)
-    }
-}
-
 /// Mutable TUI state.
 #[expect(
     clippy::struct_excessive_bools,
@@ -260,29 +209,31 @@ pub(crate) struct App {
     visible_row_indices: Vec<usize>,
     sorted_row_indices: Option<SortedRowIndices>,
     selected_index: Option<usize>,
+
     filter_text: String,
     search_mode: bool,
     sort_mode: SortMode,
     hide_system_processes: bool,
-    force_kill_confirmation: ForceKillConfirmation,
-    docker_enrichment: DockerEnrichmentPolicy,
+    confirm_force_kill: bool,
+    docker_enrichment: bool,
     protected_processes: Vec<String>,
     labels: crate::labels::LabelRegistry,
     network_snapshot: Option<crate::observation::NetworkSnapshot>,
+
     selected_context_key: Option<RowKey>,
     selected_process_context: Option<ProcessContext>,
     context_worker: Option<ContextWorker>,
-    context_request_state: ContextRequestState,
-    kill_confirmation: Option<KillConfirmation>,
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    tree_confirmation: Option<TreeKillConfirmation>,
+    context_requested: bool,
+
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     tree_preview_worker: Option<TreePreviewWorker>,
     kill_status: Option<String>,
+
     refresh_worker: Option<RefreshWorker>,
-    pending_refresh: PendingRefresh,
+    refresh_after_kill: bool,
     last_successful_refresh: Option<Instant>,
     last_refresh_attempt: Instant,
+
     modal: Modal,
     modal_scroll: u16,
     latest_error: Option<String>,
@@ -334,23 +285,20 @@ impl App {
             search_mode: false,
             sort_mode: config.default_sort,
             hide_system_processes: config.hide_system_processes,
-            force_kill_confirmation: ForceKillConfirmation::from_config(config.confirm_force_kill),
-            docker_enrichment: DockerEnrichmentPolicy::from_config(config.docker_enrichment),
+            confirm_force_kill: config.confirm_force_kill,
+            docker_enrichment: config.docker_enrichment,
             protected_processes: config.protected_processes.clone(),
             labels: config.labels.clone(),
             network_snapshot: None,
             selected_context_key: None,
             selected_process_context: None,
             context_worker: None,
-            context_request_state: ContextRequestState::Idle,
-            kill_confirmation: None,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            tree_confirmation: None,
+            context_requested: false,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             tree_preview_worker: None,
             kill_status: None,
             refresh_worker: None,
-            pending_refresh: PendingRefresh::None,
+            refresh_after_kill: false,
             last_successful_refresh: None,
             last_refresh_attempt: now,
             modal: Modal::None,
@@ -433,7 +381,7 @@ impl App {
         if !stale {
             self.finish_snapshot_refresh_attempt(result, Instant::now());
         }
-        if std::mem::take(&mut self.pending_refresh) == PendingRefresh::PostKill {
+        if std::mem::take(&mut self.refresh_after_kill) {
             start_refresh(self);
         }
     }
@@ -527,11 +475,11 @@ impl App {
         if let Some(worker) = self.context_worker.as_mut() {
             worker.stale = true;
         }
-        self.context_request_state = ContextRequestState::Idle;
+        self.context_requested = false;
         self.selected_context_key = None;
         self.selected_process_context = None;
         self.rebuild_visible_rows_preserving(selected_key, fallback_index);
-        if self.modal == Modal::Details {
+        if self.modal() == ModalKind::Details {
             self.load_selected_process_context();
         }
     }
@@ -550,11 +498,14 @@ impl App {
     fn confirmation_modal_open(&self) -> bool {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            matches!(self.modal, Modal::ConfirmKill | Modal::ConfirmTreeKill)
+            matches!(
+                self.modal(),
+                ModalKind::ConfirmKill | ModalKind::ConfirmTreeKill
+            )
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
-            self.modal == Modal::ConfirmKill
+            self.modal() == ModalKind::ConfirmKill
         }
     }
 
@@ -663,7 +614,7 @@ impl App {
 
     pub(crate) fn selected_process_context_loading(&self) -> bool {
         let selected_key = self.selected_row().map(RowKey::from);
-        self.context_request_state == ContextRequestState::PendingLatest
+        self.context_requested
             || self
                 .context_worker
                 .as_ref()
@@ -671,7 +622,25 @@ impl App {
     }
 
     pub(crate) fn kill_confirmation(&self) -> Option<&KillConfirmation> {
-        self.kill_confirmation.as_ref()
+        match &self.modal {
+            Modal::ConfirmKill(confirmation) => Some(confirmation),
+            _ => None,
+        }
+    }
+
+    fn kill_confirmation_mut(&mut self) -> Option<&mut KillConfirmation> {
+        match &mut self.modal {
+            Modal::ConfirmKill(confirmation) => Some(confirmation),
+            _ => None,
+        }
+    }
+
+    fn take_kill_confirmation(&mut self) -> Option<KillConfirmation> {
+        self.kill_confirmation()?;
+        match std::mem::take(&mut self.modal) {
+            Modal::ConfirmKill(confirmation) => Some(confirmation),
+            _ => unreachable!("confirmation was checked before taking the modal"),
+        }
     }
 
     pub(crate) fn kill_status(&self) -> Option<&str> {
@@ -734,8 +703,15 @@ impl App {
             .map(|instant| instant.elapsed())
     }
 
-    pub(crate) fn modal(&self) -> Modal {
-        self.modal
+    pub(crate) fn modal(&self) -> ModalKind {
+        match self.modal {
+            Modal::None => ModalKind::None,
+            Modal::Details => ModalKind::Details,
+            Modal::Help => ModalKind::Help,
+            Modal::ConfirmKill(_) => ModalKind::ConfirmKill,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            Modal::ConfirmTreeKill(_) => ModalKind::ConfirmTreeKill,
+        }
     }
 
     pub(crate) fn latest_error(&self) -> Option<&str> {
@@ -763,7 +739,7 @@ impl App {
             Action::CloseModal => {
                 self.modal = Modal::None;
                 self.modal_scroll = 0;
-                self.context_request_state = ContextRequestState::Idle;
+                self.context_requested = false;
             }
             Action::RequestTerminate => self.request_kill(KillMode::Terminate),
             Action::RequestForceKill => self.request_kill(KillMode::Force),
@@ -851,7 +827,7 @@ impl App {
             target.protected,
             mode,
             false,
-            self.force_kill_confirmation.confirm_force_kill(),
+            self.confirm_force_kill,
         ) {
             Ok(Some(requirement)) => requirement,
             Ok(None) => ConfirmationRequirement::Yes,
@@ -861,14 +837,12 @@ impl App {
             }
         };
 
-        self.kill_confirmation = Some(KillConfirmation::new(target, mode, requirement));
-        self.modal = Modal::ConfirmKill;
+        self.modal = Modal::ConfirmKill(KillConfirmation::new(target, mode, requirement));
     }
 
     fn append_kill_input(&mut self, ch: char) {
         let Some(requirement) = self
-            .kill_confirmation
-            .as_ref()
+            .kill_confirmation()
             .map(|confirmation| confirmation.requirement)
         else {
             return;
@@ -879,13 +853,13 @@ impl App {
                 self.execute_kill_confirmation();
             } else if ch == 'n' || ch == 'N' {
                 self.cancel_kill_confirmation();
-            } else if let Some(confirmation) = self.kill_confirmation.as_mut() {
+            } else if let Some(confirmation) = self.kill_confirmation_mut() {
                 confirmation.error = Some("press y to confirm or Esc to cancel".to_owned());
             }
             return;
         }
 
-        let Some(confirmation) = self.kill_confirmation.as_mut() else {
+        let Some(confirmation) = self.kill_confirmation_mut() else {
             return;
         };
         if confirmation.input.len() + ch.len_utf8() > CONFIRMATION_INPUT_MAX_BYTES {
@@ -899,7 +873,7 @@ impl App {
     }
 
     fn backspace_kill_input(&mut self) {
-        let Some(confirmation) = self.kill_confirmation.as_mut() else {
+        let Some(confirmation) = self.kill_confirmation_mut() else {
             return;
         };
         confirmation.input.pop();
@@ -911,7 +885,7 @@ impl App {
     /// so the split happens here rather than in the input layer.
     fn submit_confirmation(&mut self) {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if self.modal == Modal::ConfirmTreeKill {
+        if self.modal() == ModalKind::ConfirmTreeKill {
             self.submit_tree_confirmation();
             return;
         }
@@ -920,7 +894,7 @@ impl App {
 
     fn append_confirmation_input(&mut self, ch: char) {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if self.modal == Modal::ConfirmTreeKill {
+        if self.modal() == ModalKind::ConfirmTreeKill {
             self.append_tree_input(ch);
             return;
         }
@@ -929,7 +903,7 @@ impl App {
 
     fn backspace_confirmation_input(&mut self) {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if self.modal == Modal::ConfirmTreeKill {
+        if self.modal() == ModalKind::ConfirmTreeKill {
             self.backspace_tree_input();
             return;
         }
@@ -938,7 +912,7 @@ impl App {
 
     fn cancel_confirmation(&mut self) {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if self.modal == Modal::ConfirmTreeKill {
+        if self.modal() == ModalKind::ConfirmTreeKill {
             self.cancel_tree_confirmation();
             return;
         }
@@ -946,7 +920,7 @@ impl App {
     }
 
     fn submit_kill_confirmation(&mut self) {
-        let Some(confirmation) = self.kill_confirmation.as_ref() else {
+        let Some(confirmation) = self.kill_confirmation() else {
             return;
         };
         if process::confirmation_input_matches(
@@ -958,7 +932,7 @@ impl App {
             return;
         }
 
-        if let Some(confirmation) = self.kill_confirmation.as_mut() {
+        if let Some(confirmation) = self.kill_confirmation_mut() {
             confirmation.error = Some(match confirmation.requirement {
                 ConfirmationRequirement::Yes => "press y to confirm or Esc to cancel".to_owned(),
                 ConfirmationRequirement::ForceWord => format!(
@@ -977,8 +951,7 @@ impl App {
     }
 
     fn cancel_kill_confirmation(&mut self) {
-        self.kill_confirmation = None;
-        self.context_request_state = ContextRequestState::Idle;
+        self.context_requested = false;
         self.modal = Modal::None;
         self.kill_status = Some("kill cancelled".to_owned());
     }
@@ -1005,8 +978,7 @@ impl App {
         let pid = target.pid;
         let platform = target.platform;
 
-        self.tree_confirmation = Some(TreeKillConfirmation::new(target, mode));
-        self.modal = Modal::ConfirmTreeKill;
+        self.modal = Modal::ConfirmTreeKill(TreeKillConfirmation::new(target, mode));
         self.spawn_tree_preview_worker(pid, platform);
     }
 
@@ -1030,7 +1002,7 @@ impl App {
             }
             Err(error) => {
                 self.tree_preview_worker = None;
-                self.tree_confirmation = None;
+
                 self.modal = Modal::None;
                 self.kill_status = Some(format!("starting tree preview worker failed: {error}"));
             }
@@ -1062,7 +1034,7 @@ impl App {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn apply_tree_preview(&mut self, worker_pid: u32, result: TreePreviewResult) {
-        let Some(mut confirmation) = self.tree_confirmation.take() else {
+        let Some(mut confirmation) = self.take_tree_confirmation() else {
             // Cancelled while the worker was scanning; nothing to update.
             return;
         };
@@ -1097,7 +1069,7 @@ impl App {
                         confirmation.stage = TreeConfirmStage::ProtectedRoot;
                     }
                     confirmation.preview = Some(preview);
-                    self.tree_confirmation = Some(confirmation);
+                    self.modal = Modal::ConfirmTreeKill(confirmation);
                 }
                 // A gate failed on data we just read: close the modal and put
                 // the refusal where kill outcomes go. Nothing was signalled.
@@ -1119,7 +1091,7 @@ impl App {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn append_tree_input(&mut self, ch: char) {
-        let Some(confirmation) = self.tree_confirmation.as_mut() else {
+        let Some(confirmation) = self.tree_confirmation_mut() else {
             return;
         };
         if confirmation.preview.is_none() {
@@ -1140,7 +1112,7 @@ impl App {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn backspace_tree_input(&mut self) {
-        let Some(confirmation) = self.tree_confirmation.as_mut() else {
+        let Some(confirmation) = self.tree_confirmation_mut() else {
             return;
         };
         if confirmation.preview.is_none() {
@@ -1152,8 +1124,7 @@ impl App {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn cancel_tree_confirmation(&mut self) {
-        self.tree_confirmation = None;
-        self.context_request_state = ContextRequestState::Idle;
+        self.context_requested = false;
         self.modal = Modal::None;
         self.kill_status = Some("tree kill cancelled".to_owned());
     }
@@ -1163,7 +1134,7 @@ impl App {
     /// explicit and lets the follow-up mutation happen after the shared borrow.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn tree_submit_verdict(&self) -> Option<TreeSubmitVerdict> {
-        let confirmation = self.tree_confirmation.as_ref()?;
+        let confirmation = self.tree_confirmation()?;
         if confirmation.preview.is_none() {
             return Some(TreeSubmitVerdict::Reject(
                 "still enumerating the process tree; wait for the count".to_owned(),
@@ -1209,14 +1180,14 @@ impl App {
         match verdict {
             TreeSubmitVerdict::Execute => self.execute_tree_kill_confirmation(),
             TreeSubmitVerdict::AdvanceToWord => {
-                if let Some(confirmation) = self.tree_confirmation.as_mut() {
+                if let Some(confirmation) = self.tree_confirmation_mut() {
                     confirmation.stage = TreeConfirmStage::Word;
                     confirmation.input.clear();
                     confirmation.error = None;
                 }
             }
             TreeSubmitVerdict::Reject(message) => {
-                if let Some(confirmation) = self.tree_confirmation.as_mut() {
+                if let Some(confirmation) = self.tree_confirmation_mut() {
                     confirmation.error = Some(message);
                 }
             }
@@ -1226,8 +1197,7 @@ impl App {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn execute_tree_kill_confirmation(&mut self) {
         let Some(pid) = self
-            .tree_confirmation
-            .as_ref()
+            .tree_confirmation()
             .map(|confirmation| confirmation.target.pid)
         else {
             return;
@@ -1259,17 +1229,16 @@ impl App {
         CollectContext: FnMut(u32) -> ProcessContext,
         Ops: tree::TreeProcessOps,
     {
-        let Some(confirmation) = self.tree_confirmation.take() else {
+        let Some(confirmation) = self.take_tree_confirmation() else {
             return;
         };
         if confirmation.target.process_start_time_marker.is_none()
             && self.process_context_loading_for_pid(confirmation.target.pid)
         {
-            self.tree_confirmation = Some(TreeKillConfirmation {
+            self.modal = Modal::ConfirmTreeKill(TreeKillConfirmation {
                 error: Some("still reading process metadata; retry once it finishes".to_owned()),
                 ..confirmation
             });
-            self.modal = Modal::ConfirmTreeKill;
             return;
         }
         self.tree_preview_worker = None;
@@ -1376,8 +1345,7 @@ impl App {
 
     fn execute_kill_confirmation(&mut self) {
         let Some(pid) = self
-            .kill_confirmation
-            .as_ref()
+            .kill_confirmation()
             .map(|confirmation| confirmation.target.pid)
         else {
             return;
@@ -1412,15 +1380,14 @@ impl App {
         Prepare: FnMut(u32) -> Result<Handle, TerminationOutcome>,
         Terminate: FnMut(&Handle, &KillTarget, &[String], KillMode) -> TerminationOutcome,
     {
-        let Some(confirmation) = self.kill_confirmation.take() else {
+        let Some(confirmation) = self.take_kill_confirmation() else {
             return;
         };
         if self.process_context_loading_for_pid(confirmation.target.pid) {
-            self.kill_confirmation = Some(KillConfirmation {
+            self.modal = Modal::ConfirmKill(KillConfirmation {
                 error: Some("still reading process metadata; retry once it finishes".to_owned()),
                 ..confirmation
             });
-            self.modal = Modal::ConfirmKill;
             return;
         }
         self.modal = Modal::None;
@@ -1508,7 +1475,7 @@ impl App {
     fn refresh_after_kill(&mut self, start_refresh: &mut impl FnMut(&mut Self)) {
         if let Some(worker) = self.refresh_worker.as_mut() {
             worker.stale = true;
-            self.pending_refresh = PendingRefresh::PostKill;
+            self.refresh_after_kill = true;
         } else {
             start_refresh(self);
         }
@@ -1624,7 +1591,7 @@ impl App {
     fn load_selected_process_context(&mut self) {
         let selected_key = self.selected_row().map(RowKey::from);
         if self.selected_context_key == selected_key && self.selected_process_context.is_some() {
-            self.context_request_state = ContextRequestState::Idle;
+            self.context_requested = false;
             return;
         }
         if let Some(worker) = self.context_worker.as_ref() {
@@ -1635,7 +1602,7 @@ impl App {
             // A single boolean is the bounded latest-request queue: the current
             // selection is read only when the worker finishes, so repeated row
             // changes cannot accumulate entries or background threads.
-            self.context_request_state = ContextRequestState::PendingLatest;
+            self.context_requested = true;
             self.selected_context_key = None;
             self.selected_process_context = None;
             return;
@@ -1645,7 +1612,7 @@ impl App {
         self.selected_process_context = None;
 
         let Some(view) = self.selected_row() else {
-            self.context_request_state = ContextRequestState::Idle;
+            self.context_requested = false;
             return;
         };
         let entry = PortEntry {
@@ -1666,7 +1633,7 @@ impl App {
             ipv6_scope: view.ipv6_scope,
         };
         let key = RowKey::from(&entry);
-        let docker_enrichment = self.docker_enrichment.enabled();
+        let docker_enrichment = self.docker_enrichment;
         match crate::ui::spawn_worker(
             thread::Builder::new().name("kickoutchi-details".to_owned()),
             move || {
@@ -1676,7 +1643,7 @@ impl App {
             },
         ) {
             Ok(worker) => {
-                self.context_request_state = ContextRequestState::Idle;
+                self.context_requested = false;
                 self.context_worker = Some(ContextWorker {
                     key,
                     receiver: worker.detach(),
@@ -1684,7 +1651,7 @@ impl App {
                 });
             }
             Err(error) => {
-                self.context_request_state = ContextRequestState::Idle;
+                self.context_requested = false;
                 self.context_worker = None;
                 self.latest_error = Some(format!("starting details worker failed: {error}"));
             }
@@ -1695,15 +1662,15 @@ impl App {
         self.context_worker
             .as_ref()
             .is_some_and(|worker| worker.key.pid == Some(pid))
-            || (self.context_request_state == ContextRequestState::PendingLatest
+            || (self.context_requested
                 && self.selected_row().is_some_and(|row| row.pid == Some(pid)))
     }
 
     fn start_pending_process_context_request(&mut self) {
-        if self.context_request_state != ContextRequestState::PendingLatest {
+        if !self.context_requested {
             return;
         }
-        self.context_request_state = ContextRequestState::Idle;
+        self.context_requested = false;
         self.load_selected_process_context();
     }
 
@@ -1721,7 +1688,7 @@ impl App {
     }
 
     fn apply_context_target_to_confirmations(&mut self, mut target: KillTarget) {
-        if let Some(confirmation) = self.kill_confirmation.as_mut()
+        if let Some(confirmation) = self.kill_confirmation_mut()
             && confirmation.target.pid == target.pid
         {
             target.protected |= confirmation.target.protected;
@@ -1729,7 +1696,7 @@ impl App {
         }
 
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if let Some(confirmation) = self.tree_confirmation.as_mut()
+        if let Some(confirmation) = self.tree_confirmation_mut()
             && confirmation.target.pid == target.pid
         {
             target.protected |= confirmation.target.protected;
@@ -1774,7 +1741,27 @@ impl App {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn tree_confirmation(&self) -> Option<&TreeKillConfirmation> {
-        self.tree_confirmation.as_ref()
+        match &self.modal {
+            Modal::ConfirmTreeKill(confirmation) => Some(confirmation),
+            _ => None,
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn tree_confirmation_mut(&mut self) -> Option<&mut TreeKillConfirmation> {
+        match &mut self.modal {
+            Modal::ConfirmTreeKill(confirmation) => Some(confirmation),
+            _ => None,
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn take_tree_confirmation(&mut self) -> Option<TreeKillConfirmation> {
+        self.tree_confirmation()?;
+        match std::mem::take(&mut self.modal) {
+            Modal::ConfirmTreeKill(confirmation) => Some(confirmation),
+            _ => unreachable!("confirmation was checked before taking the modal"),
+        }
     }
 
     /// Deliver a tree preview result as if the background worker had returned
@@ -1782,8 +1769,7 @@ impl App {
     #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
     pub(crate) fn finish_tree_preview_for_test(&mut self, result: TreePreviewResult) {
         let pid = self
-            .tree_confirmation
-            .as_ref()
+            .tree_confirmation()
             .map(|confirmation| confirmation.target.pid)
             .expect("a tree confirmation must be open");
         self.tree_preview_worker = None;

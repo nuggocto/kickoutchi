@@ -487,7 +487,7 @@ fn stop_before_deadline<Ops: TreeProcessOps>(
     if ops.stop_acknowledgement_now() >= deadline {
         return stop_deadline_expired();
     }
-    ops.stop_checked(pid, deadline)
+    ops.stop(pid, deadline)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

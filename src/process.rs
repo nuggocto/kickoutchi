@@ -3,8 +3,6 @@
 //! This module owns target snapshots, confirmation rules, PID guards, and the OS
 //! calls that deliver signals. Unverified targets are refused.
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use std::cell::{Cell, RefCell};
 use std::net::IpAddr;
 #[cfg(target_os = "linux")]
 use std::os::fd::OwnedFd;
@@ -20,54 +18,8 @@ use crate::process_evidence::{
 use crate::protection::{is_protected_process_name, windows_process_name_eq};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-thread_local! {
-    static LAST_TREE_STOP_RESULT: RefCell<Option<(u32, crate::tree::TreeStopResult)>> = const {
-        RefCell::new(None)
-    };
-    static TREE_STOP_DEADLINE: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) const UNIX_STOP_ACKNOWLEDGEMENT_MAX: std::time::Duration =
     std::time::Duration::from_millis(500);
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn record_tree_stop_result(pid: u32, result: crate::tree::TreeStopResult) {
-    LAST_TREE_STOP_RESULT.with(|slot| *slot.borrow_mut() = Some((pid, result)));
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) fn take_tree_stop_result(pid: u32) -> Option<crate::tree::TreeStopResult> {
-    LAST_TREE_STOP_RESULT.with(|slot| match slot.borrow_mut().take() {
-        Some((recorded_pid, result)) if recorded_pid == pid => Some(result),
-        _ => None,
-    })
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) fn with_tree_stop_deadline<T>(
-    deadline: std::time::Instant,
-    operation: impl FnOnce() -> T,
-) -> T {
-    struct RestoreTreeStopDeadline(Option<std::time::Instant>);
-
-    impl Drop for RestoreTreeStopDeadline {
-        fn drop(&mut self) {
-            TREE_STOP_DEADLINE.set(self.0);
-        }
-    }
-
-    let prior = TREE_STOP_DEADLINE.replace(Some(deadline));
-    let _restore = RestoreTreeStopDeadline(prior);
-    operation()
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn tree_stop_deadline() -> std::time::Instant {
-    TREE_STOP_DEADLINE
-        .get()
-        .unwrap_or_else(|| std::time::Instant::now() + UNIX_STOP_ACKNOWLEDGEMENT_MAX)
-}
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -938,7 +890,7 @@ mod macos;
 #[cfg(all(test, target_os = "macos"))]
 use macos::{finish_macos_stopped_process, macos_status_is_exited};
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
-use macos::{macos_cont_if_matches_with, macos_stop_observation_result, macos_tree_stop_result};
+use macos::{macos_cont_if_matches_with, macos_stop_observation_result};
 #[cfg(target_os = "macos")]
 use macos::{prepare_termination_platform, terminate_handle_checked_platform};
 #[cfg(target_os = "macos")]

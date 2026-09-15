@@ -210,30 +210,9 @@ pub(crate) trait TreeProcessOps {
     fn pin_root_for_revalidation(&mut self, _pid: u32) -> TreeSignalResult {
         TreeSignalResult::Delivered
     }
-    /// `SIGSTOP` a process.
-    fn stop(&mut self, pid: u32) -> TreeSignalResult;
     /// Stop and wait for observable stopped state, retaining whether cleanup may
-    /// later send `SIGCONT`.
-    ///
-    /// Real Unix signal helpers publish the richer result while preserving the
-    /// older signal-shaped `stop` boundary used by platform adapters. Test and
-    /// preview implementations that do not publish one retain the historical
-    /// assumption that a delivered fake stop made the transition.
-    fn stop_checked(&mut self, pid: u32, deadline: std::time::Instant) -> TreeStopResult {
-        if self.stop_acknowledgement_now() >= deadline {
-            return stop_deadline_expired();
-        }
-        let result = crate::process::with_tree_stop_deadline(deadline, || self.stop(pid));
-        crate::process::take_tree_stop_result(pid).unwrap_or(match result {
-            TreeSignalResult::Delivered => TreeStopResult::Stopped { transitioned: true },
-            TreeSignalResult::NotFound => TreeStopResult::NotFound,
-            TreeSignalResult::Denied => TreeStopResult::Failed {
-                cleanup_required: false,
-                rollback_start_time_marker: None,
-                error: TreeStopError::PermissionDenied,
-            },
-        })
-    }
+    /// later send `SIGCONT`. Every member shares the operation's deadline.
+    fn stop(&mut self, pid: u32, deadline: std::time::Instant) -> TreeStopResult;
     /// Clock used to bound stopped-state acknowledgement across this operation.
     /// Implementations normally use the monotonic system clock; deterministic
     /// fakes can override it without sleeping.

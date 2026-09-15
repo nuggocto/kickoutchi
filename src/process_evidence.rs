@@ -201,7 +201,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_member_max_is_accepted_and_max_plus_one_reads_nothing() {
+    fn aggregate_member_max_is_accepted_and_max_plus_one_refuses() {
         let mut scope = ProcessEvidenceScope::new(PROTECTION_SCOPE_MAX_MEMBERS).expect("exact max");
         for offset in 0..PROTECTION_SCOPE_MAX_MEMBERS {
             let pid = u32::try_from(offset + 2).expect("test PID");
@@ -211,17 +211,12 @@ mod tests {
         }
         scope.finish().expect("complete exact-max scope");
 
-        let mut reads = 0;
-        let refused = ProcessEvidenceScope::new(PROTECTION_SCOPE_MAX_MEMBERS + 1).map(|_| {
-            reads += 1;
-        });
-        assert_eq!(
-            refused,
+        assert!(matches!(
+            ProcessEvidenceScope::new(PROTECTION_SCOPE_MAX_MEMBERS + 1),
             Err(ProcessEvidenceError::MemberLimitExceeded {
                 limit: PROTECTION_SCOPE_MAX_MEMBERS
             })
-        );
-        assert_eq!(reads, 0);
+        ));
     }
 
     #[test]

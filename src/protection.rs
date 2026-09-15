@@ -4,6 +4,7 @@
 //! critical processes that require an additional warning before termination.
 
 use std::borrow::Cow;
+use std::path::Path;
 
 use crate::model::{Platform, PortEntry};
 
@@ -44,22 +45,29 @@ pub(crate) fn default_protected_processes() -> Vec<String> {
 
 /// Tag entries whose process identity matches the protected list.
 pub(crate) fn mark_protected(entries: &mut [PortEntry], protected_names: &[String]) {
-    for entry in entries.iter_mut() {
-        let name_matches = entry
-            .process_name
-            .as_deref()
-            .is_some_and(|name| is_protected_process_name(entry.platform, name, protected_names));
-        let macos_executable_matches = entry.platform == Platform::Macos
-            && entry
-                .executable_path
-                .as_deref()
-                .and_then(std::path::Path::file_name)
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| protected_names.iter().any(|protected| protected == name));
-        if name_matches || macos_executable_matches {
-            entry.protected = true;
-        }
+    for entry in entries {
+        entry.protected |= is_protected_process(
+            entry.platform,
+            entry.process_name.as_deref(),
+            entry.executable_path.as_deref(),
+            protected_names,
+        );
     }
+}
+
+/// One policy for owned rows, borrowed views, and watch filtering.
+pub(crate) fn is_protected_process(
+    platform: Platform,
+    name: Option<&str>,
+    executable_path: Option<&Path>,
+    protected_names: &[String],
+) -> bool {
+    name.is_some_and(|name| is_protected_process_name(platform, name, protected_names))
+        || (platform == Platform::Macos
+            && executable_path
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| protected_names.iter().any(|protected| protected == name)))
 }
 
 /// Platform-aware protected-name match.

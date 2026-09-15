@@ -1704,6 +1704,42 @@ fn protection_filters_use_an_available_name_despite_unrelated_metadata_gaps() {
 }
 
 #[test]
+fn macos_protection_filters_recognize_the_executable_with_or_without_a_name() {
+    for name in [Some("worker"), None] {
+        let mut snapshot = snapshot();
+        snapshot.scope.kind =
+            crate::observation::ObservationScopeKind::CurrentHostProcessVisibleSockets;
+        let OwnerObservation::Verified(identity) = snapshot.sockets[0].owners[0] else {
+            panic!("fixture has a verified owner");
+        };
+        let process = snapshot.processes.get_mut(&identity).unwrap();
+        process.name = name.map(std::sync::Arc::from);
+        process.executable_path = Some(std::sync::Arc::from(std::path::Path::new("/opt/postgres")));
+        let config = Config::default();
+        for (text, expected) in [
+            ("protected:true", Truth::True),
+            ("protected:false", Truth::False),
+            ("protected", Truth::True),
+        ] {
+            let mut filter = options(Duration::from_millis(100));
+            filter.port = None;
+            filter.terms = crate::query::parse_filter_text(text, QueryCapabilities::WATCH).unwrap();
+            assert_eq!(
+                evaluate_side(
+                    &snapshot,
+                    &snapshot.sockets[0],
+                    &filter,
+                    &config,
+                    &mut FilterCache::default()
+                ),
+                expected,
+                "{text}, name={name:?}",
+            );
+        }
+    }
+}
+
+#[test]
 fn filter_result_order_crosses_batch_boundaries_without_retaining_the_group() {
     let mut snapshot = snapshot();
     let mut common_owners = (1..=64)
@@ -1741,32 +1777,31 @@ fn filter_result_order_crosses_batch_boundaries_without_retaining_the_group() {
     let mut runtime = FakeRuntime::new(Vec::new());
     let mut output = BufferedTrackingWriter::default();
     let mut diagnostics = Vec::new();
-    let mut sequence = 0;
-    let mut batch_count = 0;
-    let mut no_previous_cache = None;
-    let mut current_cache = Some(&mut FilterCache::default());
-    let gap_index = GapIndex::new(&snapshot);
+    let mut writer = super::EventWriter {
+        output: &mut output,
+        diagnostics: &mut diagnostics,
+        sequence: 0,
+    };
+    let mut current_index = super::SnapshotIndex::new(&snapshot);
 
     let reason = write_ordered_events(
         events,
         &filter,
         &Config::default(),
         &mut runtime,
-        &mut output,
-        &mut diagnostics,
         None,
-        &mut sequence,
-        &mut batch_count,
-        &mut no_previous_cache,
-        &mut current_cache,
-        None,
-        Some(&gap_index),
-        ObservationTimes {
-            previous_completed_unix_ms: None,
-            attempt_started_unix_ms: 1,
-            attempt_completed_unix_ms: 2,
+        &mut writer,
+        super::EventBatch {
+            previous: None,
+            current: &mut current_index,
+            observation: ObservationTimes {
+                previous_completed_unix_ms: None,
+                attempt_started_unix_ms: 1,
+                attempt_completed_unix_ms: 2,
+            },
         },
     );
+    let sequence = writer.sequence;
     output.flush().unwrap();
 
     assert_eq!(reason, None);
@@ -1818,29 +1853,29 @@ fn filtering_uses_the_uncancelled_owner_beyond_the_public_owner_limit() {
     let mut runtime = FakeRuntime::new(Vec::new());
     let mut output = Vec::new();
     let mut diagnostics = Vec::new();
-    let mut sequence = 0;
-    let mut batch_count = 0;
-    let mut previous_cache = Some(&mut FilterCache::default());
-    let mut current_cache = Some(&mut FilterCache::default());
+    let mut writer = super::EventWriter {
+        output: &mut output,
+        diagnostics: &mut diagnostics,
+        sequence: 0,
+    };
+    let mut previous_index = super::SnapshotIndex::new(&previous);
+    let mut current_index = super::SnapshotIndex::new(&current);
 
     let reason = write_ordered_events(
         diff_snapshots(&previous, &current).unwrap(),
         &filter,
         &Config::default(),
         &mut runtime,
-        &mut output,
-        &mut diagnostics,
         None,
-        &mut sequence,
-        &mut batch_count,
-        &mut previous_cache,
-        &mut current_cache,
-        Some(&GapIndex::new(&previous)),
-        Some(&GapIndex::new(&current)),
-        ObservationTimes {
-            previous_completed_unix_ms: Some(1),
-            attempt_started_unix_ms: 2,
-            attempt_completed_unix_ms: 3,
+        &mut writer,
+        super::EventBatch {
+            previous: Some(&mut previous_index),
+            current: &mut current_index,
+            observation: ObservationTimes {
+                previous_completed_unix_ms: Some(1),
+                attempt_started_unix_ms: 2,
+                attempt_completed_unix_ms: 3,
+            },
         },
     );
 

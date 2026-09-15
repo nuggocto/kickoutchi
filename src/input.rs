@@ -6,7 +6,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use crate::app::Modal;
+use crate::app::ModalKind;
 
 /// One state transition requested by a key event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +44,7 @@ pub(crate) enum Action {
 /// filter, then quits.
 pub(crate) fn action_for_key(
     key: KeyEvent,
-    modal: Modal,
+    modal: ModalKind,
     search_mode: bool,
     filter_active: bool,
 ) -> Action {
@@ -56,13 +56,13 @@ pub(crate) fn action_for_key(
         return Action::Quit;
     }
 
-    if modal == Modal::ConfirmKill {
+    if modal == ModalKind::ConfirmKill {
         return kill_confirmation_action_for_key(key);
     }
     // The tree confirmation modal captures text exactly like the single-kill
     // one; the app routes the shared actions to whichever confirmation is open.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if modal == Modal::ConfirmTreeKill {
+    if modal == ModalKind::ConfirmTreeKill {
         return kill_confirmation_action_for_key(key);
     }
 
@@ -71,11 +71,11 @@ pub(crate) fn action_for_key(
     }
 
     match key.code {
-        KeyCode::Esc if modal != Modal::None => Action::CloseModal,
+        KeyCode::Esc if modal != ModalKind::None => Action::CloseModal,
         KeyCode::Esc if filter_active => Action::CancelSearch,
         KeyCode::Char('q') | KeyCode::Esc => Action::Quit,
         KeyCode::Char('?') => Action::OpenHelp,
-        _ if modal != Modal::None => Action::Noop,
+        _ if modal != ModalKind::None => Action::Noop,
         KeyCode::Char('r') => Action::Refresh,
         KeyCode::Char('/') => Action::StartSearch,
         KeyCode::Char('s') => Action::CycleSort,
@@ -154,7 +154,7 @@ fn search_action_for_key(key: KeyEvent) -> Action {
 #[cfg(test)]
 mod tests {
     use super::{Action, action_for_key};
-    use crate::app::Modal;
+    use crate::app::ModalKind;
     use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -166,18 +166,21 @@ mod tests {
     }
 
     /// Default helper for cases without an active filter.
-    fn act(code: KeyCode, modal: Modal, search_mode: bool) -> Action {
+    fn act(code: KeyCode, modal: ModalKind, search_mode: bool) -> Action {
         action_for_key(key(code), modal, search_mode, false)
     }
 
     #[test]
     fn quit_keys_quit() {
-        assert_eq!(act(KeyCode::Char('q'), Modal::None, false), Action::Quit);
-        assert_eq!(act(KeyCode::Esc, Modal::None, false), Action::Quit);
+        assert_eq!(
+            act(KeyCode::Char('q'), ModalKind::None, false),
+            Action::Quit
+        );
+        assert_eq!(act(KeyCode::Esc, ModalKind::None, false), Action::Quit);
         assert_eq!(
             action_for_key(
                 KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-                Modal::None,
+                ModalKind::None,
                 false,
                 false,
             ),
@@ -188,35 +191,50 @@ mod tests {
     #[test]
     fn navigation_keys_move_when_no_modal_is_open() {
         assert_eq!(
-            act(KeyCode::Char('j'), Modal::None, false),
+            act(KeyCode::Char('j'), ModalKind::None, false),
             Action::MoveDown
         );
-        assert_eq!(act(KeyCode::Down, Modal::None, false), Action::MoveDown);
-        assert_eq!(act(KeyCode::Char('k'), Modal::None, false), Action::MoveUp);
-        assert_eq!(act(KeyCode::Up, Modal::None, false), Action::MoveUp);
+        assert_eq!(act(KeyCode::Down, ModalKind::None, false), Action::MoveDown);
+        assert_eq!(
+            act(KeyCode::Char('k'), ModalKind::None, false),
+            Action::MoveUp
+        );
+        assert_eq!(act(KeyCode::Up, ModalKind::None, false), Action::MoveUp);
     }
 
     #[test]
     fn modal_keys_are_contextual() {
-        assert_eq!(act(KeyCode::Enter, Modal::None, false), Action::OpenDetails);
         assert_eq!(
-            act(KeyCode::Char('?'), Modal::None, false),
+            act(KeyCode::Enter, ModalKind::None, false),
+            Action::OpenDetails
+        );
+        assert_eq!(
+            act(KeyCode::Char('?'), ModalKind::None, false),
             Action::OpenHelp
         );
-        assert_eq!(act(KeyCode::Esc, Modal::Help, false), Action::CloseModal);
-        assert_eq!(act(KeyCode::Down, Modal::Help, false), Action::Noop);
-        assert_eq!(act(KeyCode::Char('q'), Modal::Help, false), Action::Quit);
+        assert_eq!(
+            act(KeyCode::Esc, ModalKind::Help, false),
+            Action::CloseModal
+        );
+        assert_eq!(act(KeyCode::Down, ModalKind::Help, false), Action::Noop);
+        assert_eq!(
+            act(KeyCode::Char('q'), ModalKind::Help, false),
+            Action::Quit
+        );
     }
 
     #[test]
     fn refresh_search_and_sort_keys_work_without_modal() {
-        assert_eq!(act(KeyCode::Char('r'), Modal::None, false), Action::Refresh);
         assert_eq!(
-            act(KeyCode::Char('/'), Modal::None, false),
+            act(KeyCode::Char('r'), ModalKind::None, false),
+            Action::Refresh
+        );
+        assert_eq!(
+            act(KeyCode::Char('/'), ModalKind::None, false),
             Action::StartSearch
         );
         assert_eq!(
-            act(KeyCode::Char('s'), Modal::None, false),
+            act(KeyCode::Char('s'), ModalKind::None, false),
             Action::CycleSort
         );
     }
@@ -224,13 +242,13 @@ mod tests {
     #[test]
     fn kill_keys_request_termination_without_modal() {
         assert_eq!(
-            act(KeyCode::Char('x'), Modal::None, false),
+            act(KeyCode::Char('x'), ModalKind::None, false),
             Action::RequestTerminate,
         );
         assert_eq!(
             action_for_key(
                 modified_key(KeyCode::Char('X'), KeyModifiers::SHIFT),
-                Modal::None,
+                ModalKind::None,
                 false,
                 false,
             ),
@@ -241,13 +259,13 @@ mod tests {
     #[test]
     fn caps_lock_x_stays_on_the_normal_termination_path() {
         assert_eq!(
-            act(KeyCode::Char('X'), Modal::None, false),
+            act(KeyCode::Char('X'), ModalKind::None, false),
             Action::RequestTerminate,
         );
         assert_eq!(
             action_for_key(
                 modified_key(KeyCode::Char('x'), KeyModifiers::CONTROL),
-                Modal::None,
+                ModalKind::None,
                 false,
                 false,
             ),
@@ -259,13 +277,13 @@ mod tests {
     #[test]
     fn tree_keys_mirror_the_kill_keys_including_caps_lock() {
         assert_eq!(
-            act(KeyCode::Char('t'), Modal::None, false),
+            act(KeyCode::Char('t'), ModalKind::None, false),
             Action::RequestTreeTerminate,
         );
         assert_eq!(
             action_for_key(
                 modified_key(KeyCode::Char('T'), KeyModifiers::SHIFT),
-                Modal::None,
+                ModalKind::None,
                 false,
                 false,
             ),
@@ -274,13 +292,13 @@ mod tests {
         // Caps Lock uppercase T without Shift must stay on the normal tree
         // path, exactly like x/X.
         assert_eq!(
-            act(KeyCode::Char('T'), Modal::None, false),
+            act(KeyCode::Char('T'), ModalKind::None, false),
             Action::RequestTreeTerminate,
         );
         assert_eq!(
             action_for_key(
                 modified_key(KeyCode::Char('t'), KeyModifiers::CONTROL),
-                Modal::None,
+                ModalKind::None,
                 false,
                 false,
             ),
@@ -292,19 +310,19 @@ mod tests {
     #[test]
     fn tree_confirmation_modal_captures_text_until_submit_or_cancel() {
         assert_eq!(
-            act(KeyCode::Char('q'), Modal::ConfirmTreeKill, false),
+            act(KeyCode::Char('q'), ModalKind::ConfirmTreeKill, false),
             Action::KillInputAppend('q'),
         );
         assert_eq!(
-            act(KeyCode::Backspace, Modal::ConfirmTreeKill, false),
+            act(KeyCode::Backspace, ModalKind::ConfirmTreeKill, false),
             Action::KillInputBackspace,
         );
         assert_eq!(
-            act(KeyCode::Enter, Modal::ConfirmTreeKill, false),
+            act(KeyCode::Enter, ModalKind::ConfirmTreeKill, false),
             Action::SubmitKillConfirmation,
         );
         assert_eq!(
-            act(KeyCode::Esc, Modal::ConfirmTreeKill, false),
+            act(KeyCode::Esc, ModalKind::ConfirmTreeKill, false),
             Action::CancelKill,
         );
     }
@@ -312,19 +330,19 @@ mod tests {
     #[test]
     fn kill_confirmation_modal_captures_text_until_submit_or_cancel() {
         assert_eq!(
-            act(KeyCode::Char('q'), Modal::ConfirmKill, false),
+            act(KeyCode::Char('q'), ModalKind::ConfirmKill, false),
             Action::KillInputAppend('q'),
         );
         assert_eq!(
-            act(KeyCode::Backspace, Modal::ConfirmKill, false),
+            act(KeyCode::Backspace, ModalKind::ConfirmKill, false),
             Action::KillInputBackspace,
         );
         assert_eq!(
-            act(KeyCode::Enter, Modal::ConfirmKill, false),
+            act(KeyCode::Enter, ModalKind::ConfirmKill, false),
             Action::SubmitKillConfirmation,
         );
         assert_eq!(
-            act(KeyCode::Esc, Modal::ConfirmKill, false),
+            act(KeyCode::Esc, ModalKind::ConfirmKill, false),
             Action::CancelKill,
         );
     }
@@ -332,15 +350,21 @@ mod tests {
     #[test]
     fn search_mode_treats_plain_keys_as_query_text() {
         assert_eq!(
-            act(KeyCode::Char('q'), Modal::None, true),
+            act(KeyCode::Char('q'), ModalKind::None, true),
             Action::SearchAppend('q')
         );
         assert_eq!(
-            act(KeyCode::Backspace, Modal::None, true),
+            act(KeyCode::Backspace, ModalKind::None, true),
             Action::SearchBackspace
         );
-        assert_eq!(act(KeyCode::Enter, Modal::None, true), Action::FinishSearch);
-        assert_eq!(act(KeyCode::Esc, Modal::None, true), Action::CancelSearch);
+        assert_eq!(
+            act(KeyCode::Enter, ModalKind::None, true),
+            Action::FinishSearch
+        );
+        assert_eq!(
+            act(KeyCode::Esc, ModalKind::None, true),
+            Action::CancelSearch
+        );
     }
 
     #[test]
@@ -349,15 +373,15 @@ mod tests {
         // Esc has to clear the filter, not quit. A second Esc, nothing left to
         // clear, quits. An open modal still beats both.
         assert_eq!(
-            action_for_key(key(KeyCode::Esc), Modal::None, false, true),
+            action_for_key(key(KeyCode::Esc), ModalKind::None, false, true),
             Action::CancelSearch
         );
         assert_eq!(
-            action_for_key(key(KeyCode::Esc), Modal::None, false, false),
+            action_for_key(key(KeyCode::Esc), ModalKind::None, false, false),
             Action::Quit
         );
         assert_eq!(
-            action_for_key(key(KeyCode::Esc), Modal::Help, false, true),
+            action_for_key(key(KeyCode::Esc), ModalKind::Help, false, true),
             Action::CloseModal
         );
     }
@@ -370,7 +394,7 @@ mod tests {
             KeyEventKind::Release,
         );
         assert_eq!(
-            action_for_key(release, Modal::None, false, false),
+            action_for_key(release, ModalKind::None, false, false),
             Action::Noop
         );
     }

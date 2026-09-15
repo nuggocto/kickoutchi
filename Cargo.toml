@@ -1,6 +1,6 @@
 [package]
 name = "kickoutchi"
-version = "1.4.4"
+version = "1.4.5"
 edition = "2024"
 rust-version = "1.95.0"
 description = "A clean TUI and CLI port janitor: see which process owns each open local port and kick it out safely"
@@ -20,12 +20,7 @@ default-run = "kickoutchi"
 [lib]
 doc = false
 
-# The same program ships under two names: `kickoutchi` is canonical (matches
-# the crate, docs, and kickoutchi.com), `kick` is the short form for daily CLI
-# use (`kick list`, `kick kill --port 3000`). Declaring any [[bin]] disables
-# bin auto-discovery, so the canonical target must be declared explicitly too.
-# `kick` was checked against the Arch repos, the AUR, and crates.io before
-# adoption (2026-06-11); `ko` was rejected as taken by the Go container tool.
+# Both names run the same program; `kick` is the short CLI alias.
 [[bin]]
 name = "kickoutchi"
 path = "src/bin/kickoutchi.rs"
@@ -78,8 +73,7 @@ xz4rust = { version = "=0.2.2", default-features = false, features = ["bcj", "cr
 zip = { version = "=8.1.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(unix)'.dependencies]
-# Unix termination uses the OS signal API directly for SIGTERM/SIGKILL instead
-# of shelling out to `kill`; the unsafe boundary is kept inside process.rs.
+# Unix termination uses the OS signal API through the process module.
 # macOS collection also uses libc's libproc/sysctl bindings directly.
 libc = "0.2.177"
 

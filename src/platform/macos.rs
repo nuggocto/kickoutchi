@@ -36,6 +36,7 @@ use crate::process::{tree_cont, tree_deliver_by_pid, tree_prepare_delivery_probe
 use crate::process_evidence::{FreshProcessEvidence, ProcessEvidenceError};
 use crate::tree::{
     MAX_TREE_PROCESSES, TreeProcessInfo, TreeProcessOps, TreeSignalResult, TreeSnapshotScope,
+    TreeStopResult,
 };
 
 use super::{MAX_CHILD_PROCESSES, MAX_PROCESS_ANCESTORS, MAX_RELATED_PROCESS_HINTS};
@@ -939,8 +940,8 @@ impl TreeProcessOps for MacosTreeOps {
         collect_tree_process_infos(self.snapshot_scope).map_err(|error| error.to_string())
     }
 
-    fn stop(&mut self, pid: u32) -> TreeSignalResult {
-        tree_stop(pid)
+    fn stop(&mut self, pid: u32, deadline: std::time::Instant) -> TreeStopResult {
+        tree_stop(pid, deadline)
     }
 
     fn rollback_identity_after_stop(

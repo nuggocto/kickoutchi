@@ -5,6 +5,37 @@ use std::time::{Duration, UNIX_EPOCH};
 use super::*;
 
 #[test]
+fn macos_executable_protection_agrees_between_borrowed_and_owned_rows() {
+    let protected_names = vec!["postgres".to_owned()];
+    for (name, path, expected) in [
+        (Some("worker"), "/opt/postgres", true),
+        (None, "/opt/postgres", true),
+        (Some("worker"), "/opt/postgres-backup-helper", false),
+    ] {
+        let mut row = crate::test_support::port_entry(5432, Some(42), Protocol::Tcp, "worker");
+        row.platform = Platform::Macos;
+        row.process_name = name.map(Arc::from);
+        row.executable_path = Some(Arc::from(Path::new(path)));
+        row.process_identity = Some(ProcessIdentity {
+            pid: 42,
+            start_marker: ProcessStartMarker::macos(10, 1).unwrap(),
+        });
+        let snapshot = snapshot_from_test_rows(vec![row]);
+
+        let descriptors = snapshot.port_entry_descriptors(&protected_names).unwrap();
+        let mut owned = project_legacy(&snapshot).unwrap();
+        crate::protection::mark_protected(&mut owned, &protected_names);
+
+        assert_eq!(owned[0].protected, expected, "{name:?}: {path}");
+        assert_eq!(
+            snapshot.port_entry_view(&descriptors[0]).protected,
+            expected,
+            "{name:?}: {path}",
+        );
+    }
+}
+
+#[test]
 fn scoped_ipv6_identity_survives_borrowed_and_owned_projection() {
     let mut snapshot = crate::collector::Collector::collect(
         &crate::collector::FakeCollector,

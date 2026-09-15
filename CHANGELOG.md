@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.5] - 2026-09-15
+
+### Fixed
+
+- macOS list and TUI rows, and watch filters, now recognize protected processes
+  by executable basename as well as process name. This matches final kill
+  validation, including when a process name is unavailable.
+- TUI workers whose result receiver has closed now report panic diagnostics
+  after the terminal session ends.
+
+### Changed
+
+- Confirmation modals own their confirmation data. Background workers retain
+  their separate cancellation and completion lifecycle.
+- Unix tree-stop operations pass deadlines and stop/cleanup results directly,
+  removing the thread-local handoff between process adapters and tree execution.
+- Simplified watch emission state, process-operation interfaces, and TUI flags.
+  Removed redundant platform guards, historical comments, and assertions tied to
+  implementation spelling. Added regressions for protection matching and
+  abandoned worker diagnostics.
+
 ## [1.4.4] - 2026-09-12
 
 ### Fixed
@@ -1551,7 +1572,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tracing` diagnostics routed to stderr only, never the TUI surface.
 - Unit tests for the quit predicate, including the key-release edge case.
 
-[Unreleased]: https://github.com/nuggocto/kickoutchi/compare/v1.4.4...HEAD
+[Unreleased]: https://github.com/nuggocto/kickoutchi/compare/v1.4.5...HEAD
+[1.4.5]: https://github.com/nuggocto/kickoutchi/compare/v1.4.4...v1.4.5
 [1.4.4]: https://github.com/nuggocto/kickoutchi/compare/v1.4.3...v1.4.4
 [1.4.3]: https://github.com/nuggocto/kickoutchi/compare/v1.4.2...v1.4.3
 [1.4.2]: https://github.com/nuggocto/kickoutchi/compare/v1.4.1...v1.4.2

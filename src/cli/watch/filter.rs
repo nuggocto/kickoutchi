@@ -11,7 +11,7 @@ use crate::observation::{
     EndpointIdentity, Ipv6Scope, MetadataCompleteness, NetworkSnapshot, OwnerCompleteness,
     OwnerObservation, ProcessIdentity, ProcessObservation, SocketObservation, SocketState,
 };
-use crate::protection::is_protected_process_name;
+use crate::protection::is_protected_process;
 use crate::public_output::socket_state_name;
 use crate::query::{AddressFamily, FilterTerm, StateFilter};
 use crate::watch::{EventKind, WatchEvent};
@@ -375,20 +375,8 @@ fn protection_truth(
             Truth::Unknown
         };
     };
-    let OwnerObservation::Verified(identity) = owner else {
-        return Truth::Unknown;
-    };
-    let Some(name) = snapshot
-        .processes
-        .get(identity)
-        .and_then(|metadata| metadata.name.as_deref())
-    else {
-        return Truth::Unknown;
-    };
-    truth(
-        is_protected_process_name(snapshot.platform(), name, &config.protected_processes)
-            == expected,
-    )
+    owner_protection(snapshot, owner, config)
+        .map_or(Truth::Unknown, |protected| truth(protected == expected))
 }
 
 fn protection_plain_truth(
@@ -397,18 +385,9 @@ fn protection_plain_truth(
     needle: &str,
     config: &Config,
 ) -> Truth {
-    let Some(OwnerObservation::Verified(identity)) = owner else {
+    let Some(protected) = owner.and_then(|owner| owner_protection(snapshot, owner, config)) else {
         return Truth::Unknown;
     };
-    let Some(name) = snapshot
-        .processes
-        .get(identity)
-        .and_then(|metadata| metadata.name.as_deref())
-    else {
-        return Truth::Unknown;
-    };
-    let protected =
-        is_protected_process_name(snapshot.platform(), name, &config.protected_processes);
     let classification = if protected {
         "protected"
     } else {
@@ -419,6 +398,26 @@ fn protection_plain_truth(
         "unprotected" => truth(!protected),
         _ => truth(classification.contains(needle)),
     }
+}
+
+fn owner_protection(
+    snapshot: &NetworkSnapshot,
+    owner: &OwnerObservation,
+    config: &Config,
+) -> Option<bool> {
+    let OwnerObservation::Verified(identity) = owner else {
+        return None;
+    };
+    let process = snapshot.processes.get(identity)?;
+    let protected = is_protected_process(
+        snapshot.platform(),
+        process.name.as_deref(),
+        process.executable_path.as_deref(),
+        &config.protected_processes,
+    );
+    // An executable match proves protection even when the name is unreadable.
+    // Without a match, a missing name still leaves the classification unknown.
+    (protected || process.name.is_some()).then_some(protected)
 }
 
 fn metadata_truth(

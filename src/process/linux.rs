@@ -8,13 +8,11 @@ use crate::observation::ProcessStartMarker;
 use super::{
     KillMode, KillTarget, StopFailure, TerminationHandle, TerminationOutcome, TreeDeliveryHandle,
     UNIX_STOP_ACKNOWLEDGEMENT_MAX, UnixProcessState, UnixProcessStatus, check_final_evidence,
-    finish_stopped_termination, outcome_after_thaw, outcome_from_errno, record_tree_stop_result,
-    refuse_stopped_termination, run_before_stop_deadline, stop_deadline_failure,
-    tree_signal_result_from_errno, tree_stop_deadline, tree_stop_error, unix_signal,
-    unsafe_pid_reason,
+    finish_stopped_termination, outcome_after_thaw, outcome_from_errno, refuse_stopped_termination,
+    run_before_stop_deadline, stop_deadline_failure, tree_signal_result_from_errno,
+    tree_stop_error, unix_signal, unsafe_pid_reason,
 };
 
-#[cfg(target_os = "linux")]
 pub(super) fn prepare_termination_platform(
     pid: u32,
 ) -> Result<TerminationHandle, TerminationOutcome> {
@@ -56,7 +54,6 @@ pub(super) fn prepare_termination_platform(
     })
 }
 
-#[cfg(target_os = "linux")]
 pub(super) fn terminate_handle_checked_platform(
     handle: &TerminationHandle,
     target: &KillTarget,
@@ -114,12 +111,9 @@ pub(super) fn terminate_handle_checked_platform(
     )
 }
 
-#[cfg(target_os = "linux")]
 const LINUX_PROC_STAT_MAX_BYTES: u64 = 4096;
-#[cfg(target_os = "linux")]
 const UNIX_STOP_POLL: std::time::Duration = std::time::Duration::from_millis(1);
 
-#[cfg(target_os = "linux")]
 pub(super) fn parse_linux_process_state(bytes: &[u8]) -> std::io::Result<UnixProcessState> {
     let close = bytes
         .iter()
@@ -165,7 +159,6 @@ pub(super) fn parse_linux_process_state(bytes: &[u8]) -> std::io::Result<UnixPro
     })
 }
 
-#[cfg(target_os = "linux")]
 pub(super) fn linux_process_state(pid: u32) -> std::io::Result<UnixProcessState> {
     let mut file = std::fs::File::open(format!("/proc/{pid}/stat"))?;
     let mut bytes = Vec::new();
@@ -181,7 +174,6 @@ pub(super) fn linux_process_state(pid: u32) -> std::io::Result<UnixProcessState>
     parse_linux_process_state(&bytes)
 }
 
-#[cfg(target_os = "linux")]
 pub(super) fn linux_stop_observation_result(
     before: UnixProcessState,
     transitioned: bool,
@@ -201,7 +193,6 @@ pub(super) fn linux_stop_observation_result(
     (observed.status == UnixProcessStatus::Stopped).then_some(Ok(transitioned))
 }
 
-#[cfg(target_os = "linux")]
 fn linux_state_failure(operation: &str, error: &std::io::Error) -> TerminationOutcome {
     match error.kind() {
         std::io::ErrorKind::NotFound => TerminationOutcome::AlreadyExited,
@@ -210,7 +201,6 @@ fn linux_state_failure(operation: &str, error: &std::io::Error) -> TerminationOu
     }
 }
 
-#[cfg(target_os = "linux")]
 fn linux_stop_pidfd(
     pid: u32,
     pidfd: libc::c_int,
@@ -293,7 +283,6 @@ fn linux_stop_pidfd(
     }
 }
 
-#[cfg(target_os = "linux")]
 fn tree_signal_result_from_outcome(
     result: &Result<(), TerminationOutcome>,
 ) -> crate::tree::TreeSignalResult {
@@ -304,7 +293,6 @@ fn tree_signal_result_from_outcome(
     }
 }
 
-#[cfg(target_os = "linux")]
 fn linux_pidfd_signal(
     handle: &TerminationHandle,
     signal: libc::c_int,
@@ -329,7 +317,6 @@ fn linux_pidfd_signal(
     }
 }
 
-#[cfg(target_os = "linux")]
 pub(crate) fn tree_open_delivery_handle(
     pid: u32,
 ) -> Result<TreeDeliveryHandle, crate::tree::TreeSignalResult> {
@@ -361,53 +348,30 @@ pub(crate) fn tree_open_delivery_handle(
     Ok(TreeDeliveryHandle { pid, pidfd })
 }
 
-#[cfg(target_os = "linux")]
-pub(crate) fn tree_stop_handle(handle: &TreeDeliveryHandle) -> crate::tree::TreeSignalResult {
-    use crate::tree::{TreeSignalResult, TreeStopResult};
+pub(crate) fn tree_stop_handle(
+    handle: &TreeDeliveryHandle,
+    deadline: std::time::Instant,
+) -> crate::tree::TreeStopResult {
+    use crate::tree::TreeStopResult;
 
-    let (signal_result, stop_result) = match linux_stop_pidfd(
-        handle.pid,
-        handle.pidfd.as_raw_fd(),
-        None,
-        tree_stop_deadline(),
-    ) {
-        Ok(transitioned) => (
-            TreeSignalResult::Delivered,
-            TreeStopResult::Stopped { transitioned },
-        ),
+    match linux_stop_pidfd(handle.pid, handle.pidfd.as_raw_fd(), None, deadline) {
+        Ok(transitioned) => TreeStopResult::Stopped { transitioned },
         Err(StopFailure {
             outcome: TerminationOutcome::AlreadyExited | TerminationOutcome::TargetChanged,
             ..
-        }) => (TreeSignalResult::NotFound, TreeStopResult::NotFound),
-        Err(failure) => {
-            let cleanup_required = failure.cleanup_required;
-            let rollback_start_time_marker = failure.rollback_start_time_marker;
-            (
-                if cleanup_required {
-                    // Preserve the pidfd in LinuxTreeOps so the immediate cleanup
-                    // continuation cannot target a recycled numeric PID.
-                    TreeSignalResult::Delivered
-                } else {
-                    TreeSignalResult::Denied
-                },
-                TreeStopResult::Failed {
-                    cleanup_required,
-                    rollback_start_time_marker,
-                    error: tree_stop_error(failure.outcome),
-                },
-            )
-        }
-    };
-    record_tree_stop_result(handle.pid, stop_result);
-    signal_result
+        }) => TreeStopResult::NotFound,
+        Err(failure) => TreeStopResult::Failed {
+            cleanup_required: failure.cleanup_required,
+            rollback_start_time_marker: failure.rollback_start_time_marker,
+            error: tree_stop_error(failure.outcome),
+        },
+    }
 }
 
-#[cfg(target_os = "linux")]
 pub(crate) fn tree_cont_handle(handle: &TreeDeliveryHandle) -> crate::tree::TreeSignalResult {
     tree_send_pidfd_signal(handle, libc::SIGCONT)
 }
 
-#[cfg(target_os = "linux")]
 pub(crate) fn tree_deliver_handle(
     handle: &TreeDeliveryHandle,
     mode: KillMode,
@@ -415,7 +379,6 @@ pub(crate) fn tree_deliver_handle(
     tree_send_pidfd_signal(handle, unix_signal(mode))
 }
 
-#[cfg(target_os = "linux")]
 fn tree_send_pidfd_signal(
     handle: &TreeDeliveryHandle,
     signal: libc::c_int,

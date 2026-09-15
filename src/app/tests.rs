@@ -4,8 +4,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use super::{
-    App, ContextRequestState, ContextWorker, Modal, PendingRefresh, RefreshWorker, RowKey,
-    preserved_selection, termination_status_line,
+    App, ContextWorker, ModalKind, RefreshWorker, RowKey, preserved_selection,
+    termination_status_line,
 };
 use crate::config::Config;
 use crate::input::Action;
@@ -218,7 +218,7 @@ fn empty_rows_have_no_selection_and_no_details_modal() {
     assert_eq!(app.selected_process_context(), None);
     app.apply_action(Action::MoveDown);
     app.apply_action(Action::OpenDetails);
-    assert_eq!(app.modal(), Modal::None);
+    assert_eq!(app.modal(), ModalKind::None);
 }
 
 #[test]
@@ -227,7 +227,7 @@ fn modal_and_quit_actions_update_state() {
 
     assert_eq!(app.selected_process_context(), None);
     app.apply_action(Action::OpenDetails);
-    assert_eq!(app.modal(), Modal::Details);
+    assert_eq!(app.modal(), ModalKind::Details);
     assert!(app.selected_process_context_loading());
     assert_eq!(app.selected_process_context(), None);
 
@@ -235,10 +235,10 @@ fn modal_and_quit_actions_update_state() {
     assert!(app.selected_process_context().is_some());
 
     app.apply_action(Action::CloseModal);
-    assert_eq!(app.modal(), Modal::None);
+    assert_eq!(app.modal(), ModalKind::None);
 
     app.apply_action(Action::OpenHelp);
-    assert_eq!(app.modal(), Modal::Help);
+    assert_eq!(app.modal(), ModalKind::Help);
 
     app.apply_action(Action::Quit);
     assert!(app.should_quit());
@@ -266,10 +266,7 @@ fn details_context_is_single_flight_and_latest_selection_wins() {
         Some(first_key),
         "the in-flight worker must not be replaced",
     );
-    assert_eq!(
-        app.context_request_state,
-        ContextRequestState::PendingLatest,
-    );
+    assert!(app.context_requested);
 
     first_sender
         .send(Ok(context(55)))
@@ -277,7 +274,7 @@ fn details_context_is_single_flight_and_latest_selection_wins() {
     app.poll_process_context();
 
     assert_eq!(app.selected_process_context(), None);
-    assert_eq!(app.context_request_state, ContextRequestState::Idle);
+    assert!(!app.context_requested);
     assert_eq!(
         app.context_worker.as_ref().map(|worker| worker.key),
         Some(latest_key),
@@ -294,7 +291,7 @@ fn terminate_key_opens_normal_confirmation_for_selected_pid() {
     let confirmation = app
         .kill_confirmation()
         .expect("termination request opens confirmation");
-    assert_eq!(app.modal(), Modal::ConfirmKill);
+    assert_eq!(app.modal(), ModalKind::ConfirmKill);
     assert_eq!(confirmation.target.pid, 3000);
     assert_eq!(confirmation.mode, KillMode::Terminate);
     assert_eq!(confirmation.requirement, ConfirmationRequirement::Yes);
@@ -332,7 +329,7 @@ fn yes_confirmation_waits_for_process_metadata_before_executing() {
     let confirmation = app
         .kill_confirmation()
         .expect("confirmation remains open while metadata loads");
-    assert_eq!(app.modal(), Modal::ConfirmKill);
+    assert_eq!(app.modal(), ModalKind::ConfirmKill);
     assert!(
         confirmation
             .error
@@ -399,7 +396,7 @@ fn force_key_uses_force_word_confirmation() {
     let confirmation = app
         .kill_confirmation()
         .expect("force request opens confirmation");
-    assert_eq!(app.modal(), Modal::ConfirmKill);
+    assert_eq!(app.modal(), ModalKind::ConfirmKill);
     assert_eq!(confirmation.mode, KillMode::Force);
     assert_eq!(confirmation.requirement, ConfirmationRequirement::ForceWord);
 }
@@ -414,7 +411,7 @@ fn wrong_confirmation_word_rejects_and_keeps_the_modal_open() {
 
     app.apply_action(Action::SubmitKillConfirmation);
 
-    assert_eq!(app.modal(), Modal::ConfirmKill);
+    assert_eq!(app.modal(), ModalKind::ConfirmKill);
     let confirmation = app
         .kill_confirmation()
         .expect("rejected submit must keep the confirmation pending");
@@ -473,7 +470,7 @@ fn missing_pid_selection_reports_status_without_confirmation() {
 
     app.apply_action(Action::RequestTerminate);
 
-    assert_eq!(app.modal(), Modal::None);
+    assert_eq!(app.modal(), ModalKind::None);
     assert!(app.kill_confirmation().is_none());
     assert_eq!(
         app.kill_status(),
@@ -488,7 +485,7 @@ fn kill_confirmation_can_be_cancelled() {
 
     app.apply_action(Action::CancelKill);
 
-    assert_eq!(app.modal(), Modal::None);
+    assert_eq!(app.modal(), ModalKind::None);
     assert!(app.kill_confirmation().is_none());
     assert_eq!(app.kill_status(), Some("kill cancelled"));
 }
@@ -565,7 +562,7 @@ fn confirmed_kill_revalidates_signals_and_refreshes_rows() {
     assert_eq!(kill_collect_calls, 1);
     assert_eq!(visibility_collect_calls, 1);
     assert_eq!(app.rows().len(), 0);
-    assert_eq!(app.modal(), Modal::None);
+    assert_eq!(app.modal(), ModalKind::None);
     assert!(
         app.kill_status()
             .is_some_and(|status| status.contains("sent SIGTERM")),
@@ -637,7 +634,7 @@ fn prepare_already_exited_refreshes_snapshot_so_freed_port_drops() {
     assert_eq!(app.rows().len(), 1);
     app.poll_refresh();
     assert_eq!(app.rows().len(), 0);
-    assert_eq!(app.modal(), Modal::None);
+    assert_eq!(app.modal(), ModalKind::None);
     assert!(
         app.kill_status()
             .is_some_and(|status| status.contains("already exited")),
@@ -685,7 +682,7 @@ fn confirmed_kill_discards_stale_in_flight_refresh_so_freed_port_cannot_reappear
             .as_ref()
             .is_some_and(|worker| worker.stale)
     );
-    assert_eq!(app.pending_refresh, PendingRefresh::PostKill);
+    assert!(app.refresh_after_kill);
     assert!(app.refresh_in_progress());
     app.apply_action(Action::Refresh);
     stale_sender
@@ -701,7 +698,7 @@ fn confirmed_kill_discards_stale_in_flight_refresh_so_freed_port_cannot_reappear
         start_test_refresh(app, Vec::new());
     });
     assert_eq!(fresh_collections, 1);
-    assert_eq!(app.pending_refresh, PendingRefresh::None);
+    assert!(!app.refresh_after_kill);
     assert!(app.refresh_in_progress());
     assert_eq!(app.rows().len(), 1);
     app.poll_refresh();
@@ -797,7 +794,7 @@ fn details_and_actions_use_filtered_rows_with_nonzero_backing_indices() {
     assert_eq!(app.selected_row().map(|row| row.local_port), Some(5173));
 
     app.apply_action(Action::OpenDetails);
-    assert_eq!(app.modal(), Modal::Details);
+    assert_eq!(app.modal(), ModalKind::Details);
     app.apply_action(Action::CloseModal);
     app.apply_action(Action::RequestTerminate);
 
@@ -878,7 +875,7 @@ fn refresh_reloads_details_context_when_modal_stays_open() {
     app.apply_test_rows(vec![entry(3000, Some("node"))], Instant::now());
 
     assert_eq!(app.selected_row().map(|row| row.local_port), Some(3000));
-    assert_eq!(app.modal(), Modal::Details);
+    assert_eq!(app.modal(), ModalKind::Details);
     assert!(app.selected_process_context_loading());
     assert_eq!(app.selected_process_context(), None);
 
@@ -898,7 +895,7 @@ fn refresh_invalidates_details_context_when_modal_is_closed() {
     app.apply_test_rows(vec![entry(3000, Some("node"))], Instant::now());
 
     assert_eq!(app.selected_row().map(|row| row.local_port), Some(3000));
-    assert_eq!(app.modal(), Modal::None);
+    assert_eq!(app.modal(), ModalKind::None);
     assert_eq!(app.selected_process_context(), None);
 }
 
@@ -1033,7 +1030,7 @@ fn protected_names_are_marked_from_config() {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod tree_kill {
-    use super::{App, Modal, app_with_rows, context, entry, mpsc, start_test_refresh};
+    use super::{App, ModalKind, app_with_rows, context, entry, mpsc, start_test_refresh};
     use crate::app::{TreeConfirmStage, TreePreviewWorker};
     use crate::collector::{Collector, FakeCollector};
     use crate::input::Action;
@@ -1095,9 +1092,9 @@ mod tree_kill {
             Ok(self.snapshot.clone())
         }
 
-        fn stop(&mut self, pid: u32) -> TreeSignalResult {
+        fn stop(&mut self, pid: u32, _deadline: Instant) -> crate::tree::TreeStopResult {
             self.stops.push(pid);
-            TreeSignalResult::Delivered
+            crate::tree::TreeStopResult::Stopped { transitioned: true }
         }
 
         fn cont(&mut self, _pid: u32) -> TreeSignalResult {
@@ -1119,8 +1116,7 @@ mod tree_kill {
     }
 
     fn set_tree_confirmation_start_time(app: &mut App, start_time_ticks: u64) {
-        app.tree_confirmation
-            .as_mut()
+        app.tree_confirmation_mut()
             .expect("tree confirmation must be open")
             .target
             .process_start_time_marker =
@@ -1194,7 +1190,7 @@ mod tree_kill {
 
         app.apply_action(Action::RequestTreeTerminate);
 
-        assert_eq!(app.modal(), Modal::ConfirmTreeKill);
+        assert_eq!(app.modal(), ModalKind::ConfirmTreeKill);
         let confirmation = app
             .tree_confirmation()
             .expect("tree request opens a confirmation");
@@ -1239,7 +1235,7 @@ mod tree_kill {
             "{:?}",
             confirmation.error,
         );
-        assert_eq!(app.modal(), Modal::ConfirmTreeKill);
+        assert_eq!(app.modal(), ModalKind::ConfirmTreeKill);
 
         let infos = vec![tree_info(3000, Some(1), "node", 55)];
         app.finish_tree_preview_for_test(Ok(preview_of(&infos, 3000)));
@@ -1252,8 +1248,7 @@ mod tree_kill {
     fn execute_waits_for_process_metadata_before_tree_signals() {
         let mut app = app_with_rows(vec![entry(3000, Some("node"))]);
         app.apply_action(Action::RequestTreeTerminate);
-        app.tree_confirmation
-            .as_mut()
+        app.tree_confirmation_mut()
             .expect("tree confirmation opens")
             .target
             .process_start_time_marker = None;
@@ -1271,7 +1266,7 @@ mod tree_kill {
         let confirmation = app
             .tree_confirmation()
             .expect("confirmation remains open while metadata loads");
-        assert_eq!(app.modal(), Modal::ConfirmTreeKill);
+        assert_eq!(app.modal(), ModalKind::ConfirmTreeKill);
         assert!(ops.stops.is_empty());
         assert!(ops.delivered.is_empty());
         assert!(
@@ -1297,7 +1292,7 @@ mod tree_kill {
         ];
         app.finish_tree_preview_for_test(Ok(preview_of(&infos, 3000)));
 
-        assert_eq!(app.modal(), Modal::None);
+        assert_eq!(app.modal(), ModalKind::None);
         assert!(app.tree_confirmation().is_none());
         assert!(
             app.kill_status()
@@ -1314,7 +1309,7 @@ mod tree_kill {
 
         app.finish_tree_preview_for_test(Err("scan failed".to_owned()));
 
-        assert_eq!(app.modal(), Modal::None);
+        assert_eq!(app.modal(), ModalKind::None);
         assert!(app.tree_confirmation().is_none());
         assert!(
             app.kill_status()
@@ -1395,7 +1390,7 @@ mod tree_kill {
 
         app.apply_action(Action::CancelKill);
 
-        assert_eq!(app.modal(), Modal::None);
+        assert_eq!(app.modal(), ModalKind::None);
         assert!(app.tree_confirmation().is_none());
         assert_eq!(app.kill_status(), Some("tree kill cancelled"));
         assert!(
@@ -1408,7 +1403,7 @@ mod tree_kill {
             .send(Ok(Ok(preview_of(&infos, 3000))))
             .expect("test preview result must send");
         app.poll_tree_preview();
-        assert_eq!(app.modal(), Modal::None);
+        assert_eq!(app.modal(), ModalKind::None);
         assert!(app.tree_confirmation().is_none());
         assert!(app.tree_preview_worker.is_none());
     }
@@ -1424,7 +1419,7 @@ mod tree_kill {
 
         app.apply_action(Action::RequestTreeTerminate);
 
-        assert_eq!(app.modal(), Modal::None);
+        assert_eq!(app.modal(), ModalKind::None);
         assert!(app.tree_confirmation().is_none());
         assert!(
             app.kill_status()
@@ -1476,7 +1471,7 @@ mod tree_kill {
             &mut ops,
         );
 
-        assert_eq!(app.modal(), Modal::None);
+        assert_eq!(app.modal(), ModalKind::None);
         assert!(app.tree_confirmation().is_none());
         assert_eq!(ops.delivered, vec![3001, 3000]);
         assert!(
