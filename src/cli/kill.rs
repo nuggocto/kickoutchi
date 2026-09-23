@@ -90,7 +90,11 @@ fn run_kill_with<Handle>(
     ) {
         Ok(requirement) => requirement,
         Err(outcome) => {
-            print_termination_outcome(&target, mode, &outcome);
+            // Only `--yes` on a protected target is refused before confirmation.
+            eprintln!(
+                "error: {}; --yes cannot bypass protected-process confirmation",
+                outcome.status_description(&target, mode),
+            );
             return exit_reason_for_outcome(&outcome);
         }
     };
@@ -574,7 +578,9 @@ fn print_termination_outcome(target: &KillTarget, mode: KillMode, outcome: &Term
             process::permission_denied_hint(target.platform),
         ),
         TerminationOutcome::ProtectedProcess => {
-            eprintln!("error: {description}; --yes cannot bypass protected-process confirmation");
+            eprintln!(
+                "error: {description}; it became protected after confirmation, so no termination was sent; rerun to confirm the protected process"
+            );
         }
         TerminationOutcome::OwnershipUnavailable
         | TerminationOutcome::TargetChanged

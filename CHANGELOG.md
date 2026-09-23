@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `kick kill` no longer blames `--yes` when a target becomes protected after
+  interactive confirmation. That refusal now says the process became protected
+  and asks for a rerun; the `--yes` wording remains for `--yes` refusals.
+
 ## [1.4.5] - 2026-09-15
 
 ### Fixed

@@ -142,25 +142,9 @@ where
             Ok(target) => target,
             Err(reason) => return reason,
         };
-    let preview = match tree::plan_process_tree(
-        root.pid,
-        &snapshot,
-        &config.protected_processes,
-        root.platform,
-        tree::MAX_TREE_PROCESSES,
-    ) {
+    let preview = match plan_tree_preview(&root, &snapshot, &config.protected_processes) {
         Ok(preview) => preview,
-        Err(tree::TreePlanError::RootMissing) => {
-            eprintln!(
-                "error: root PID {} is no longer running; nothing to terminate",
-                root.pid
-            );
-            return ExitReason::NoMatch;
-        }
-        Err(tree::TreePlanError::SnapshotLimitExceeded { limit }) => {
-            eprintln!("error: process snapshot exceeds the bounded {limit}-PID index");
-            return ExitReason::Failure;
-        }
+        Err(reason) => return reason,
     };
 
     if let Some(reason) = scoped_preflight_refusal(&preview, "tree") {
@@ -266,25 +250,9 @@ fn run_windows_tree_kill_with<RootHandle>(
             Ok(target) => target,
             Err(reason) => return reason,
         };
-    let preview = match tree::plan_process_tree(
-        root.pid,
-        &snapshot,
-        &config.protected_processes,
-        root.platform,
-        tree::MAX_TREE_PROCESSES,
-    ) {
+    let preview = match plan_tree_preview(&root, &snapshot, &config.protected_processes) {
         Ok(preview) => preview,
-        Err(tree::TreePlanError::RootMissing) => {
-            eprintln!(
-                "error: root PID {} is no longer running; nothing to terminate",
-                root.pid
-            );
-            return ExitReason::NoMatch;
-        }
-        Err(tree::TreePlanError::SnapshotLimitExceeded { limit }) => {
-            eprintln!("error: process snapshot exceeds the bounded {limit}-PID index");
-            return ExitReason::Failure;
-        }
+        Err(reason) => return reason,
     };
 
     if let Some(reason) = scoped_preflight_refusal(&preview, "tree") {
@@ -407,8 +375,37 @@ fn windows_fresh_tree_gates(
     Ok(())
 }
 
-/// Run the confirmation flow. On success, the returned bool records whether
-/// the protected-root confirmation was completed. The execution-time
+/// Plan the tree shown for confirmation. Refusals are printed here and
+/// returned as the exit reason.
+fn plan_tree_preview(
+    root: &KillTarget,
+    snapshot: &[tree::TreeProcessInfo],
+    protected_names: &[String],
+) -> Result<tree::ProcessTreeTarget, ExitReason> {
+    tree::plan_process_tree(
+        root.pid,
+        snapshot,
+        protected_names,
+        root.platform,
+        tree::MAX_TREE_PROCESSES,
+    )
+    .map_err(|error| match error {
+        tree::TreePlanError::RootMissing => {
+            eprintln!(
+                "error: root PID {} is no longer running; nothing to terminate",
+                root.pid
+            );
+            ExitReason::NoMatch
+        }
+        tree::TreePlanError::SnapshotLimitExceeded { limit } => {
+            eprintln!("error: process snapshot exceeds the bounded {limit}-PID index");
+            ExitReason::Failure
+        }
+    })
+}
+
+/// Run the confirmation flow. On success, the returned authorization records
+/// whether the protected-root confirmation was completed. The execution-time
 /// protection guard needs that fact, because a root can be classified as
 /// protected by a fresh scan even when the confirmed port row could not be.
 fn confirm_tree_kill<Prompt>(
@@ -1041,7 +1038,7 @@ where
 }
 
 /// Run the group confirmation flow; mirrors [`confirm_tree_kill`], including
-/// the returned protected-root fact.
+/// the returned authorization.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn confirm_group_kill<Prompt>(
     root: &KillTarget,

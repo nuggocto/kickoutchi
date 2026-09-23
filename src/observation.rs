@@ -43,7 +43,7 @@ pub(crate) enum Ipv6Scope {
     Unavailable,
 }
 
-#[allow(dead_code, reason = "scope constructor is used by non-Linux adapters")]
+#[cfg(test)]
 impl Ipv6Scope {
     pub(crate) fn interface_index(value: u64) -> Result<Self, EndpointIdentityError> {
         u32::try_from(value)

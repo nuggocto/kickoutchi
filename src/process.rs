@@ -911,9 +911,10 @@ pub(crate) use linux::{
     tree_cont_handle, tree_deliver_handle, tree_open_delivery_handle, tree_stop_handle,
 };
 
-/// Send `SIGCONT` to a PID. Best-effort: used to resume a process before its
-/// terminating signal and to thaw the tree on any abort, so callers ignore the
-/// result. A `SIGCONT` to a process that already died is harmless.
+/// Send `SIGCONT` to a PID. Used to resume a process after its terminating
+/// signal and to thaw the tree on any abort. `NotFound` means the process
+/// already exited and nothing is left stopped; callers report only `Denied` as
+/// a cleanup failure.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn tree_cont(pid: u32) -> crate::tree::TreeSignalResult {
     tree_send_signal(pid, libc::SIGCONT)
