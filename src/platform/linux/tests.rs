@@ -80,6 +80,7 @@ fn collector_reports_one_scope_gap_for_oversized_namespace_identifier() {
 
     fs::remove_dir_all(proc_root).expect("test proc root cleanup");
 }
+
 const HEADER: &str =
     "sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode";
 const HEADER6: &str =

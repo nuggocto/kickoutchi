@@ -124,6 +124,49 @@ fn scheduled_parser_campaigns_are_pinned_and_bounded() {
     assert!(script.contains("cp -a \"fuzz/corpus/$PARSER_TARGET/.\""));
     assert!(!script.contains("\"fuzz/corpus/$PARSER_TARGET\" \\"));
     assert!(step_script(job_step_running(campaign, "cargo metadata")).contains("--locked"));
+
+    let campaign_step = job_step_running(campaign, "fuzz run");
+    assert_eq!(
+        yaml_scalar(campaign_step, "id").as_deref(),
+        Some("campaign")
+    );
+    let failure_only = "failure() && steps.campaign.outcome == 'failure'";
+    let reproduction = job_step_running(campaign, "REPRODUCE.txt");
+    assert_eq!(
+        yaml_scalar(reproduction, "if").as_deref(),
+        Some(failure_only)
+    );
+    for detail in [
+        "$GITHUB_SHA",
+        "fuzz run $PARSER_TARGET",
+        "-max_len=$MAX_INPUT_BYTES",
+    ] {
+        assert!(
+            step_script(reproduction).contains(detail),
+            "missing {detail}"
+        );
+    }
+    let upload = workflow_steps(&fuzz)
+        .into_iter()
+        .find(|step| {
+            mapping_value(step, "uses")
+                .and_then(serde_yaml_ng::Value::as_str)
+                .is_some_and(|action| action.starts_with("actions/upload-artifact@"))
+        })
+        .expect("campaign failures must upload their artifacts");
+    assert_eq!(yaml_scalar(upload, "if").as_deref(), Some(failure_only));
+    let options = required_mapping(
+        mapping_value(upload, "with").expect("upload must define options"),
+        "upload options",
+    );
+    assert_eq!(
+        yaml_scalar(options, "path").as_deref(),
+        Some("fuzz/artifacts/${{ matrix.target }}/")
+    );
+    assert_eq!(
+        yaml_scalar(options, "retention-days").as_deref(),
+        Some("14")
+    );
 }
 
 #[test]

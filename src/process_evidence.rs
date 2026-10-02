@@ -17,6 +17,9 @@ pub(crate) struct FreshProcessEvidence {
     pub(crate) pid: u32,
     pub(crate) start_marker: ProcessStartMarker,
     pub(crate) name: String,
+    /// Executable basename for protection matching where the platform reads it
+    /// (macOS). Bounded and counted like the name when present.
+    pub(crate) executable_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,13 +84,17 @@ impl ProcessEvidenceScope {
         if fresh.name.is_empty() {
             return Err(ProcessEvidenceError::NameMissing { pid: expected.pid });
         }
-        let name_bytes = fresh.name.len();
-        if name_bytes > PROTECTION_NAME_MAX_BYTES {
+        let executable_name_bytes = fresh.executable_name.as_ref().map_or(0, String::len);
+        if let Some(bytes) = [fresh.name.len(), executable_name_bytes]
+            .into_iter()
+            .find(|bytes| *bytes > PROTECTION_NAME_MAX_BYTES)
+        {
             return Err(ProcessEvidenceError::NameOversized {
                 pid: expected.pid,
-                bytes: name_bytes,
+                bytes,
             });
         }
+        let name_bytes = fresh.name.len() + executable_name_bytes;
         if expected.name.is_some_and(|name| name != fresh.name) {
             return Err(ProcessEvidenceError::NameChanged { pid: expected.pid });
         }
@@ -130,6 +137,7 @@ mod tests {
             pid,
             start_marker: ProcessStartMarker::linux(u64::from(pid) + 10).expect("nonzero marker"),
             name,
+            executable_name: None,
         }
     }
 
@@ -262,6 +270,26 @@ mod tests {
         assert_eq!(
             empty.observe(&expected(7, None), Ok(fresh(7, String::new()))),
             Err(ProcessEvidenceError::NameMissing { pid: 7 })
+        );
+    }
+
+    #[test]
+    fn executable_name_is_bounded_and_counted_like_the_name() {
+        let mut oversized = fresh(7, "worker".to_owned());
+        oversized.executable_name = Some("x".repeat(PROTECTION_NAME_MAX_BYTES + 1));
+        assert!(matches!(
+            ProcessEvidenceScope::new(1)
+                .expect("scope")
+                .observe(&expected(7, None), Ok(oversized)),
+            Err(ProcessEvidenceError::NameOversized { pid: 7, .. })
+        ));
+
+        let mut scope = ProcessEvidenceScope::with_limits(1, 1, 8).expect("scope");
+        let mut counted = fresh(7, "xxxx".to_owned());
+        counted.executable_name = Some("yyyyy".to_owned());
+        assert_eq!(
+            scope.observe(&expected(7, None), Ok(counted)),
+            Err(ProcessEvidenceError::ByteLimitExceeded { limit: 8 })
         );
     }
 

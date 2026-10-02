@@ -52,6 +52,7 @@ jobs:
         run: cargo metadata --manifest-path fuzz/Cargo.toml --locked --format-version 1 --no-deps > /dev/null
 
       - name: Run bounded parser campaign
+        id: campaign
         env:
           PARSER_TARGET: ${{ matrix.target }}
           MAX_INPUT_BYTES: ${{ matrix.max_input_bytes }}
@@ -67,3 +68,28 @@ jobs:
             -max_len="$MAX_INPUT_BYTES" \
             -timeout=5 \
             -rss_limit_mb=1024
+
+      - name: Record failure reproduction
+        if: failure() && steps.campaign.outcome == 'failure'
+        env:
+          PARSER_TARGET: ${{ matrix.target }}
+          MAX_INPUT_BYTES: ${{ matrix.max_input_bytes }}
+        run: |
+          artifact_dir="fuzz/artifacts/$PARSER_TARGET"
+          mkdir -p "$artifact_dir"
+          {
+            echo "target: $PARSER_TARGET"
+            echo "commit: $GITHUB_SHA"
+            echo "toolchain: $RUST_NIGHTLY"
+            echo "cargo-fuzz: $CARGO_FUZZ_VERSION"
+            echo "reproduce: cargo +$RUST_NIGHTLY fuzz run $PARSER_TARGET $artifact_dir/<artifact-file> -- -max_len=$MAX_INPUT_BYTES -timeout=5 -rss_limit_mb=1024"
+          } > "$artifact_dir/REPRODUCE.txt"
+
+      - name: Upload failure artifacts
+        if: failure() && steps.campaign.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: parser-campaign-failure-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 14

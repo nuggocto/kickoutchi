@@ -11,14 +11,17 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub(crate) const REAL_BINARY_EXIT_WAIT: Duration = Duration::from_secs(10);
+
 mod command;
 pub(crate) use command::*;
+
 pub(crate) const COMMAND_RUNNER_HELPER_ENV: &str = "KICKOUTCHI_TEST_COMMAND_RUNNER_HELPER";
 pub(crate) const BINARY_OVERRIDE_HELPER_ENV: &str = "KICKOUTCHI_TEST_BINARY_OVERRIDE_HELPER";
 pub(crate) const TRACING_HELPER_ENV: &str = "KICKOUTCHI_TEST_TRACING_HELPER";
 pub(crate) const RELEASE_E2E_REQUIRED_ENV: &str = "KICKOUTCHI_RELEASE_E2E_REQUIRED";
 pub(crate) const KICKOUTCHI_BINARY_ENV: &str = "KICKOUTCHI_E2E_KICKOUTCHI";
 pub(crate) const KICK_BINARY_ENV: &str = "KICKOUTCHI_E2E_KICK";
+
 static UNIQUE_TEMP_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn create_unique_temp_directory(label: &str) -> PathBuf {

@@ -4,10 +4,10 @@ use super::{
     append_udp4_table, append_udp6_table, checked_table_byte_len, collect_socket_records_with,
     decode_port, decode_utf16_bounded, encode_port_for_tests, extend_socket_records_with_limit,
     filetime_to_u64, finish_bracketed_metadata, mib_tcp_state, native_pass_from_records,
-    process_path_buffer_code_units, process_read_from_metadata, query_process_command_line_with,
-    read_iphelper_table_with, read_process_observations_with, tcp4_record, tcp4_rows, tcp6_record,
-    tcp6_rows, tree_process_infos_from_snapshot_with, udp4_record, udp4_rows, udp6_record,
-    udp6_rows,
+    process_image_file_name_with, process_path_buffer_code_units, process_read_from_metadata,
+    query_process_command_line_with, read_iphelper_table_with, read_process_observations_with,
+    tcp4_record, tcp4_rows, tcp6_record, tcp6_rows, tree_process_infos_from_snapshot_with,
+    udp4_record, udp4_rows, udp6_record, udp6_rows,
 };
 use crate::collector::CollectorError;
 use crate::model::Protocol;
@@ -45,6 +45,7 @@ fn socket_collection_orchestration_runs_all_four_tables_in_order() {
             pid: Some(pid),
         });
     }
+
     fn tcp4(records: &mut Vec<super::SocketRecord>) -> Result<(), CollectorError> {
         push_record(
             records,
@@ -56,6 +57,7 @@ fn socket_collection_orchestration_runs_all_four_tables_in_order() {
         );
         Ok(())
     }
+
     fn tcp6(records: &mut Vec<super::SocketRecord>) -> Result<(), CollectorError> {
         push_record(
             records,
@@ -67,6 +69,7 @@ fn socket_collection_orchestration_runs_all_four_tables_in_order() {
         );
         Ok(())
     }
+
     fn udp4(records: &mut Vec<super::SocketRecord>) -> Result<(), CollectorError> {
         push_record(
             records,
@@ -78,6 +81,7 @@ fn socket_collection_orchestration_runs_all_four_tables_in_order() {
         );
         Ok(())
     }
+
     fn udp6(records: &mut Vec<super::SocketRecord>) -> Result<(), CollectorError> {
         push_record(
             records,
@@ -1722,5 +1726,66 @@ fn pid_reuse_marker_mismatch_is_unverified_and_discards_metadata() {
     assert_eq!(
         process_read_from_metadata(metadata),
         ProcessRead::Unverified(UnverifiedOwnerReason::Raced)
+    );
+}
+
+#[test]
+fn image_file_name_reader_grows_for_long_paths_and_bounds_reported_lengths() {
+    use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER};
+
+    let directory = "D:\\".to_owned() + &"deep\\".repeat(800);
+    let long_path = format!("{directory}service.exe")
+        .encode_utf16()
+        .collect::<Vec<_>>();
+    assert!(long_path.len() > 2_048);
+    let mut capacities = Vec::new();
+    let name = process_image_file_name_with(|buffer, length| {
+        capacities.push(buffer.len());
+        if buffer.len() < long_path.len() + 1 {
+            return Err(std::io::Error::from_raw_os_error(
+                i32::try_from(ERROR_INSUFFICIENT_BUFFER).unwrap(),
+            ));
+        }
+        buffer[..long_path.len()].copy_from_slice(&long_path);
+        *length = u32::try_from(long_path.len()).unwrap();
+        Ok(())
+    })
+    .expect("a long image path is readable");
+    assert_eq!(name.as_deref(), Some("service.exe"));
+    assert_eq!(capacities.first(), Some(&260));
+    assert!(capacities.windows(2).all(|pair| pair[1] > pair[0]));
+
+    let malformed = process_image_file_name_with(|buffer, length| {
+        *length = u32::try_from(buffer.len() + 1).unwrap();
+        Ok(())
+    });
+    assert_eq!(
+        malformed
+            .expect_err("an impossible length must fail closed")
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+
+    let mut calls = 0;
+    let denied = process_image_file_name_with(|_, _| {
+        calls += 1;
+        Err(std::io::Error::from_raw_os_error(
+            i32::try_from(ERROR_ACCESS_DENIED).unwrap(),
+        ))
+    });
+    assert!(denied.is_err());
+    assert_eq!(calls, 1, "only an undersized buffer is retried");
+
+    let mut oversized_calls = 0;
+    let oversized = process_image_file_name_with(|_, _| {
+        oversized_calls += 1;
+        Err(std::io::Error::from_raw_os_error(
+            i32::try_from(ERROR_INSUFFICIENT_BUFFER).unwrap(),
+        ))
+    });
+    assert!(oversized.is_err());
+    assert!(
+        oversized_calls <= 8,
+        "growth stops at the long-path maximum"
     );
 }

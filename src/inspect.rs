@@ -12,7 +12,7 @@ use std::fmt::Write as _;
 use crate::display::{human_endpoint_text, sanitize};
 use crate::model::{Platform, PortEntryView};
 use crate::observation::ProcessIdentity;
-use crate::protection::is_protected_process_name;
+use crate::protection::is_protected_by_names;
 use crate::tree::{
     MAX_TREE_PROCESSES, ProcessTreeNode, ProcessTreeTarget, TreePlanError, TreeProcessInfo,
     plan_process_tree,
@@ -25,8 +25,10 @@ const ANCESTORS_DISPLAY_MAX: usize = 12;
 const SIBLINGS_DISPLAY_MAX: usize = 8;
 const TREE_DISPLAY_MAX: usize = 20;
 const GROUP_DISPLAY_MAX: usize = 16;
+
 /// Command lines can be arbitrarily long; a report line should not be.
 const COMMAND_DISPLAY_MAX_CHARS: usize = 120;
+
 /// Ancestor chains are short in practice; the cap only guards against a cyclic
 /// or corrupt parent map.
 const ANCESTOR_WALK_MAX: usize = 64;
@@ -578,10 +580,12 @@ fn process_identity(info: &TreeProcessInfo) -> Option<ProcessIdentity> {
 
 fn member_label(info: &TreeProcessInfo, protected_names: &[String], platform: Platform) -> String {
     let name = sanitize(info.process_name.as_deref().unwrap_or("<unknown>"));
-    let protected = info
-        .process_name
-        .as_deref()
-        .is_some_and(|name| is_protected_process_name(platform, name, protected_names));
+    let protected = is_protected_by_names(
+        platform,
+        info.process_name.as_deref(),
+        info.executable_name.as_deref(),
+        protected_names,
+    );
     let marker = if protected { " [protected]" } else { "" };
     format!("PID {} ({name}){marker}", info.pid)
 }
@@ -620,6 +624,7 @@ mod tests {
             start_time_marker: crate::observation::ProcessStartMarker::linux(u64::from(pid)).ok(),
             owner_uid: None,
             process_group: Some(group),
+            executable_name: None,
         }
     }
 
@@ -871,6 +876,7 @@ mod tests {
             start_time_marker: crate::observation::ProcessStartMarker::linux(501).ok(),
             owner_uid: None,
             process_group: Some(300),
+            executable_name: None,
         });
 
         let report = render_family_report(

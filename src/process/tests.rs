@@ -4,10 +4,13 @@ use std::net::{IpAddr, Ipv4Addr};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::macos::macos_tree_stop_result;
+#[cfg(windows)]
+use super::windows_api_outcome;
 use super::{
     ConfirmationRequirement, KillMode, KillTarget, KillWarning, TerminationOutcome,
-    UnsafePidReason, WarningScope, confirmation_input_matches, confirmation_requirement,
-    revalidate_confirmed_target, target_still_matches_confirmation, unsafe_pid_reason,
+    UnsafePidReason, WarningScope, check_final_evidence, confirmation_input_matches,
+    confirmation_requirement, revalidate_confirmed_target, target_still_matches_confirmation,
+    unsafe_pid_reason,
 };
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::{
@@ -22,8 +25,6 @@ use super::{
     linux_process_state, linux_stop_observation_result, parse_linux_process_state,
     tree_cont_handle, tree_open_delivery_handle, tree_stop_handle,
 };
-#[cfg(windows)]
-use super::{native_utf16_prefix, windows_api_outcome};
 use crate::model::{
     ChildProcess, ChildProcessSnapshot, PermissionStatus, Platform, PortEntry, ProcessContext,
     Protocol, SocketState,
@@ -103,15 +104,6 @@ fn linux_tree_stop_returns_only_after_stopped_state_is_observable() {
         crate::tree::TreeSignalResult::Delivered
     );
     child.0.kill().expect("terminate test child");
-}
-
-#[cfg(windows)]
-#[test]
-fn malformed_windows_native_name_length_fails_closed_without_panicking() {
-    let buffer = [0_u16; 4];
-    assert_eq!(native_utf16_prefix(&buffer, 5), None);
-    assert_eq!(native_utf16_prefix(&buffer, u32::MAX), None);
-    assert_eq!(native_utf16_prefix(&buffer, 4), Some(buffer.as_slice()));
 }
 
 fn entry(port: u16, protocol: Protocol) -> PortEntry {
@@ -430,6 +422,7 @@ fn macos_identity_change_rolls_back_the_post_stop_process_without_terminating_it
         pid: 42,
         start_marker: replacement_marker,
         name: "replacement".to_owned(),
+        executable_name: None,
     });
     let mut continued = Vec::new();
 
@@ -784,6 +777,110 @@ fn confirmation_input_is_specific_to_the_required_path() {
         &unicode_windows_target,
         ConfirmationRequirement::ProtectedProcess,
     ));
+}
+
+#[test]
+fn final_evidence_applies_macos_executable_basename_protection() {
+    let long_name = "kickoutchi-protected-service-with-a-long-name";
+    let mut row = entry(3000, Protocol::Tcp);
+    row.platform = Platform::Macos;
+    row.process_name = Some(long_name[..32].into());
+    let target = KillTarget::from_entries(18422, [PortEntryView::from(&row)], Some(&context(55)));
+    let protected = [long_name.to_owned()];
+    let evidence = |executable_name: Option<&str>| {
+        Ok(crate::process_evidence::FreshProcessEvidence {
+            pid: 18422,
+            start_marker: crate::observation::ProcessStartMarker::linux(55)
+                .expect("test marker is nonzero"),
+            name: long_name[..32].to_owned(),
+            executable_name: executable_name.map(str::to_owned),
+        })
+    };
+
+    assert_eq!(
+        check_final_evidence(&target, &protected, evidence(Some(long_name))),
+        Err(TerminationOutcome::ProtectedProcess),
+    );
+    assert_eq!(
+        check_final_evidence(&target, &protected, evidence(None)),
+        Ok(())
+    );
+    let mut confirmed = target;
+    confirmed.protected = true;
+    assert_eq!(
+        check_final_evidence(&confirmed, &protected, evidence(Some(long_name))),
+        Ok(())
+    );
+}
+
+#[test]
+fn protected_confirmation_never_accepts_an_empty_answer() {
+    let row = entry(3000, Protocol::Tcp);
+    let mut target =
+        KillTarget::from_entries(18422, [PortEntryView::from(&row)], Some(&context(55)));
+
+    for name in ["\x1b[31m", "", " ", "\t", "\x1b[0m \x1b[1m"] {
+        target.process_name = Some(name.to_owned());
+        for input in ["", "\n", "   ", "\r\n"] {
+            assert!(
+                !confirmation_input_matches(
+                    input,
+                    &target,
+                    ConfirmationRequirement::ProtectedProcess
+                ),
+                "name {name:?} accepted input {input:?}",
+            );
+        }
+        assert!(target.protected_confirmation_name().is_none(), "{name:?}");
+        assert_eq!(target.protected_confirmation_choices(), "PID 18422");
+        assert!(confirmation_input_matches(
+            "18422\n",
+            &target,
+            ConfirmationRequirement::ProtectedProcess,
+        ));
+    }
+
+    target.process_name = None;
+    assert!(!confirmation_input_matches(
+        "",
+        &target,
+        ConfirmationRequirement::ProtectedProcess,
+    ));
+    assert_eq!(target.protected_confirmation_choices(), "PID 18422");
+}
+
+#[test]
+fn protected_confirmation_offers_only_names_that_can_be_typed() {
+    let row = entry(3000, Protocol::Tcp);
+    let mut target =
+        KillTarget::from_entries(18422, [PortEntryView::from(&row)], Some(&context(55)));
+
+    target.process_name = Some("\x1b[31mnode\x1b[0m".to_owned());
+    assert_eq!(
+        target.protected_confirmation_name().as_deref(),
+        Some("node")
+    );
+    assert_eq!(
+        target.protected_confirmation_choices(),
+        "PID 18422 or process name node"
+    );
+    assert!(confirmation_input_matches(
+        "node",
+        &target,
+        ConfirmationRequirement::ProtectedProcess,
+    ));
+
+    // Typed input is trimmed, so a name with edge whitespace could never match
+    // as displayed. PID confirmation remains the only way through.
+    target.process_name = Some("node ".to_owned());
+    assert!(target.protected_confirmation_name().is_none());
+    for input in ["node", "node "] {
+        assert!(!confirmation_input_matches(
+            input,
+            &target,
+            ConfirmationRequirement::ProtectedProcess,
+        ));
+    }
 }
 
 #[test]

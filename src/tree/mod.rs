@@ -108,6 +108,10 @@ pub(crate) struct TreeProcessInfo {
     pub(crate) unverified_parent_pid: Option<u32>,
     pub(crate) parent_process_name: Option<String>,
     pub(crate) process_name: Option<String>,
+    /// Executable basename, read only on macOS, where protection also matches
+    /// it because the kernel truncates process names. `None` elsewhere or when
+    /// the path is unreadable, matching socket-row protection.
+    pub(crate) executable_name: Option<String>,
     pub(crate) start_time_marker: Option<ProcessStartMarker>,
     /// Effective owner UID when readable. Drives the ownership warning in kill
     /// banners; deliberately not part of identity verification, which stands on
@@ -202,6 +206,7 @@ pub(crate) trait TreeProcessOps {
 
     /// One fresh read of the whole process table.
     fn snapshot(&mut self) -> Result<Vec<TreeProcessInfo>, String>;
+
     /// Pin the confirmed root before execution-time revalidation.
     ///
     /// Linux overrides this to open and retain the root pidfd before the final
@@ -210,15 +215,18 @@ pub(crate) trait TreeProcessOps {
     fn pin_root_for_revalidation(&mut self, _pid: u32) -> TreeSignalResult {
         TreeSignalResult::Delivered
     }
+
     /// Stop and wait for observable stopped state, retaining whether cleanup may
     /// later send `SIGCONT`. Every member shares the operation's deadline.
     fn stop(&mut self, pid: u32, deadline: std::time::Instant) -> TreeStopResult;
+
     /// Clock used to bound stopped-state acknowledgement across this operation.
     /// Implementations normally use the monotonic system clock; deterministic
     /// fakes can override it without sleeping.
     fn stop_acknowledgement_now(&self) -> std::time::Instant {
         std::time::Instant::now()
     }
+
     /// Capture the identity that accepted `SIGSTOP`, for guarded rollback.
     ///
     /// Linux continuation is pinned by pidfd, so retaining the previously
@@ -231,6 +239,7 @@ pub(crate) trait TreeProcessOps {
     ) -> Option<ProcessStartMarker> {
         prior_marker
     }
+
     /// `SIGCONT` a process.
     ///
     /// `NotFound` leaves no stopped survivor. The process is gone, so there is
@@ -238,6 +247,7 @@ pub(crate) trait TreeProcessOps {
     /// failure: the process is still there and may still be stopped. Every
     /// caller classifies on `Denied` alone; see the executor's thaw cleanup.
     fn cont(&mut self, pid: u32) -> TreeSignalResult;
+
     /// Retain the verified identity needed to make a raw-PID thaw safe.
     fn prepare_thaw(&mut self, _pid: u32, _marker: Option<ProcessStartMarker>) {}
     /// Prepare reuse-proof delivery for a stopped, verified process.
@@ -251,6 +261,7 @@ pub(crate) trait TreeProcessOps {
         pid: u32,
         verified_start_marker: Option<ProcessStartMarker>,
     ) -> TreeSignalResult;
+
     /// Read identity and name again at the final delivery boundary.
     fn fresh_process_evidence(
         &mut self,
@@ -272,8 +283,10 @@ pub(crate) trait TreeProcessOps {
                 .process_name
                 .clone()
                 .ok_or(ProcessEvidenceError::NameMissing { pid })?,
+            executable_name: info.executable_name.clone(),
         })
     }
+
     /// Deliver the terminating signal (`SIGTERM` for terminate, `SIGKILL` for
     /// force).
     fn deliver(&mut self, pid: u32, mode: KillMode) -> TreeSignalResult;

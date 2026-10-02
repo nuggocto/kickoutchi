@@ -26,8 +26,11 @@ run. Longer mutation campaigns run weekly or through manual workflow dispatch:
 ```
 
 The auxiliary crate and its exact dependency lock are checked by cargo-deny in
-ordinary CI. Campaign build output, coverage, and failure artifacts are ignored;
-the working corpus above is deleted when the campaign ends. If a failure is
-found, minimize the input from `fuzz/artifacts/config/` and copy only the chosen
-regression fixture into `fuzz/corpus/config/`. Substitute the matching target and
-saved-corpus directory when running the other campaigns.
+ordinary CI. Campaign build output, coverage, and failure artifacts are ignored
+by git, and the working corpus above is deleted when the campaign ends. When a
+scheduled campaign fails, the workflow uploads `fuzz/artifacts/<target>/` as
+`parser-campaign-failure-<target>` for 14 days. The upload includes
+`REPRODUCE.txt` with the commit, toolchain, and replay command. To keep a
+failure, minimize the input from `fuzz/artifacts/config/` and copy only the
+chosen regression fixture into `fuzz/corpus/config/`. Substitute the matching
+target and saved-corpus directory when running the other campaigns.

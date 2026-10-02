@@ -341,6 +341,11 @@ fn children_text(
     let Some(context) = context else {
         return "open details to load".to_owned();
     };
+    // Children are attached only after the row's process generation was
+    // re-verified; without that proof the PID may now name another process.
+    if context.process_start_time_marker.is_none() {
+        return "unavailable (process identity not verified)".to_owned();
+    }
     children_snapshot_text(&context.children)
 }
 
@@ -657,13 +662,25 @@ mod tests {
         );
 
         row.pid = Some(18_422);
+        let verified_without_children = ProcessContext {
+            process_start_time_marker: crate::observation::ProcessStartMarker::linux(55).ok(),
+            ..ProcessContext::default()
+        };
+        assert_eq!(
+            children_text(
+                PortEntryView::from(&row),
+                Some(&verified_without_children),
+                false
+            ),
+            "none"
+        );
         assert_eq!(
             children_text(
                 PortEntryView::from(&row),
                 Some(&ProcessContext::default()),
                 false
             ),
-            "none"
+            "unavailable (process identity not verified)"
         );
         assert_eq!(
             children_text(PortEntryView::from(&row), None, true),

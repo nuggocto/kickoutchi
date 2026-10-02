@@ -1,4 +1,3 @@
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use super::NativeObservationSource;
 use super::{Collector, FakeCollector, kill_ports_from_snapshot};
 use crate::model::SocketState;
@@ -7,11 +6,9 @@ use crate::observation::{
     ObservationError, OwnerCompleteness, OwnerObservation, ProcessIdentity, SnapshotCompleteness,
     UnverifiedOwnerReason, project_legacy, project_legacy_identities, project_legacy_pids,
 };
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use crate::observation::{NativeObservationPass, ObservationSource};
 use crate::test_support::permission_denied_owner_snapshot;
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn socket_limit_pass(
     _profile: MetadataProfile,
 ) -> Result<NativeObservationPass, super::CollectorError> {
@@ -20,7 +17,6 @@ fn socket_limit_pass(
     ))
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[expect(
     clippy::unnecessary_wraps,
     reason = "function pointer must match the fallible native adapter seam"
@@ -33,7 +29,6 @@ fn empty_process_reads(
     Ok(Vec::new())
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[expect(
     clippy::unnecessary_wraps,
     reason = "function pointer must match the fallible native adapter seam"
@@ -49,7 +44,6 @@ fn empty_native_pass(
     })
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn process_limit_reads(
     _pids: &[u32],
     _profile: MetadataProfile,
@@ -61,7 +55,6 @@ fn process_limit_reads(
 }
 
 #[test]
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn native_adapter_preserves_typed_observation_errors() {
     let mut pass_error = NativeObservationSource {
         collect_pass: socket_limit_pass,

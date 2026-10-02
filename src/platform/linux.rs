@@ -1721,6 +1721,7 @@ fn read_fresh_process_evidence(
         start_marker: ProcessStartMarker::linux(marker_after)
             .map_err(|_| ProcessEvidenceError::IdentityChanged { pid })?,
         name,
+        executable_name: None,
     })
 }
 
@@ -1764,6 +1765,7 @@ fn collect_tree_process_infos(proc_root: &Path) -> Result<Vec<TreeProcessInfo>, 
             unverified_parent_pid: None,
             parent_process_name: None,
             process_name: Some(process_name),
+            executable_name: None,
             start_time_marker: Some(stat.start_time_marker),
             owner_uid: status.owner_uid,
             process_group: stat.process_group,

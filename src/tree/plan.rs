@@ -10,7 +10,7 @@ use crate::model::{Platform, SystemProcessCheck};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::process::current_user_id;
 use crate::process::{KillMode, unsafe_pid_reason};
-use crate::protection::is_protected_process_name;
+use crate::protection::is_protected_by_names;
 
 use super::{TreeKillOutcome, TreeProcessInfo};
 
@@ -410,9 +410,12 @@ fn preview_node(
 }
 
 fn is_protected(info: &TreeProcessInfo, protected_names: &[String], platform: Platform) -> bool {
-    info.process_name
-        .as_deref()
-        .is_some_and(|name| is_protected_process_name(platform, name, protected_names))
+    is_protected_by_names(
+        platform,
+        info.process_name.as_deref(),
+        info.executable_name.as_deref(),
+        protected_names,
+    )
 }
 
 pub(super) fn is_system(

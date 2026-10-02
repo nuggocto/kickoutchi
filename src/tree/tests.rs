@@ -261,6 +261,7 @@ impl TreeProcessOps for FakeOps {
                 .process_name
                 .clone()
                 .ok_or(ProcessEvidenceError::NameMissing { pid })?,
+            executable_name: info.executable_name.clone(),
         })
     }
 
@@ -289,6 +290,7 @@ fn refusal_prepares_verified_identity_before_each_thaw() {
         rollback_start_time_marker: marker,
         resume_on_cleanup: true,
         depth: 0,
+        executable_name: None,
     }];
     let mut ops = FakeOps::new(Vec::new());
 
@@ -315,6 +317,7 @@ fn refusal_reports_only_denied_continuations_as_thaw_failures() {
         rollback_start_time_marker: marker,
         resume_on_cleanup: true,
         depth: 0,
+        executable_name: None,
     };
     let frozen = [node(42), node(43)];
     let mut ops = FakeOps::new(Vec::new());
@@ -614,6 +617,7 @@ fn info(pid: u32, parent: Option<u32>, name: &str, marker: u64) -> TreeProcessIn
         start_time_marker: crate::observation::ProcessStartMarker::linux(marker).ok(),
         owner_uid: None,
         process_group: None,
+        executable_name: None,
     }
 }
 
@@ -654,6 +658,7 @@ fn production_index_bound_is_wired_through_planning_and_final_verification() {
             start_time_marker: None,
             owner_uid: None,
             process_group: None,
+            executable_name: None,
         });
     }
 
@@ -676,6 +681,7 @@ fn production_index_bound_is_wired_through_planning_and_final_verification() {
         start_time_marker: None,
         owner_uid: None,
         process_group: None,
+        executable_name: None,
     });
     assert_eq!(
         plan_process_tree(2, &exact, &[], Platform::Linux, MAX_TREE_PROCESSES),
@@ -1010,6 +1016,90 @@ fn protected_descendant_thaws_and_refuses() {
             Event::Cont(100)
         ],
     );
+}
+
+/// A configured name longer than the macOS kernel process name survives only
+/// as the executable basename. Socket rows match it there, so tree planning and
+/// the final frozen-set policy must too.
+fn macos_truncated_member(pid: u32, parent: Option<u32>, marker: u64) -> TreeProcessInfo {
+    let mut member = info(pid, parent, &MACOS_LONG_NAME[..32], marker);
+    member.executable_name = Some(MACOS_LONG_NAME.to_owned());
+    member
+}
+
+const MACOS_LONG_NAME: &str = "kickoutchi-protected-service-with-a-long-name";
+
+#[test]
+fn macos_executable_basename_protects_descendants_in_preview_and_final_policy() {
+    let snapshot = vec![
+        info(100, Some(1), "root", 10),
+        macos_truncated_member(101, Some(100), 11),
+    ];
+    let protected = [MACOS_LONG_NAME.to_owned()];
+    let refusal = TreeKillOutcome::ProtectedDescendant {
+        pid: 101,
+        name: Some(MACOS_LONG_NAME[..32].to_owned()),
+    };
+
+    let preview = plan_process_tree(100, &snapshot, &protected, Platform::Macos, 256)
+        .expect("preview builds");
+    assert_eq!(super::preflight_outcome(&preview), Err(refusal.clone()));
+    let name_only = plan_process_tree(100, &snapshot, &protected, Platform::Linux, 256)
+        .expect("preview builds");
+    assert_eq!(super::preflight_outcome(&name_only), Ok(()));
+
+    let mut ops = FakeOps::new(vec![snapshot.clone(), snapshot.clone(), snapshot]);
+    let outcome = execute_tree_kill(
+        &root_target(100, "root", 10),
+        KillMode::Terminate,
+        &protected,
+        Platform::Macos,
+        auth(),
+        &mut ops,
+    );
+
+    assert_eq!(outcome, refusal);
+    assert!(ops.delivered_pids().is_empty());
+}
+
+#[test]
+fn macos_executable_basename_protects_a_portless_root_until_confirmed() {
+    let snapshot = vec![macos_truncated_member(100, Some(1), 10)];
+    let protected = [MACOS_LONG_NAME.to_owned()];
+    let preview = plan_process_tree(100, &snapshot, &protected, Platform::Macos, 256)
+        .expect("preview builds");
+    assert!(matches!(
+        super::root_protection_outcome(&preview, false),
+        Err(TreeKillOutcome::ProtectedRoot { pid: 100, .. })
+    ));
+
+    let root = root_target(100, &MACOS_LONG_NAME[..32], 10);
+    let mut ops = FakeOps::new(vec![snapshot.clone(), snapshot.clone(), snapshot.clone()]);
+    let refused = execute_tree_kill(
+        &root,
+        KillMode::Terminate,
+        &protected,
+        Platform::Macos,
+        auth(),
+        &mut ops,
+    );
+    assert!(matches!(
+        refused,
+        TreeKillOutcome::ProtectedRoot { pid: 100, .. }
+    ));
+    assert!(ops.delivered_pids().is_empty());
+
+    let mut ops = FakeOps::new(vec![snapshot.clone(), snapshot.clone(), snapshot]);
+    let confirmed = execute_tree_kill(
+        &root,
+        KillMode::Terminate,
+        &protected,
+        Platform::Macos,
+        ScopeAuthorization::ProtectedRootAndWordConfirmed,
+        &mut ops,
+    );
+    assert!(matches!(confirmed, TreeKillOutcome::Completed(_)));
+    assert_eq!(ops.delivered_pids(), [100]);
 }
 
 #[test]
@@ -1518,6 +1608,7 @@ fn group_final_verification_reuses_the_convergence_snapshot() {
             start_marker: crate::observation::ProcessStartMarker::linux(10)
                 .expect("test marker is valid"),
             name: "root".to_owned(),
+            executable_name: None,
         }),
     );
 
@@ -2119,6 +2210,7 @@ fn newly_protected_final_evidence_refuses_before_any_delivery() {
             start_marker: crate::observation::ProcessStartMarker::linux(11)
                 .expect("nonzero marker"),
             name: "postgres".to_owned(),
+            executable_name: None,
         }),
     );
 

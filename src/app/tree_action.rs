@@ -86,8 +86,9 @@ pub(super) fn fresh_tree_gates<Ops: TreeProcessOps>(
     Ok(())
 }
 
-/// Status-bar wording for tree outcomes, mirroring the CLI's stderr wording so
-/// the two surfaces describe the same outcome the same way.
+/// Status-bar wording for tree outcomes. It reports the same facts as the
+/// CLI's stderr wording; recovery instructions precede PID lists so a long
+/// list cannot push them out of the bounded status area.
 pub(super) fn tree_kill_status_line(
     root: &KillTarget,
     mode: KillMode,
@@ -99,12 +100,12 @@ pub(super) fn tree_kill_status_line(
     let delivery = mode.delivery_label(root.platform);
     match outcome {
         TreeKillOutcome::ThawFailed { pids, cause } => format!(
-            "{}; cleanup failed for PID(s) {}; they may remain stopped and require SIGCONT",
+            "{}; cleanup failed, so these PID(s) may remain stopped and require SIGCONT: {}",
             sanitize(&cause.failure_cause_text()),
             tree::format_pid_list(pids),
         ),
         TreeKillOutcome::Completed(report) if !report.thaw_failed.is_empty() => format!(
-            "sent {delivery}, but PID(s) {} may remain stopped because SIGCONT failed",
+            "sent {delivery}, but SIGCONT failed, so these PID(s) may remain stopped: {}",
             tree::format_pid_list(&report.thaw_failed),
         ),
         TreeKillOutcome::Completed(report)

@@ -20,7 +20,7 @@ use crate::process::{
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::process_evidence::{ExpectedProcessEvidence, ProcessEvidenceScope};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use crate::protection::is_protected_process_name;
+use crate::protection::is_protected_by_names;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::collections::{HashMap, HashSet};
 
@@ -59,6 +59,7 @@ pub(super) struct FrozenNode {
     pub(super) parent_pid: Option<u32>,
     pub(super) parent_process_name: Option<String>,
     pub(super) process_name: Option<String>,
+    pub(super) executable_name: Option<String>,
     pub(super) owner_uid: Option<u32>,
     /// Identity authorized for termination. This never changes after discovery.
     pub(super) start_time_marker: Option<ProcessStartMarker>,
@@ -79,6 +80,7 @@ impl FrozenNode {
             parent_pid: info.parent_pid,
             parent_process_name: info.parent_process_name.clone(),
             process_name: info.process_name.clone(),
+            executable_name: info.executable_name.clone(),
             owner_uid: info.owner_uid,
             start_time_marker: info.start_time_marker,
             rollback_start_time_marker: info.start_time_marker,
@@ -401,6 +403,7 @@ fn execute_freeze_kill<Ops: TreeProcessOps>(
                     parent_pid: None,
                     parent_process_name: None,
                     process_name: root.process_name.clone(),
+                    executable_name: None,
                     owner_uid: root.owner_uid,
                     start_time_marker: root.process_start_time_marker,
                     rollback_start_time_marker,
@@ -428,6 +431,7 @@ fn execute_freeze_kill<Ops: TreeProcessOps>(
                     parent_pid: None,
                     parent_process_name: None,
                     process_name: root.process_name.clone(),
+                    executable_name: None,
                     owner_uid: root.owner_uid,
                     start_time_marker: root.process_start_time_marker,
                     rollback_start_time_marker,
@@ -514,6 +518,7 @@ fn verify_root_after_stop<Ops: TreeProcessOps>(
             Some(Box::new(observed)),
         ));
     }
+
     // For group scope the confirmed group is part of the root's identity: the
     // sweep derives every other member from it, so a root that moved groups
     // between confirmation and freeze would silently retarget the whole kill.
@@ -650,6 +655,7 @@ fn freeze_sweep<Ops: TreeProcessOps>(
             return Ok(snapshot);
         }
     }
+
     // Never reached a clean empty pass: the member set kept changing, so we
     // cannot claim to have enumerated it completely.
     Err(TreeKillOutcome::SweepPassLimit {
@@ -732,6 +738,7 @@ pub(super) fn verify_frozen_identities(
             return Err(TreeKillOutcome::TargetChanged { pid: node.pid });
         }
         node.process_name.clone_from(&info.process_name);
+        node.executable_name.clone_from(&info.executable_name);
         node.owner_uid = info.owner_uid;
     }
     Ok(())
@@ -774,6 +781,7 @@ fn verify_fresh_delivery_evidence<Ops: TreeProcessOps>(
             .observe(&expected, ops.fresh_process_evidence(node.pid))
             .map_err(evidence_tree_outcome)?;
         node.process_name = Some(fresh.name);
+        node.executable_name = fresh.executable_name;
     }
     scope.finish().map_err(evidence_tree_outcome)
 }
@@ -815,32 +823,38 @@ fn check_tree_policy(
             return Err(TreeKillOutcome::PartialMetadata { pid: node.pid });
         }
     }
+    let protected = |node: &FrozenNode| {
+        is_protected_by_names(
+            platform,
+            node.process_name.as_deref(),
+            node.executable_name.as_deref(),
+            protected_names,
+        )
+    };
     // A protected descendant refuses the whole tree in v1.
-    for node in frozen.iter().filter(|node| node.depth > 0) {
-        if let Some(name) = node.process_name.as_deref()
-            && is_protected_process_name(platform, name, protected_names)
-        {
-            return Err(TreeKillOutcome::ProtectedDescendant {
-                pid: node.pid,
-                name: Some(name.to_owned()),
-            });
-        }
+    if let Some(node) = frozen.iter().find(|node| node.depth > 0 && protected(node)) {
+        return Err(TreeKillOutcome::ProtectedDescendant {
+            pid: node.pid,
+            name: node.process_name.clone(),
+        });
     }
-    // The root's protection is re-checked against its fresh post-stop name.
-    // The confirmation-stage verdict used whatever name was readable then, but
-    // `exec` swaps the name without changing the PID, parent, or start marker
-    // while an unknown confirmed name makes the identity check name-blind. A
-    // newly protected root requires completed protected-root confirmation.
+
+    // The root's protection is re-checked against its fresh post-stop evidence:
+    // the name, plus the executable basename on macOS. The confirmation-stage
+    // verdict used whatever was readable then, but `exec` swaps both without
+    // changing the PID, parent, or start marker, while an unknown confirmed name
+    // makes the identity check name-blind. A newly protected root requires
+    // completed protected-root confirmation.
     if !authorization.protected_root_confirmed()
         && let Some(root) = frozen.iter().find(|node| node.depth == 0)
-        && let Some(name) = root.process_name.as_deref()
-        && is_protected_process_name(platform, name, protected_names)
+        && protected(root)
     {
         return Err(TreeKillOutcome::ProtectedRoot {
             pid: root.pid,
-            name: Some(name.to_owned()),
+            name: root.process_name.clone(),
         });
     }
+
     // Refuse a skipped prompt if the final frozen set no longer satisfies the
     // preview's all-clear policy.
     if authorization.prompt_skipped() {

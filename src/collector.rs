@@ -373,7 +373,6 @@ impl Collector for FakeCollector {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) fn collect_native_snapshot<Collect, ReadProcesses>(
     profile: MetadataProfile,
     scope: ObservationScope,
@@ -392,13 +391,11 @@ where
     collect_consistent(&mut source, scope, profile).map_err(CollectorError::from)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 struct NativeObservationSource<Collect, ReadProcesses> {
     collect_pass: Collect,
     read_processes: ReadProcesses,
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 impl<Collect, ReadProcesses> ObservationSource for NativeObservationSource<Collect, ReadProcesses>
 where
     Collect: FnMut(MetadataProfile) -> Result<NativeObservationPass, CollectorError>,
@@ -427,7 +424,6 @@ where
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn native_observation_error(error: CollectorError) -> ObservationError {
     match error {
         CollectorError::Observation(error) => error,

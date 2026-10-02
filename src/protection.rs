@@ -62,11 +62,31 @@ pub(crate) fn is_protected_process(
     executable_path: Option<&Path>,
     protected_names: &[String],
 ) -> bool {
+    is_protected_by_names(
+        platform,
+        name,
+        executable_path
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str()),
+        protected_names,
+    )
+}
+
+/// The protection rule over a process name and executable basename.
+///
+/// Socket views, scoped planning, and the final pre-signal checks all apply
+/// this rule. On macOS the kernel process name is truncated, so a configured
+/// name also matches the executable basename exactly. Other platforms decide
+/// by process name alone.
+pub(crate) fn is_protected_by_names(
+    platform: Platform,
+    name: Option<&str>,
+    executable_name: Option<&str>,
+    protected_names: &[String],
+) -> bool {
     name.is_some_and(|name| is_protected_process_name(platform, name, protected_names))
         || (platform == Platform::Macos
-            && executable_path
-                .and_then(Path::file_name)
-                .and_then(|name| name.to_str())
+            && executable_name
                 .is_some_and(|name| protected_names.iter().any(|protected| protected == name)))
 }
 
@@ -135,7 +155,10 @@ fn linux_comm_prefix(name: &str) -> Cow<'_, str> {
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
 
-    use super::{default_protected_processes, is_protected_process_name, mark_protected};
+    use super::{
+        default_protected_processes, is_protected_by_names, is_protected_process_name,
+        mark_protected,
+    };
     use crate::model::{PermissionStatus, Platform, PortEntry, Protocol, SocketState};
 
     fn entry(port: u16, name: Option<&str>, platform: Platform) -> PortEntry {
@@ -302,6 +325,44 @@ mod tests {
         assert!(rows[0].protected);
         assert!(!rows[1].protected);
         assert!(!rows[2].protected);
+    }
+
+    #[test]
+    fn executable_name_protects_only_on_macos_and_only_exactly() {
+        let protected = vec!["kickoutchi-protected-service-with-a-long-name".to_owned()];
+        let truncated = Some("kickoutchi-protected-service-wit");
+        let executable = Some("kickoutchi-protected-service-with-a-long-name");
+
+        assert!(!is_protected_by_names(
+            Platform::Macos,
+            truncated,
+            None,
+            &protected
+        ));
+        assert!(is_protected_by_names(
+            Platform::Macos,
+            truncated,
+            executable,
+            &protected
+        ));
+        assert!(is_protected_by_names(
+            Platform::Macos,
+            None,
+            executable,
+            &protected
+        ));
+        assert!(!is_protected_by_names(
+            Platform::Macos,
+            None,
+            Some("kickoutchi-protected-service-with-a-long-name.old"),
+            &protected,
+        ));
+        assert!(!is_protected_by_names(
+            Platform::Linux,
+            None,
+            executable,
+            &protected
+        ));
     }
 
     #[test]

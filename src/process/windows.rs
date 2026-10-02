@@ -81,54 +81,26 @@ pub(super) fn terminate_handle_checked_platform(
 fn windows_fresh_process_evidence(
     handle: &TerminationHandle,
 ) -> Result<FreshProcessEvidence, ProcessEvidenceError> {
-    use windows_sys::Win32::System::Threading::{PROCESS_NAME_WIN32, QueryFullProcessImageNameW};
-    const CODE_UNITS: usize = crate::observation::PROTECTION_NAME_MAX_BYTES / 2;
-
     let marker =
         crate::platform::windows::process_start_time_marker_from_handle(&handle.process_handle)
             .ok_or(ProcessEvidenceError::Missing { pid: handle.pid })?;
-    let mut buffer = [0_u16; CODE_UNITS];
-    let mut length = u32::try_from(buffer.len()).expect("fixed evidence buffer fits u32");
-    let result = unsafe {
-        // SAFETY: the prepared process handle remains owned and the fixed buffer
-        // is valid for `length` UTF-16 writes.
-        QueryFullProcessImageNameW(
-            handle.process_handle.as_raw_handle(),
-            PROCESS_NAME_WIN32,
-            buffer.as_mut_ptr(),
-            &raw mut length,
-        )
-    };
-    if result == 0 {
-        let error = std::io::Error::last_os_error();
-        return Err(if windows_error_code(&error) == Some(ERROR_ACCESS_DENIED) {
-            ProcessEvidenceError::PermissionDenied { pid: handle.pid }
-        } else {
-            ProcessEvidenceError::Missing { pid: handle.pid }
-        });
-    }
-    let code_units =
-        native_utf16_prefix(&buffer, length).ok_or(ProcessEvidenceError::NameOversized {
-            pid: handle.pid,
-            bytes: usize::try_from(length)
-                .unwrap_or(usize::MAX)
-                .saturating_mul(2),
-        })?;
-    let path = String::from_utf16_lossy(code_units);
-    let name = std::path::Path::new(&path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(str::to_owned)
+    // Read the whole image path, then bound only the protection name taken
+    // from it. A long install directory is not oversized evidence.
+    let name = crate::platform::windows::process_image_file_name(&handle.process_handle)
+        .map_err(|error| {
+            if windows_error_code(&error) == Some(ERROR_ACCESS_DENIED) {
+                ProcessEvidenceError::PermissionDenied { pid: handle.pid }
+            } else {
+                ProcessEvidenceError::Missing { pid: handle.pid }
+            }
+        })?
         .ok_or(ProcessEvidenceError::NameMissing { pid: handle.pid })?;
     Ok(FreshProcessEvidence {
         pid: handle.pid,
         start_marker: marker,
         name,
+        executable_name: None,
     })
-}
-
-pub(super) fn native_utf16_prefix(buffer: &[u16], reported_length: u32) -> Option<&[u16]> {
-    buffer.get(..usize::try_from(reported_length).ok()?)
 }
 
 const WINDOWS_TERMINATE_EXIT_CODE: u32 = 1;

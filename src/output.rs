@@ -55,6 +55,7 @@ pub(crate) fn write_view_table<'a>(
     if show_labels {
         return write_labeled_view_table(writer, view_at, indices);
     }
+
     // Each column grows to its widest cell. The model's own types keep content
     // in check (addresses, ports, PIDs, short comm-style names), so there's no
     // need for a width cap. Command lines are not table columns.

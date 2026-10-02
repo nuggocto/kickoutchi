@@ -55,6 +55,7 @@ fn entry(port: u16, name: Option<&str>) -> PortEntry {
 fn entry_without_pid(port: u16) -> PortEntry {
     let mut row = entry(port, Some("hidden"));
     row.pid = None;
+    row.process_identity = None;
     row.permission = PermissionStatus::Partial;
     row
 }
@@ -70,8 +71,7 @@ fn app_with_rows(rows: Vec<PortEntry>) -> App {
 
 fn context(start_time_ticks: u64) -> ProcessContext {
     ProcessContext {
-        process_start_time_marker: crate::observation::ProcessStartMarker::linux(start_time_ticks)
-            .ok(),
+        process_start_time_marker: marker(start_time_ticks),
         ..ProcessContext::default()
     }
 }
@@ -105,8 +105,8 @@ fn finish_selected_context(app: &mut App, context: ProcessContext) {
     app.poll_process_context();
 }
 
-fn set_confirmation_start_time(app: &mut App, start_time_ticks: u64) {
-    finish_selected_context(app, context(start_time_ticks));
+fn marker(start_time_ticks: u64) -> Option<crate::observation::ProcessStartMarker> {
+    crate::observation::ProcessStartMarker::linux(start_time_ticks).ok()
 }
 
 #[test]
@@ -136,10 +136,13 @@ fn preserved_selection_distinguishes_ipv6_interface_scopes() {
 fn selected_context_can_attach_docker_metadata_without_a_pid() {
     let row = entry_without_pid(5432);
 
-    let context =
-        super::collect_selected_process_context_with(PortEntryView::from(&row), true, |_| {
-            Some(docker_context())
-        });
+    let context = super::collect_selected_process_context_with(
+        PortEntryView::from(&row),
+        true,
+        |_| panic!("a row without a PID has no process context to read"),
+        |_| panic!("a row without a PID has no process generation to check"),
+        |_| Some(docker_context()),
+    );
 
     assert_eq!(context.children.children.len(), 0);
     assert!(context.process_start_time_marker.is_none());
@@ -159,11 +162,16 @@ fn selected_context_requests_docker_enrichment_without_a_rendering_gate() {
     row.executable_path = Some(std::path::PathBuf::from("/usr/bin/docker-proxy").into());
     let enrichment_requested = Cell::new(false);
 
-    let _context =
-        super::collect_selected_process_context_with(PortEntryView::from(&row), true, |_| {
+    let _context = super::collect_selected_process_context_with(
+        PortEntryView::from(&row),
+        true,
+        |_| context(55),
+        |_| marker(55),
+        |_| {
             enrichment_requested.set(true);
             None
-        });
+        },
+    );
 
     assert!(enrichment_requested.get());
 }
@@ -173,14 +181,66 @@ fn disabled_docker_enrichment_never_invokes_the_enricher() {
     let row = entry(5432, Some("docker-proxy"));
     let enrichment_requested = Cell::new(false);
 
-    let context =
-        super::collect_selected_process_context_with(PortEntryView::from(&row), false, |_| {
+    let context = super::collect_selected_process_context_with(
+        PortEntryView::from(&row),
+        false,
+        |_| context(55),
+        |_| marker(55),
+        |_| {
             enrichment_requested.set(true);
             Some(docker_context())
-        });
+        },
+    );
 
     assert!(!enrichment_requested.get());
     assert!(context.docker.is_none());
+}
+
+#[test]
+fn selected_context_keeps_process_facts_only_for_the_rows_process_generation() {
+    let row = entry(3000, Some("node"));
+    let owned = || ProcessContext {
+        owner_uid: Some(1000),
+        children: crate::model::ChildProcessSnapshot {
+            children: vec![crate::model::ChildProcess {
+                pid: 3001,
+                process_name: Some("worker".to_owned()),
+            }],
+            truncated: false,
+        },
+        ..context(55)
+    };
+    let collect = |context_marker: u64, after_marker: u64| {
+        super::collect_selected_process_context_with(
+            PortEntryView::from(&row),
+            false,
+            |pid| {
+                assert_eq!(pid, 3000);
+                ProcessContext {
+                    process_start_time_marker: marker(context_marker),
+                    ..owned()
+                }
+            },
+            |_| marker(after_marker),
+            |_| None,
+        )
+    };
+
+    assert_eq!(collect(55, 55), owned());
+    // The PID was reused before the context read, or during it.
+    assert_eq!(collect(56, 56), ProcessContext::default());
+    assert_eq!(collect(55, 56), ProcessContext::default());
+
+    let mut unverified = row.clone();
+    unverified.process_identity = None;
+    let context = super::collect_selected_process_context_with(
+        PortEntryView::from(&unverified),
+        false,
+        |_| panic!("an unverified PID must not attach process-owned facts"),
+        |_| panic!("an unverified PID has no generation to check"),
+        |_| None,
+    );
+    assert_eq!(context, ProcessContext::default());
 }
 
 #[test]
@@ -528,7 +588,7 @@ fn auto_refresh_pauses_while_kill_confirmation_is_open() {
 fn confirmed_kill_revalidates_signals_and_refreshes_rows() {
     let mut app = app_with_rows(vec![entry(3000, Some("node"))]);
     app.apply_action(Action::RequestTerminate);
-    set_confirmation_start_time(&mut app, 55);
+    finish_selected_context(&mut app, context(55));
     let fresh_before_signal = vec![entry(3000, Some("node"))];
     let fresh_after_signal = Vec::new();
     let mut kill_collect_calls = 0;
@@ -573,7 +633,7 @@ fn confirmed_kill_revalidates_signals_and_refreshes_rows() {
 fn confirmed_kill_refuses_stale_process_identity_without_signalling() {
     let mut app = app_with_rows(vec![entry(3000, Some("node"))]);
     app.apply_action(Action::RequestTerminate);
-    set_confirmation_start_time(&mut app, 55);
+    finish_selected_context(&mut app, context(55));
     let mut stale = entry(3000, Some("node"));
     stale.process_identity = Some(crate::observation::ProcessIdentity {
         pid: 3000,
@@ -610,7 +670,7 @@ fn prepare_already_exited_refreshes_snapshot_so_freed_port_drops() {
     // row, so verify that re-collect actually runs.
     let mut app = app_with_rows(vec![entry(3000, Some("node"))]);
     app.apply_action(Action::RequestTerminate);
-    set_confirmation_start_time(&mut app, 55);
+    finish_selected_context(&mut app, context(55));
     let fresh_after_exit: Vec<PortEntry> = Vec::new();
     let mut collect_calls = 0;
     let mut terminated = false;
@@ -655,7 +715,7 @@ fn confirmed_kill_discards_stale_in_flight_refresh_so_freed_port_cannot_reappear
     });
 
     app.apply_action(Action::RequestTerminate);
-    set_confirmation_start_time(&mut app, 55);
+    finish_selected_context(&mut app, context(55));
     let fresh_before_signal = vec![entry(3000, Some("node"))];
     let fresh_after_signal: Vec<PortEntry> = Vec::new();
     let mut kill_collect_calls = 0;
@@ -880,6 +940,14 @@ fn refresh_reloads_details_context_when_modal_stays_open() {
     assert_eq!(app.selected_process_context(), None);
 
     finish_selected_context(&mut app, context(56));
+    assert_eq!(
+        app.selected_process_context(),
+        None,
+        "context from another process generation must not attach to the row",
+    );
+
+    app.apply_action(Action::OpenDetails);
+    finish_selected_context(&mut app, context(55));
     assert!(app.selected_process_context().is_some());
 }
 
@@ -918,11 +986,22 @@ fn refresh_moves_selection_to_nearest_row_when_selected_row_disappears() {
 #[test]
 fn collection_error_keeps_last_successful_rows_visible() {
     let mut app = app_with_rows(vec![entry(3000, Some("node"))]);
-    app.latest_error = Some("cannot read /proc/net/tcp".to_owned());
-    app.rebuild_visible_rows();
+    app.refresh_with(|| {
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(Ok(Err(crate::collector::CollectorError::Observation(
+                crate::observation::ObservationError::SocketTableUnavailable,
+            ))))
+            .expect("refresh receiver is retained");
+        Ok(receiver)
+    });
 
+    app.poll_refresh();
+
+    assert!(!app.refresh_in_progress());
     assert_eq!(app.rows().len(), 1);
-    assert_eq!(app.latest_error(), Some("cannot read /proc/net/tcp"));
+    assert_eq!(app.selected_row().map(|row| row.local_port), Some(3000));
+    assert_eq!(app.latest_error(), Some("socket table is unavailable"));
 }
 
 #[test]
@@ -1055,6 +1134,7 @@ mod tree_kill {
             start_time_marker: crate::observation::ProcessStartMarker::linux(marker).ok(),
             owner_uid: None,
             process_group: None,
+            executable_name: None,
         }
     }
 

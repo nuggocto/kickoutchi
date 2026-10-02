@@ -1,6 +1,5 @@
 use crate::model::entry_views;
 use std::cell::RefCell;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::io::Write;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::net::{IpAddr, Ipv4Addr};
@@ -15,18 +14,14 @@ use super::{
     tree_confirmation,
 };
 use crate::cli::ExitReason;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use crate::cli::KillArgs;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::cli::test_support::entry_with_pid;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use crate::cli::test_support::{entry, no_context};
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use crate::config::Config;
 use crate::model::{PermissionStatus, Platform, Protocol};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::model::{PortEntry, SocketState};
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use crate::observation::{
     EvidenceGapCode, EvidenceImpact, MetadataProfile, NetworkSnapshot, OwnerCompleteness,
     SnapshotCompleteness,
@@ -65,7 +60,6 @@ fn already_exited_single_outcome_maps_to_root_already_exited() {
     );
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn locally_incomplete_kill_snapshot() -> NetworkSnapshot {
     use crate::collector::Collector;
 
@@ -124,6 +118,7 @@ fn windows_tree_authority_refusal_precedes_job_assignment() {
         start_time_marker: crate::observation::ProcessStartMarker::windows(55).ok(),
         owner_uid: None,
         process_group: None,
+        executable_name: None,
     }];
 
     let reason = super::run_windows_tree_kill_with(
@@ -167,6 +162,7 @@ fn windows_port_tree_root_exit_during_preparation_is_no_match() {
         start_time_marker: crate::observation::ProcessStartMarker::windows(55).ok(),
         owner_uid: None,
         process_group: None,
+        executable_name: None,
     }];
     let events = RefCell::new(Vec::new());
 
@@ -217,6 +213,7 @@ fn windows_port_owner_move_after_root_prepare_never_commits_job() {
         start_time_marker: crate::observation::ProcessStartMarker::windows(55).ok(),
         owner_uid: None,
         process_group: None,
+        executable_name: None,
     }];
     let moved = vec![crate::cli::test_support::entry_with_pid(
         3000,
@@ -679,6 +676,7 @@ fn tree_info(pid: u32, parent_pid: Option<u32>, name: &str) -> TreeProcessInfo {
         start_time_marker: crate::observation::ProcessStartMarker::linux(u64::from(pid)).ok(),
         owner_uid: None,
         process_group: None,
+        executable_name: None,
     }
 }
 
@@ -977,6 +975,7 @@ fn fresh_tree_warning_after_yes_skip_refuses_before_any_stop() {
             start_time_marker: crate::observation::ProcessStartMarker::linux(18_423).ok(),
             owner_uid: None,
             process_group: None,
+            executable_name: None,
         },
     ];
     let mut ops = RecordingTreeOps::new(vec![clean, warned]);
@@ -1081,6 +1080,7 @@ fn root_turning_protected_between_confirmation_and_freeze_refuses_with_exit_6() 
         start_time_marker: crate::observation::ProcessStartMarker::linux(18_422).ok(),
         owner_uid: None,
         process_group: None,
+        executable_name: None,
     }];
     let config = Config {
         protected_processes: vec!["postgres".to_owned()],
@@ -1137,6 +1137,7 @@ fn completed_protected_confirmation_passes_the_root_protection_gate() {
         start_time_marker: crate::observation::ProcessStartMarker::linux(55).ok(),
         owner_uid: None,
         process_group: None,
+        executable_name: None,
     }];
     let config = Config {
         protected_processes: vec!["postgres".to_owned()],

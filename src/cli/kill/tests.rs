@@ -25,7 +25,6 @@ fn kill_pid(pid: u32, force: bool, yes: bool) -> KillArgs {
         port: None,
         force,
         yes,
-        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         tree: false,
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         group: false,
@@ -38,7 +37,6 @@ fn kill_port(port: u16, force: bool, yes: bool) -> KillArgs {
         port: Some(port),
         force,
         yes,
-        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         tree: false,
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         group: false,

@@ -282,6 +282,7 @@ fn info(pid: u32, parent_pid: Option<u32>, marker: u64) -> TreeProcessInfo {
         start_time_marker: crate::observation::ProcessStartMarker::windows(marker).ok(),
         owner_uid: None,
         process_group: None,
+        executable_name: None,
     }
 }
 

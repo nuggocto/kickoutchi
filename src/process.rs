@@ -15,7 +15,7 @@ use crate::observation::{Ipv6Scope, ProcessIdentity, ProcessStartMarker};
 use crate::process_evidence::{
     ExpectedProcessEvidence, FreshProcessEvidence, ProcessEvidenceError, ProcessEvidenceScope,
 };
-use crate::protection::{is_protected_process_name, windows_process_name_eq};
+use crate::protection::{is_protected_by_names, windows_process_name_eq};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) const UNIX_STOP_ACKNOWLEDGEMENT_MAX: std::time::Duration =
@@ -342,6 +342,7 @@ impl KillTarget {
             }
             ports.push(KillTargetPort::from(entry));
         }
+
         // Port rows define the target used by confirmation and revalidation.
         // An empty set is a programmer error, so the invariant is enforced in
         // release builds as well.
@@ -377,8 +378,22 @@ impl KillTarget {
         )
     }
 
-    pub(crate) fn process_name_or_unknown(&self) -> &str {
-        self.process_name.as_deref().unwrap_or("<unknown>")
+    /// The name a user may type to confirm a protected target, as displayed.
+    ///
+    /// `None` when the sanitized name is empty or has edge whitespace: typed
+    /// input is trimmed, so such a name could only be matched by an answer that
+    /// does not show it, such as an empty line. PID confirmation stays available.
+    pub(crate) fn protected_confirmation_name(&self) -> Option<String> {
+        let name = sanitize(self.process_name.as_deref()?);
+        (!name.is_empty() && name.trim() == name).then_some(name)
+    }
+
+    /// Prompt wording for the facts that confirm a protected target.
+    pub(crate) fn protected_confirmation_choices(&self) -> String {
+        match self.protected_confirmation_name() {
+            Some(name) => format!("PID {} or process name {name}", self.pid),
+            None => format!("PID {}", self.pid),
+        }
     }
 
     pub(crate) fn ports_text(&self) -> String {
@@ -600,14 +615,14 @@ pub(crate) fn confirmation_input_matches(
         }
         ConfirmationRequirement::ForceWord => trimmed.eq_ignore_ascii_case("force"),
         ConfirmationRequirement::ProtectedProcess => {
-            trimmed == target.pid.to_string()
-                || target
-                    .process_name
-                    .as_deref()
-                    .is_some_and(|name| match target.platform {
-                        Platform::Windows => windows_process_name_eq(trimmed, &sanitize(name)),
-                        Platform::Linux | Platform::Macos => trimmed == sanitize(name),
-                    })
+            !trimmed.is_empty()
+                && (trimmed == target.pid.to_string()
+                    || target.protected_confirmation_name().is_some_and(|name| {
+                        match target.platform {
+                            Platform::Windows => windows_process_name_eq(trimmed, &name),
+                            Platform::Linux | Platform::Macos => trimmed == name,
+                        }
+                    }))
         }
     }
 }
@@ -628,15 +643,12 @@ pub(crate) fn target_still_matches_confirmation(
         }
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-    {
-        match (
-            confirmed.process_start_time_marker,
-            fresh.process_start_time_marker,
-        ) {
-            (Some(confirmed_start), Some(fresh_start)) if confirmed_start == fresh_start => {}
-            _ => return false,
-        }
+    match (
+        confirmed.process_start_time_marker,
+        fresh.process_start_time_marker,
+    ) {
+        (Some(confirmed_start), Some(fresh_start)) if confirmed_start == fresh_start => {}
+        _ => return false,
     }
 
     confirmed
@@ -716,6 +728,7 @@ pub(crate) fn validate_single_delivery_evidence(
                 pid: fresh.pid,
                 start_marker: fresh_marker,
                 name: fresh_name,
+                executable_name: None,
             }),
         )
         .map_err(single_evidence_outcome)?;
@@ -800,7 +813,12 @@ fn check_final_evidence(
         .observe(&expected, fresh)
         .map_err(single_evidence_outcome)?;
     scope.finish().map_err(single_evidence_outcome)?;
-    if is_protected_process_name(target.platform, &fresh.name, protected_names) && !target.protected
+    if is_protected_by_names(
+        target.platform,
+        Some(&fresh.name),
+        fresh.executable_name.as_deref(),
+        protected_names,
+    ) && !target.protected
     {
         return Err(TerminationOutcome::ProtectedProcess);
     }
@@ -964,6 +982,7 @@ fn outcome_from_errno(operation: &str, error: &std::io::Error) -> TerminationOut
         Some(code) if code == libc::EPERM || code == libc::EACCES => {
             TerminationOutcome::PermissionDenied
         }
+
         // pidfd_open landed in Linux 5.3 and pidfd_send_signal in 5.1, so an
         // older kernel reports ENOSYS for the missing syscall. Name the floor so
         // the message is actionable rather than just "unsupported".
@@ -981,7 +1000,7 @@ fn outcome_from_errno(operation: &str, error: &std::io::Error) -> TerminationOut
 mod windows;
 
 #[cfg(all(test, windows))]
-use windows::{native_utf16_prefix, windows_api_outcome};
+use windows::windows_api_outcome;
 #[cfg(windows)]
 use windows::{prepare_termination_platform, terminate_handle_checked_platform};
 

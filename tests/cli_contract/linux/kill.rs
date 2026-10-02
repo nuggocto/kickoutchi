@@ -29,6 +29,57 @@ fn kernel_truncated_unicode_name_remains_protected_and_terminable() {
 }
 
 #[test]
+fn protected_name_that_renders_empty_cannot_be_confirmed_by_an_empty_answer() {
+    let _host_observation = lock_host_observation();
+    let name = "\u{1b}[31m";
+    let (mut helper, _port, ready_file) = spawn_listener_process_with_options(true, Some(name));
+    let _ready_file = FileGuard(ready_file);
+    let pid_text = helper.id().to_string();
+    let config = "protected_processes = [\"\\u001b[31m\"]\n";
+
+    let listed = kickoutchi_with_config(
+        &["list", "--json", "--filter", &format!("pid:{pid_text}")],
+        config,
+    );
+    assert_eq!(listed.status.code(), Some(0), "{}", stderr(&listed));
+    assert!(
+        stdout(&listed).contains("\"protected\": true"),
+        "{}",
+        stdout(&listed)
+    );
+
+    for answer in ["\n", ""] {
+        let output =
+            kickoutchi_with_config_and_stdin(&["kill", "--pid", &pid_text], config, answer);
+        assert_eq!(
+            output.status.code(),
+            Some(5),
+            "{answer:?}: {}",
+            stderr(&output)
+        );
+        assert!(
+            stderr(&output).contains(&format!("type PID {pid_text} to confirm")),
+            "{}",
+            stderr(&output),
+        );
+        assert!(
+            !stderr(&output).contains("sent SIGTERM"),
+            "{}",
+            stderr(&output)
+        );
+        assert_helper_survived_refusal(&mut helper);
+    }
+
+    let confirmed = kickoutchi_with_config_and_stdin(
+        &["kill", "--pid", &pid_text],
+        config,
+        &format!("{pid_text}\n"),
+    );
+    assert_eq!(confirmed.status.code(), Some(0), "{}", stderr(&confirmed));
+    wait_for_child_exit(&mut helper);
+}
+
+#[test]
 fn configured_protected_process_refuses_yes_kill_with_exit_6() {
     let _host_observation = lock_host_observation();
     let (mut helper, _port, ready_file) = spawn_listener_process();

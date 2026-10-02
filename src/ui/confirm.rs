@@ -3,19 +3,17 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use ratatui::widgets::Wrap;
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
 use crate::app::{self, App, KillConfirmation};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::app::{TreeConfirmStage, TreeKillConfirmation};
 use crate::display::sanitize;
-use crate::process::{ConfirmationRequirement, WarningScope};
+use crate::process::{ConfirmationRequirement, KillTarget, WarningScope};
 
-use super::{field, theme::Theme};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-use super::{rendered_rows, wrapped_rows};
+use super::wrapped_rows;
+use super::{field, rendered_rows, theme::Theme};
 
 /// Ceiling on the node preview inside the tree confirmation modal. The actual
 /// number of preview rows is budgeted per render from the modal height, so the
@@ -23,20 +21,28 @@ use super::{rendered_rows, wrapped_rows};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const TREE_MODAL_PREVIEW_MAX: usize = 8;
 
-pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
+/// Render the single-process confirmation modal.
+///
+/// Returns `false` when the modal cannot show every warning and the prompt in
+/// full; the caller must then cancel instead of leaving a clipped prompt open.
+pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App, theme: Theme) -> bool {
     let content_rows = usize::from(area.height.saturating_sub(2));
+    let content_cols = usize::from(area.width.saturating_sub(2));
     let lines = app.kill_confirmation().map_or_else(
         || {
-            vec![Line::styled(
+            Some(vec![Line::styled(
                 "No termination target selected.",
                 theme.muted(),
-            )]
+            )])
         },
-        |confirmation| confirmation_lines(confirmation, theme, content_rows),
+        |confirmation| confirmation_lines(confirmation, theme, content_rows, content_cols),
+    );
+    let (lines, actionable) = lines.map_or_else(
+        || (confirmation_unavailable_lines("operation", theme), false),
+        |lines| (lines, true),
     );
 
-    let scroll = u16::try_from(lines.len().saturating_sub(content_rows)).unwrap_or(u16::MAX);
-    let modal = Paragraph::new(lines).scroll((scroll, 0)).block(
+    let modal = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
         Block::bordered()
             .title("Confirm Termination")
             .title_style(theme.title())
@@ -44,6 +50,17 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     );
     frame.render_widget(Clear, area);
     frame.render_widget(modal, area);
+    actionable
+}
+
+fn confirmation_unavailable_lines(operation: &str, theme: Theme) -> Vec<Line<'static>> {
+    vec![
+        Line::styled("Confirmation unavailable", theme.warning()),
+        Line::raw("The terminal cannot show every warning and confirmation field."),
+        Line::raw(format!(
+            "Enlarge the terminal and request the {operation} again."
+        )),
+    ]
 }
 
 /// Render the tree-kill confirmation modal.
@@ -65,11 +82,7 @@ pub(crate) fn render_tree(frame: &mut Frame, area: Rect, app: &App, theme: Theme
     let (lines, actionable) = lines.map_or_else(
         || {
             (
-                vec![
-                    Line::styled("Confirmation unavailable", theme.warning()),
-                    Line::raw("The terminal cannot show every warning and confirmation field."),
-                    Line::raw("Enlarge the terminal and request the tree operation again."),
-                ],
+                confirmation_unavailable_lines("tree operation", theme),
                 false,
             )
         },
@@ -240,7 +253,6 @@ fn tree_header_text(confirmation: &TreeKillConfirmation) -> String {
     )
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn clipped_field_value(value: &str, label: &str, content_cols: usize) -> String {
     let available = content_cols
         .saturating_sub(label.chars().count() + 2)
@@ -248,7 +260,6 @@ fn clipped_field_value(value: &str, label: &str, content_cols: usize) -> String 
     clipped_chars(value, available)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn clipped_chars(value: &str, max_chars: usize) -> String {
     if value.chars().count() <= max_chars {
         return value.to_owned();
@@ -269,18 +280,16 @@ fn tree_instruction_line(confirmation: &TreeKillConfirmation, theme: Theme) -> L
         )]);
     }
     match confirmation.stage {
-        TreeConfirmStage::ProtectedRoot => Line::from(vec![
-            Span::raw("Protected root: type "),
-            Span::styled(confirmation.target.pid.to_string(), theme.key()),
-            Span::raw(" or "),
-            Span::styled(
-                sanitize(confirmation.target.process_name_or_unknown()),
-                theme.key(),
-            ),
-            Span::raw(", press "),
-            Span::styled("Enter", theme.key()),
-            Span::raw(", then confirm the tree word."),
-        ]),
+        TreeConfirmStage::ProtectedRoot => {
+            let mut spans = vec![Span::raw("Protected root: type ")];
+            spans.extend(protected_identity_spans(&confirmation.target, theme));
+            spans.extend([
+                Span::raw(", press "),
+                Span::styled("Enter", theme.key()),
+                Span::raw(", then confirm the tree word."),
+            ]);
+            Line::from(spans)
+        }
         TreeConfirmStage::Word => Line::from(vec![
             Span::raw("Type "),
             Span::styled(confirmation.scope_word(), theme.key()),
@@ -296,21 +305,36 @@ fn tree_instruction_line(confirmation: &TreeKillConfirmation, theme: Theme) -> L
     }
 }
 
+/// Lines for the single-process modal, or `None` when the wrapped warnings and
+/// prompt cannot all fit. Only the identity header and port list are clipped to
+/// one row; the instruction repeats the confirmable identity in full.
 fn confirmation_lines(
     confirmation: &KillConfirmation,
     theme: Theme,
     content_rows: usize,
-) -> Vec<Line<'static>> {
+    content_cols: usize,
+) -> Option<Vec<Line<'static>>> {
     let mut lines = vec![
         Line::styled(
-            format!(
-                "{} {}",
-                confirmation.mode.action_label(),
-                confirmation.target.identity(),
+            clipped_chars(
+                &format!(
+                    "{} {}",
+                    confirmation.mode.action_label(),
+                    confirmation.target.identity(),
+                ),
+                content_cols.max(1),
             ),
             theme.title(),
         ),
-        field("Ports", sanitize(&confirmation.target.ports_text()), theme),
+        field(
+            "Ports",
+            clipped_field_value(
+                &sanitize(&confirmation.target.ports_text()),
+                "Ports",
+                content_cols,
+            ),
+            theme,
+        ),
         field(
             "Command",
             sanitize(&app::kill_command_text(
@@ -351,10 +375,10 @@ fn confirmation_lines(
         Span::raw(" cancels."),
     ]));
 
-    if lines.len() > content_rows {
+    if rendered_rows(&lines, content_cols) > content_rows {
         lines.retain(|line| line.width() != 0);
     }
-    lines
+    (rendered_rows(&lines, content_cols) <= content_rows).then_some(lines)
 }
 
 fn instruction_line(confirmation: &KillConfirmation, theme: Theme) -> Line<'static> {
@@ -380,19 +404,26 @@ fn instruction_line(confirmation: &KillConfirmation, theme: Theme) -> Line<'stat
                     .delivery_label(confirmation.target.platform),
             )),
         ]),
-        ConfirmationRequirement::ProtectedProcess => Line::from(vec![
-            Span::raw("Protected process: type "),
-            Span::styled(confirmation.target.pid.to_string(), theme.key()),
-            Span::raw(" or "),
-            Span::styled(
-                sanitize(confirmation.target.process_name_or_unknown()),
-                theme.key(),
-            ),
-            Span::raw(" and press "),
-            Span::styled("Enter", theme.key()),
-            Span::raw("."),
-        ]),
+        ConfirmationRequirement::ProtectedProcess => {
+            let mut spans = vec![Span::raw("Protected process: type ")];
+            spans.extend(protected_identity_spans(&confirmation.target, theme));
+            spans.extend([
+                Span::raw(" and press "),
+                Span::styled("Enter", theme.key()),
+                Span::raw("."),
+            ]);
+            Line::from(spans)
+        }
     }
+}
+
+/// The PID, and the name when it can be typed, that confirm a protected target.
+fn protected_identity_spans(target: &KillTarget, theme: Theme) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled(target.pid.to_string(), theme.key())];
+    if let Some(name) = target.protected_confirmation_name() {
+        spans.extend([Span::raw(" or "), Span::styled(name, theme.key())]);
+    }
+    spans
 }
 
 #[cfg(test)]
@@ -471,7 +502,8 @@ mod tests {
             input: "for".to_owned(),
             error: Some("keep typing".to_owned()),
         };
-        let text = confirmation_lines(&confirmation, Theme::from_environment(), 40)
+        let text = confirmation_lines(&confirmation, Theme::from_environment(), 40, 100)
+            .expect("uncrowded confirmation fits")
             .into_iter()
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
@@ -492,7 +524,8 @@ mod tests {
             input: String::new(),
             error: None,
         };
-        let text = confirmation_lines(&confirmation, Theme::from_environment(), 40)
+        let text = confirmation_lines(&confirmation, Theme::from_environment(), 40, 100)
+            .expect("uncrowded confirmation fits")
             .into_iter()
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
@@ -542,6 +575,7 @@ mod tests {
                 start_time_marker: crate::observation::ProcessStartMarker::linux(55).ok(),
                 owner_uid: None,
                 process_group: None,
+                executable_name: None,
             },
             crate::tree::TreeProcessInfo {
                 pid: 18430,
@@ -552,6 +586,7 @@ mod tests {
                 start_time_marker: crate::observation::ProcessStartMarker::linux(56).ok(),
                 owner_uid: None,
                 process_group: None,
+                executable_name: None,
             },
         ];
         confirmation.preview = Some(
@@ -590,6 +625,7 @@ mod tests {
             start_time_marker: crate::observation::ProcessStartMarker::linux(55).ok(),
             owner_uid: None,
             process_group: None,
+            executable_name: None,
         }];
         for pid in 18430..18450 {
             infos.push(crate::tree::TreeProcessInfo {
@@ -602,6 +638,7 @@ mod tests {
                     .ok(),
                 owner_uid: None,
                 process_group: None,
+                executable_name: None,
             });
         }
         let confirmation = TreeKillConfirmation {
@@ -694,6 +731,7 @@ mod tests {
             start_time_marker: crate::observation::ProcessStartMarker::linux(55).ok(),
             owner_uid: crowded_target.owner_uid,
             process_group: None,
+            executable_name: None,
         }];
         let confirmation = TreeKillConfirmation {
             target: crowded_target,
@@ -734,6 +772,7 @@ mod tests {
             start_time_marker: crate::observation::ProcessStartMarker::linux(55).ok(),
             owner_uid: None,
             process_group: None,
+            executable_name: None,
         }];
         for pid in 18430..18440 {
             infos.push(crate::tree::TreeProcessInfo {
@@ -746,6 +785,7 @@ mod tests {
                     .ok(),
                 owner_uid: None,
                 process_group: None,
+                executable_name: None,
             });
         }
         let confirmation = TreeKillConfirmation {
@@ -815,35 +855,27 @@ mod tests {
         assert!(ports.chars().count() <= 32, "{ports}");
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
-    fn crowded_single_confirmation_keeps_actionable_lines_visible() {
-        let mut crowded_target = target_with_port_count(20);
-        crowded_target.process_name = Some("very-long-process-name".repeat(8));
-        crowded_target.protected = true;
+    fn single_confirmation_refuses_when_mandatory_rows_cannot_fit() {
+        let mut crowded_target = target(true);
         crowded_target.system_process = true;
         crowded_target.permission = PermissionStatus::Partial;
         crowded_target.child_count = 4;
         let confirmation = KillConfirmation {
             target: crowded_target,
             mode: KillMode::Force,
-            requirement: ConfirmationRequirement::ForceWord,
-            input: "for".to_owned(),
+            requirement: ConfirmationRequirement::ProtectedProcess,
+            input: "18".to_owned(),
             error: Some("keep typing".to_owned()),
         };
 
-        let lines = confirmation_lines(&confirmation, Theme::from_environment(), 13);
-        let text = lines
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        assert!(lines.len() <= 13, "emitted {} lines", lines.len());
-        assert!(text.contains("Type force"), "{text}");
-        assert!(text.contains("Input: for"), "{text}");
-        assert!(text.contains("Error: keep typing"), "{text}");
-        assert!(text.contains("Esc cancels."), "{text}");
+        let fitted = confirmation_lines(&confirmation, Theme::from_environment(), 16, 70)
+            .expect("the minimum terminal fits every mandatory row");
+        assert!(super::rendered_rows(&fitted, 70) <= 16);
+        assert!(
+            confirmation_lines(&confirmation, Theme::from_environment(), 9, 70).is_none(),
+            "an overfull mandatory block must not remain actionable",
+        );
     }
 
     #[test]
@@ -855,7 +887,8 @@ mod tests {
             input: String::new(),
             error: None,
         };
-        let text = confirmation_lines(&confirmation, Theme::from_environment(), 40)
+        let text = confirmation_lines(&confirmation, Theme::from_environment(), 40, 100)
+            .expect("uncrowded confirmation fits")
             .into_iter()
             .map(|line| line.to_string())
             .collect::<Vec<_>>()

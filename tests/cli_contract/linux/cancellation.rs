@@ -78,6 +78,7 @@ fn interrupt_after_signal(
     if delivery_signal == libc::SIGSTOP {
         wait_for_pid_state(target_pid, 'T');
     }
+
     // SAFETY: queue the interrupt for our paused CLI. Keep tracing until exit
     // so every later seccomp event still executes the real syscall.
     assert_eq!(unsafe { libc::kill(pid, interrupt) }, 0);
@@ -98,6 +99,7 @@ fn interrupt_after_signal(
             libc::WSTOPSIG(status)
         };
     }
+
     // SAFETY: at the exit event all target cleanup has finished. Detach so
     // Child can reap the real signal exit status through the shared runner.
     assert_eq!(unsafe { libc::ptrace(libc::PTRACE_DETACH, pid, 0, 0) }, 0);
@@ -126,6 +128,7 @@ fn spawn_traced_kill(target_pid: u32, scope: Option<&str>, config_path: &Path) -
     if scope != Some("--group") {
         command.arg("--yes");
     }
+
     // SAFETY: the post-fork callback calls only async-signal-safe libc APIs.
     // TRACEME allows this test to trace only its own child, starting at exec.
     unsafe {

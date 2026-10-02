@@ -31,6 +31,7 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         key_line("T", "force-kill selected process tree", theme),
     ]);
     lines.extend([
+        key_line("m", "show full kill results and errors", theme),
         key_line("?", "open this help", theme),
         key_line("Esc", "clear search, close a modal, or quit", theme),
         key_line("q", "quit", theme),

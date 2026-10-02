@@ -325,6 +325,7 @@ fn linux_process_has_capabilities() -> bool {
     if let Some((_, _, capabilities)) = TEST_LINUX_ELEVATION_SOURCES.with(std::cell::Cell::get) {
         return capabilities;
     }
+
     // Docker enrichment is optional. If the privilege state cannot be proven
     // ordinary, fail closed and do not cross PATH with the process's authority.
     std::fs::File::open("/proc/self/status")

@@ -5,12 +5,9 @@
 
 mod kill;
 mod list;
+mod scoped;
 mod watch;
 mod why;
-// Scoped (`--tree`/`--group`) kills sit behind the same platform gate as the
-// `tree` module whose planning and execution they drive.
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
-mod scoped;
 
 use std::io::{self, ErrorKind, Write};
 use std::num::NonZeroU16;
@@ -24,9 +21,7 @@ use crate::config::{Config, REFRESH_INTERVAL_SECONDS_MAX, REFRESH_INTERVAL_SECON
 use crate::diagnostic;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::display::sanitize;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use crate::inspect;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use crate::model::Platform;
 use crate::model::{PortEntryView, SortMode};
 use crate::platform;
@@ -34,7 +29,6 @@ use crate::platform;
 use crate::tree;
 
 use self::kill::run_kill;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use self::kill::{KillTargetError, print_target_error, resolve_single_port_owner};
 use self::list::run_list_snapshot;
 pub(crate) use self::watch::WatchSignalGuard;
@@ -117,7 +111,6 @@ pub(crate) enum Command {
     /// Terminate a verified port owner, process tree, or process group.
     Kill(KillArgs),
     /// Show a process's family, group, and ports without sending signals.
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     Inspect(InspectArgs),
     /// Stream bounded socket changes until interrupted or the duration expires.
     ///
@@ -170,7 +163,6 @@ pub(crate) enum Command {
 
 /// `inspect` accepts either a PID or a port whose owner becomes the starting
 /// PID. The command is read-only, and the starting PID need not own a port.
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[derive(Debug, Args)]
 #[command(group(ArgGroup::new("target").required(true).args(["pid", "port"])))]
 pub(crate) struct InspectArgs {
@@ -247,7 +239,6 @@ pub(crate) struct KillArgs {
     /// process. Opt-in; typed confirmation unless --yes passes all-clear gates.
     /// May start from a live root with no visible port. Linux, macOS, and
     /// Windows CLI only.
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[arg(long)]
     tree: bool,
 
@@ -291,9 +282,7 @@ pub(crate) fn run(
     let profile = match command {
         Command::List(args) if args.snapshot_json => crate::observation::MetadataProfile::Display,
         Command::List(_) => crate::observation::MetadataProfile::LegacyList,
-        Command::Kill(_) => crate::observation::MetadataProfile::Display,
-        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-        Command::Inspect(_) => crate::observation::MetadataProfile::Display,
+        Command::Kill(_) | Command::Inspect(_) => crate::observation::MetadataProfile::Display,
         Command::Watch(_) => unreachable!("watch owns its repeated collection loop"),
         Command::Why(_) => unreachable!("why owns collection and exact probing"),
     };
@@ -326,7 +315,6 @@ pub(crate) fn run(
                 .collect::<Vec<_>>();
             run_kill(args, config, &entries)
         }
-        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         Command::Inspect(args) => run_inspect(args, config, &snapshot),
         Command::Watch(_) => unreachable!("watch is dispatched before one-shot collection"),
         Command::Why(_) => unreachable!("why is dispatched before one-shot collection"),
@@ -402,7 +390,6 @@ fn parse_port(value: &str) -> Result<u16, String> {
 /// Run the read-only family inspection and print the report to stdout.
 ///
 /// This command sends no signals. It may print a suggested tree-kill command.
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn run_inspect(
     args: &InspectArgs,
     config: &Config,
@@ -517,7 +504,6 @@ fn run_inspect(
 
 /// Pick the PID to inspect. Unlike kill resolution there is no unsafe-PID
 /// guard: reading PID 1's family is legitimate, and nothing here signals.
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn resolve_inspect_target(
     args: &InspectArgs,
     entries: &[PortEntryView<'_>],
@@ -534,7 +520,6 @@ fn resolve_inspect_target(
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn inspect_port_owner_matches_snapshot(
     args: &InspectArgs,
     target_pid: u32,
@@ -606,13 +591,10 @@ mod tests {
     use crate::model::entry_views;
     use clap::Parser;
 
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     use super::kill::KillTargetError;
     use super::test_support::entry;
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     use super::test_support::entry_with_pid;
     use super::{Cli, Command, ExitReason, diagnostic_port_without_confirmed_socket};
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     use crate::model::Protocol;
     use crate::model::SortMode;
 
@@ -804,7 +786,6 @@ mod tests {
         );
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn inspect_requires_exactly_one_target() {
         assert!(Cli::try_parse_from(["kickoutchi", "inspect"]).is_err());
@@ -815,7 +796,6 @@ mod tests {
         assert!(Cli::try_parse_from(["kickoutchi", "inspect", "--port", "3000"]).is_ok());
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn inspect_resolution_mirrors_kill_port_rules_but_allows_any_pid() {
         use super::{InspectArgs, resolve_inspect_target};
@@ -858,7 +838,6 @@ mod tests {
         ));
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn inspect_port_owner_must_match_the_later_process_identity() {
         use super::{InspectArgs, inspect_port_owner_matches_snapshot};
@@ -881,6 +860,7 @@ mod tests {
             start_time_marker: marker,
             owner_uid: None,
             process_group: None,
+            executable_name: None,
         };
         let matching = crate::observation::ProcessStartMarker::linux(55).ok();
         let recycled = crate::observation::ProcessStartMarker::linux(56).ok();

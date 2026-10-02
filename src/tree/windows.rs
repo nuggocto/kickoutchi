@@ -14,10 +14,7 @@ pub(crate) use freeze_probe::{
 };
 
 use std::collections::{HashMap, HashSet};
-use std::ffi::OsString;
-use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::path::Path;
 use std::time::Instant;
 
 use windows_sys::Win32::Foundation::{
@@ -30,8 +27,8 @@ use windows_sys::Win32::System::JobObjects::{
     SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA,
-    PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, QueryFullProcessImageNameW, WaitForSingleObject,
+    OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_SYNCHRONIZE,
+    PROCESS_TERMINATE, WaitForSingleObject,
 };
 
 use crate::model::Platform;
@@ -54,7 +51,6 @@ const WINDOWS_TREE_WAIT_MS: u32 = 5_000;
 const WINDOWS_TREE_PROBE_WAIT_MS: u32 = 0;
 const JOB_OBJECT_FREEZE_OPERATION: u32 = 1;
 const JOB_MEMBERSHIP_QUERY_ATTEMPTS: usize = 8;
-const PROCESS_IMAGE_PATH_CODE_UNITS_MAX: usize = 32 * 1024;
 
 #[repr(C)]
 struct JobObjectWakeFilter {
@@ -501,6 +497,7 @@ fn reconcile_final_containment<Api: WindowsTreeApi>(
                     pid,
                     start_marker: marker,
                     name: fresh_name,
+                    executable_name: None,
                 }),
             )
             .map_err(windows_evidence_outcome)?
@@ -883,6 +880,7 @@ fn pin_preview_members<Api: WindowsTreeApi>(
                     name: name.ok_or_else(|| {
                         windows_evidence_outcome(ProcessEvidenceError::NameMissing { pid })
                     })?,
+                    executable_name: None,
                 }),
             )
             .map_err(windows_evidence_outcome)?;
@@ -1164,6 +1162,7 @@ fn sweep_committed_tree<Api: WindowsTreeApi>(
                     pid: info.pid,
                     start_marker: expected_marker,
                     name,
+                    executable_name: None,
                 }),
             ) {
                 Ok(fresh) => fresh,
@@ -1493,28 +1492,40 @@ trait WindowsTreeApi {
     type JobHandle;
 
     fn snapshot(&mut self) -> Result<Vec<TreeProcessInfo>, String>;
+
     fn open_process(&mut self, pid: u32) -> Result<Self::ProcessHandle, WindowsApiError>;
+
     fn process_start_marker(&mut self, handle: &Self::ProcessHandle) -> Option<ProcessStartMarker>;
+
     fn process_name(
         &mut self,
         handle: &Self::ProcessHandle,
     ) -> Result<Option<String>, WindowsApiError>;
+
     fn preflight_job_freeze_thaw(&mut self) -> Result<(), String>;
+
     fn create_job(&mut self) -> Result<Self::JobHandle, String>;
+
     fn process_in_job(
         &mut self,
         job: &Self::JobHandle,
         process: &Self::ProcessHandle,
     ) -> Result<bool, WindowsApiError>;
+
     fn assign_process(
         &mut self,
         job: &Self::JobHandle,
         process: &Self::ProcessHandle,
     ) -> Result<(), WindowsApiError>;
+
     fn set_job_frozen(&mut self, job: &Self::JobHandle, frozen: bool) -> Result<(), String>;
+
     fn job_process_ids(&mut self, job: &Self::JobHandle) -> Result<Vec<u32>, JobMembershipError>;
+
     fn terminate_job(&mut self, job: &Self::JobHandle) -> Result<(), String>;
+
     fn now_ms(&mut self) -> u64;
+
     fn wait_process_exit(
         &mut self,
         process: &Self::ProcessHandle,
@@ -1873,38 +1884,8 @@ fn query_job_process_ids(job: &RealJobHandle) -> Result<Vec<u32>, JobMembershipE
 fn process_name_from_handle(
     process: &RealProcessHandle,
 ) -> Result<Option<String>, WindowsApiError> {
-    let mut capacity = 260usize;
-    loop {
-        let mut path = vec![0u16; capacity];
-        let mut length = u32::try_from(path.len()).expect("bounded image path fits u32");
-        let result = unsafe {
-            // SAFETY: the process handle has query access, the UTF-16 buffer is
-            // initialized and writable for `length` elements, and no pointer is retained.
-            QueryFullProcessImageNameW(
-                process.handle.as_raw_handle(),
-                PROCESS_NAME_WIN32,
-                path.as_mut_ptr(),
-                &raw mut length,
-            )
-        };
-        if result != 0 {
-            path.truncate(usize::try_from(length).expect("u32 path length fits usize"));
-            let path = OsString::from_wide(&path);
-            return Ok(Path::new(&path)
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned()));
-        }
-        let error = std::io::Error::last_os_error();
-        if windows_error_code(&error) == Some(ERROR_INSUFFICIENT_BUFFER)
-            && capacity < PROCESS_IMAGE_PATH_CODE_UNITS_MAX
-        {
-            capacity = capacity
-                .saturating_mul(2)
-                .min(PROCESS_IMAGE_PATH_CODE_UNITS_MAX);
-            continue;
-        }
-        return Err(windows_api_error("QueryFullProcessImageNameW", &error));
-    }
+    crate::platform::windows::process_image_file_name(&process.handle)
+        .map_err(|error| windows_api_error("QueryFullProcessImageNameW", &error))
 }
 
 fn last_windows_api_error(operation: &str) -> WindowsApiError {

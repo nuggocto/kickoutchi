@@ -32,6 +32,12 @@ const INSTALLER_BYTES_MAX: u64 = 4 * 1024 * 1024;
 const RECEIPT_BYTES_MAX: usize = 64 * 1024;
 const ARCHIVE_MEMBERS_MAX: usize = 64;
 const ARCHIVE_EXPANDED_BYTES_MAX: u64 = 512 * 1024 * 1024;
+
+/// TAR headers, extension records, member padding, the end-of-archive blocks,
+/// and record padding. Bounded so every decoded byte counts against a limit,
+/// not only member data.
+const ARCHIVE_METADATA_BYTES_MAX: u64 = 1024 * 1024;
+const ARCHIVE_DECODED_BYTES_MAX: u64 = ARCHIVE_EXPANDED_BYTES_MAX + ARCHIVE_METADATA_BYTES_MAX;
 const XZ_DICTIONARY_BYTES_INITIAL: usize = 8 * 1024 * 1024;
 const XZ_DICTIONARY_BYTES_MAX: usize = 64 * 1024 * 1024;
 const MAXIMUM_GLIBC_VERSION: &[u32] = &[2, 31];
@@ -171,13 +177,54 @@ fn require_exact_read(copied: u64, expected: u64, name: &str) -> ValidationResul
     Ok(())
 }
 
+/// Copy one member, reading at most one byte past its declared size.
+///
+/// Decompressors do not all stop at the declared size (ZIP deflate does not),
+/// so the read itself is bounded before the size comparison.
+fn copy_member_exact(
+    member: impl Read,
+    expected: u64,
+    output: &mut impl Write,
+    name: &str,
+) -> ValidationResult<()> {
+    let copied = io::copy(&mut member.take(expected.saturating_add(1)), output)
+        .map_err(|error| format!("could not read release member {name}: {error}"))?;
+    require_exact_read(copied, expected, name)
+}
+
+/// Fails the read once more than `remaining` decoded bytes are produced.
+struct DecodedBudget<R> {
+    inner: R,
+    remaining: u64,
+}
+
+impl<R: Read> Read for DecodedBudget<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let allowed = usize::try_from(self.remaining.saturating_add(1))
+            .unwrap_or(usize::MAX)
+            .min(buffer.len());
+        let read = self.inner.read(&mut buffer[..allowed])?;
+        let read_bytes = u64::try_from(read).unwrap_or(u64::MAX);
+        self.remaining = self.remaining.checked_sub(read_bytes).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "decoded release archive exceeds its byte budget",
+            )
+        })?;
+        Ok(read)
+    }
+}
+
 fn supported_tar_file_type(entry_type: tar::EntryType) -> bool {
     entry_type.is_file() || entry_type.is_contiguous() || entry_type.is_gnu_sparse()
 }
 
-type CheckedTarArchive = Archive<XzReader<File>>;
+type CheckedTarArchive = Archive<DecodedBudget<XzReader<File>>>;
 
-fn open_tar_archive(archive: &Path) -> ValidationResult<CheckedTarArchive> {
+fn open_tar_archive(archive: &Path, decoded_bytes_max: u64) -> ValidationResult<CheckedTarArchive> {
     let file = File::open(archive).map_err(|error| {
         format!(
             "could not open release archive {}: {error}",
@@ -192,14 +239,28 @@ fn open_tar_archive(archive: &Path) -> ValidationResult<CheckedTarArchive> {
             XZ_DICTIONARY_BYTES_MAX,
         ),
     );
-    Ok(Archive::new(decoder))
+    Ok(Archive::new(DecodedBudget {
+        inner: decoder,
+        remaining: decoded_bytes_max,
+    }))
 }
 
+/// Verify the rest of the XZ stream. After the TAR terminator only zero
+/// padding is valid, and the shared decoded-byte budget still applies.
 fn finish_tar_archive(bundle: CheckedTarArchive) -> ValidationResult<()> {
     let mut decompressed = bundle.into_inner();
-    io::copy(&mut decompressed, &mut io::sink())
-        .map(|_| ())
-        .map_err(|error| format!("could not verify the complete TAR/XZ stream: {error}"))
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = decompressed
+            .read(&mut buffer)
+            .map_err(|error| format!("could not verify the complete TAR/XZ stream: {error}"))?;
+        if read == 0 {
+            return Ok(());
+        }
+        if buffer[..read].iter().any(|byte| *byte != 0) {
+            return Err("release TAR/XZ stream has data after the archive terminator".to_owned());
+        }
+    }
 }
 
 fn extract_tar_binaries(
@@ -208,7 +269,23 @@ fn extract_tar_binaries(
     target: &str,
     expected_binaries: &BTreeSet<String>,
 ) -> ValidationResult<BTreeMap<String, PathBuf>> {
-    let mut bundle = open_tar_archive(archive)?;
+    extract_tar_binaries_bounded(
+        archive,
+        destination,
+        target,
+        expected_binaries,
+        ARCHIVE_DECODED_BYTES_MAX,
+    )
+}
+
+fn extract_tar_binaries_bounded(
+    archive: &Path,
+    destination: &Path,
+    target: &str,
+    expected_binaries: &BTreeSet<String>,
+    decoded_bytes_max: u64,
+) -> ValidationResult<BTreeMap<String, PathBuf>> {
+    let mut bundle = open_tar_archive(archive, decoded_bytes_max)?;
     let entries = bundle
         .entries()
         .map_err(|error| format!("could not read release TAR entries: {error}"))?;
@@ -263,9 +340,7 @@ fn extract_tar_binaries(
         }
         let basename = member_name.rsplit('/').next().unwrap_or_default();
         if !expected_binaries.contains(basename) {
-            let copied = io::copy(&mut entry, &mut io::sink())
-                .map_err(|error| format!("could not verify TAR member {member_name}: {error}"))?;
-            require_exact_read(copied, member_size, &member_name)?;
+            copy_member_exact(&mut entry, member_size, &mut io::sink(), &member_name)?;
             continue;
         }
         if !(1..=BINARY_BYTES_MAX).contains(&member_size) {
@@ -282,9 +357,7 @@ fn extract_tar_binaries(
         }
         let output_path = destination.join(basename);
         let mut output = output_file(destination, basename)?;
-        let copied = io::copy(&mut entry, &mut output)
-            .map_err(|error| format!("could not extract release binary {basename}: {error}"))?;
-        require_exact_read(copied, member_size, basename)?;
+        copy_member_exact(&mut entry, member_size, &mut output, basename)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -355,10 +428,8 @@ fn extract_zip_binaries(
             ));
         }
         if is_directory {
-            let copied = io::copy(&mut member, &mut io::sink()).map_err(|error| {
-                format!("could not verify ZIP directory {member_name}: {error}")
-            })?;
-            require_exact_read(copied, member.size(), &member_name)?;
+            let size = member.size();
+            copy_member_exact(&mut member, size, &mut io::sink(), &member_name)?;
             if !seen_directories.insert(member_name.clone()) {
                 return Err(format!(
                     "release archive contains a duplicate directory: {member_name}"
@@ -378,9 +449,8 @@ fn extract_zip_binaries(
         }
         let basename = member_name.rsplit('/').next().unwrap_or_default();
         if !expected_binaries.contains(basename) {
-            let copied = io::copy(&mut member, &mut io::sink())
-                .map_err(|error| format!("could not verify ZIP member {member_name}: {error}"))?;
-            require_exact_read(copied, member.size(), &member_name)?;
+            let size = member.size();
+            copy_member_exact(&mut member, size, &mut io::sink(), &member_name)?;
             continue;
         }
         if !(1..=BINARY_BYTES_MAX).contains(&member.size()) {
@@ -390,9 +460,8 @@ fn extract_zip_binaries(
         }
         let output_path = destination.join(basename);
         let mut output = output_file(destination, basename)?;
-        let copied = io::copy(&mut member, &mut output)
-            .map_err(|error| format!("could not extract release binary {basename}: {error}"))?;
-        require_exact_read(copied, member.size(), basename)?;
+        let size = member.size();
+        copy_member_exact(&mut member, size, &mut output, basename)?;
         selected.insert(basename.to_owned(), output_path);
     }
 
@@ -1161,6 +1230,228 @@ mod tests {
         ] {
             assert!(require_native_target(invalid, LINUX_TARGET).is_err());
         }
+    }
+
+    const ARCHIVE_TEST_TARGET: &str = "x86_64-unknown-linux-gnu";
+
+    fn crc32(bytes: &[u8]) -> u32 {
+        let mut crc = !0_u32;
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0xedb8_8320
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
+    fn push_varint(output: &mut Vec<u8>, mut value: u64) {
+        while value >= 0x80 {
+            output.push(u8::try_from(value & 0x7f).unwrap() | 0x80);
+            value >>= 7;
+        }
+        output.push(u8::try_from(value).unwrap());
+    }
+
+    fn pad_to_four(output: &mut Vec<u8>) {
+        while !output.len().is_multiple_of(4) {
+            output.push(0);
+        }
+    }
+
+    /// One-block XZ stream of stored LZMA2 chunks with no integrity check.
+    /// Fixtures need exact decoded bytes, not compression.
+    fn stored_xz(data: &[u8]) -> Vec<u8> {
+        let stream_flags = [0_u8, 0];
+        let mut stream = vec![0xfd, b'7', b'z', b'X', b'Z', 0];
+        stream.extend_from_slice(&stream_flags);
+        stream.extend_from_slice(&crc32(&stream_flags).to_le_bytes());
+
+        let mut block_header = vec![2, 0, 0x21, 1, 0x16, 0, 0, 0];
+        let header_crc = crc32(&block_header);
+        block_header.extend_from_slice(&header_crc.to_le_bytes());
+        let mut chunks = Vec::new();
+        for (index, chunk) in data.chunks(64 * 1024).enumerate() {
+            chunks.push(if index == 0 { 1 } else { 2 });
+            chunks.extend_from_slice(&u16::try_from(chunk.len() - 1).unwrap().to_be_bytes());
+            chunks.extend_from_slice(chunk);
+        }
+        chunks.push(0);
+        let unpadded_size = block_header.len() + chunks.len();
+        stream.extend_from_slice(&block_header);
+        stream.extend_from_slice(&chunks);
+        pad_to_four(&mut stream);
+
+        let mut index = vec![0];
+        push_varint(&mut index, 1);
+        push_varint(&mut index, u64::try_from(unpadded_size).unwrap());
+        push_varint(&mut index, u64::try_from(data.len()).unwrap());
+        pad_to_four(&mut index);
+        let index_crc = crc32(&index);
+        index.extend_from_slice(&index_crc.to_le_bytes());
+        stream.extend_from_slice(&index);
+
+        let mut footer = (u32::try_from(index.len() / 4 - 1).unwrap())
+            .to_le_bytes()
+            .to_vec();
+        footer.extend_from_slice(&stream_flags);
+        stream.extend_from_slice(&crc32(&footer).to_le_bytes());
+        stream.extend_from_slice(&footer);
+        stream.extend_from_slice(b"YZ");
+        stream
+    }
+
+    fn contract_tar() -> Vec<u8> {
+        let root = format!("kickoutchi-{ARCHIVE_TEST_TARGET}");
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut directory = tar::Header::new_gnu();
+        directory.set_entry_type(tar::EntryType::Directory);
+        directory.set_mode(0o755);
+        directory.set_size(0);
+        builder
+            .append_data(&mut directory, format!("{root}/"), io::empty())
+            .unwrap();
+        for (name, mode, contents) in [
+            ("CHANGELOG.md", 0o644, b"changes".as_slice()),
+            ("LICENSE", 0o644, b"license".as_slice()),
+            ("README.md", 0o644, b"readme".as_slice()),
+            ("kickoutchi", 0o755, b"binary".as_slice()),
+            ("kick", 0o755, b"alias".as_slice()),
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_mode(mode);
+            header.set_size(u64::try_from(contents.len()).unwrap());
+            builder
+                .append_data(&mut header, format!("{root}/{name}"), contents)
+                .unwrap();
+        }
+        builder.into_inner().unwrap()
+    }
+
+    fn extract_tar_fixture(tar: &[u8], decoded_bytes_max: u64) -> ValidationResult<Vec<String>> {
+        let temporary = TemporaryDirectory::new("kickoutchi-validator-tar").unwrap();
+        let archive = temporary.path.join("fixture.tar.xz");
+        fs::write(&archive, stored_xz(tar)).unwrap();
+        let destination = temporary.path.join("out");
+        fs::create_dir(&destination).unwrap();
+        let expected = BTreeSet::from(["kickoutchi".to_owned(), "kick".to_owned()]);
+        extract_tar_binaries_bounded(
+            &archive,
+            &destination,
+            ARCHIVE_TEST_TARGET,
+            &expected,
+            decoded_bytes_max,
+        )
+        .map(|selected| selected.into_keys().collect())
+    }
+
+    #[test]
+    fn tar_xz_extraction_accepts_the_contract_layout_and_zero_record_padding() {
+        let mut tar = contract_tar();
+        tar.extend_from_slice(&[0; 10_240]);
+
+        let selected = extract_tar_fixture(&tar, ARCHIVE_DECODED_BYTES_MAX)
+            .expect("a well-formed release archive extracts");
+        assert_eq!(selected, ["kick", "kickoutchi"]);
+    }
+
+    #[test]
+    fn tar_xz_extraction_rejects_data_after_the_archive_terminator() {
+        let mut tar = contract_tar();
+        tar.extend_from_slice(b"hidden payload after the TAR terminator");
+
+        let error = extract_tar_fixture(&tar, ARCHIVE_DECODED_BYTES_MAX)
+            .expect_err("trailing decoded data must be rejected");
+        assert!(error.contains("after the archive terminator"), "{error}");
+    }
+
+    #[test]
+    fn tar_xz_decoded_budget_counts_metadata_padding_and_trailing_bytes() {
+        let mut tar = contract_tar();
+        tar.resize(tar.len() + 64 * 1024, 0);
+        let decoded = u64::try_from(tar.len()).unwrap();
+
+        extract_tar_fixture(&tar, decoded).expect("the exact decoded size fits its budget");
+        let error = extract_tar_fixture(&tar, decoded - 1)
+            .expect_err("one decoded byte past the budget must be rejected");
+        assert!(error.contains("byte budget"), "{error}");
+    }
+
+    #[test]
+    fn member_copy_reads_at_most_one_byte_past_the_declared_size() {
+        copy_member_exact(&[7_u8; 16][..], 16, &mut io::sink(), "exact")
+            .expect("an exact member copies");
+        let error = copy_member_exact(io::repeat(7), 16, &mut io::sink(), "endless")
+            .expect_err("an endless member must stop at the declared size");
+        assert!(error.contains("size changed"), "{error}");
+        assert!(copy_member_exact(&[7_u8; 15][..], 16, &mut io::sink(), "short").is_err());
+    }
+
+    fn contract_zip(declared_readme_size: Option<u32>) -> Vec<u8> {
+        let mut writer = zip::ZipWriter::new(io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        let readme = vec![b'a'; 64 * 1024];
+        for (name, contents) in [
+            ("CHANGELOG.md", b"changes".as_slice()),
+            ("LICENSE", b"license".as_slice()),
+            ("README.md", readme.as_slice()),
+            ("kickoutchi.exe", b"binary".as_slice()),
+            ("kick.exe", b"alias".as_slice()),
+        ] {
+            writer.start_file(name, options).unwrap();
+            writer.write_all(contents).unwrap();
+        }
+        let mut bytes = writer.finish().unwrap().into_inner();
+        if let Some(declared) = declared_readme_size {
+            let actual = u32::try_from(readme.len()).unwrap().to_le_bytes();
+            // The local (offset 22) and central (offset 24) records both carry
+            // the uncompressed size; understate it in each.
+            for (signature, offset) in [(b"PK\x03\x04", 22), (b"PK\x01\x02", 24)] {
+                let mut position = 0;
+                while let Some(found) = bytes[position..]
+                    .windows(4)
+                    .position(|window| window == signature)
+                {
+                    let record = position + found;
+                    let field = record + offset;
+                    if bytes[field..field + 4] == actual {
+                        bytes[field..field + 4].copy_from_slice(&declared.to_le_bytes());
+                    }
+                    position = record + 4;
+                }
+            }
+        }
+        bytes
+    }
+
+    fn extract_zip_fixture(zip: &[u8]) -> ValidationResult<Vec<String>> {
+        let temporary = TemporaryDirectory::new("kickoutchi-validator-zip").unwrap();
+        let archive = temporary.path.join("fixture.zip");
+        fs::write(&archive, zip).unwrap();
+        let destination = temporary.path.join("out");
+        fs::create_dir(&destination).unwrap();
+        let expected = BTreeSet::from(["kickoutchi.exe".to_owned(), "kick.exe".to_owned()]);
+        extract_zip_binaries(&archive, &destination, "x86_64-pc-windows-msvc", &expected)
+            .map(|selected| selected.into_keys().collect())
+    }
+
+    #[test]
+    fn zip_extraction_accepts_the_contract_layout_and_rejects_understated_sizes() {
+        assert_eq!(
+            extract_zip_fixture(&contract_zip(None)).expect("a well-formed release ZIP extracts"),
+            ["kick.exe", "kickoutchi.exe"]
+        );
+        let error = extract_zip_fixture(&contract_zip(Some(16)))
+            .expect_err("a member that inflates past its declared size must be rejected");
+        assert!(
+            error.contains("size changed while reading: README.md"),
+            "{error}"
+        );
     }
 
     #[test]

@@ -17,10 +17,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const CMDLINE_WAIT: Duration = Duration::from_secs(10);
 const CHILD_EXIT_WAIT: Duration = Duration::from_secs(10);
+
 /// Building a deep chain re-execs this test binary once per link, so its
 /// ready file gets a deadline far beyond the usual helper waits.
 const DEEP_CHAIN_READY_WAIT: Duration = Duration::from_secs(30);
 const DEEP_CHAIN_DEPTH: usize = 12;
+
 /// How long the live spawner keeps forking before it settles into a plain
 /// park. Long enough that the kill under test always lands mid-burst.
 const LIVE_SPAWN_WINDOW: Duration = Duration::from_secs(20);
@@ -29,10 +31,12 @@ const LIVE_SPAWN_MAX: usize = 400;
 fn required_linux_capabilities() -> bool {
     std::env::var_os("KICKOUTCHI_REQUIRE_LINUX_CAPABILITIES").is_some()
 }
+
 /// Deadline for a spawned `kick` to print an expected stderr line and for
 /// it to exit after confirmation input.
 const PROMPT_WAIT: Duration = Duration::from_secs(10);
 const KICK_EXIT_WAIT: Duration = Duration::from_secs(10);
+
 /// Deadline for a killed helper's whole process group to drain to empty.
 const GROUP_CLEAR_WAIT: Duration = Duration::from_secs(10);
 const HELPER_LISTENER_ENV: &str = "KICKOUTCHI_TEST_HELPER_LISTENER";
@@ -486,7 +490,11 @@ fn kickoutchi_with_config(args: &[&str], config_text: &str) -> Output {
 }
 
 fn kickoutchi_with_config_deadline(args: &[&str], config_text: &str) -> Output {
-    binary_with_config_deadline_with_env(kickoutchi_binary(), args, config_text, &[])
+    binary_with_config_deadline_with_env(kickoutchi_binary(), args, config_text, &[], None)
+}
+
+fn kickoutchi_with_config_and_stdin(args: &[&str], config_text: &str, stdin: &str) -> Output {
+    binary_with_config_deadline_with_env(kickoutchi_binary(), args, config_text, &[], Some(stdin))
 }
 
 fn binary_with_config_deadline_with_env(
@@ -494,6 +502,7 @@ fn binary_with_config_deadline_with_env(
     args: &[&str],
     config_text: &str,
     environment: &[(&str, &std::ffi::OsStr)],
+    stdin: Option<&str>,
 ) -> Output {
     let config_dir = isolated_config_home();
     let config_guard = DirectoryGuard(config_dir.clone());
@@ -509,7 +518,7 @@ fn binary_with_config_deadline_with_env(
     for (name, value) in environment {
         command.env(name, value);
     }
-    let output = run_command_with_deadline(&mut command, None, KICK_EXIT_WAIT)
+    let output = run_command_with_deadline(&mut command, stdin.map(str::as_bytes), KICK_EXIT_WAIT)
         .expect("CLI binary must run with explicit config before its deadline");
     drop(config_guard);
     output
@@ -541,6 +550,7 @@ fn why_with_bind_faults(args: &[&str], library: &Path, mode: &str) -> Output {
                 std::ffi::OsStr::new(mode),
             ),
         ],
+        None,
     )
 }
 
@@ -1389,6 +1399,7 @@ fn wait_for_process_group_clear(pgid: u32) {
         if members.is_empty() {
             return;
         }
+
         // A survivor frozen in state 'T' would never clear on its own; the
         // deadline turns it into a visible failure listing (pid, state).
         assert!(

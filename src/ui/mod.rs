@@ -5,6 +5,7 @@
 mod confirm;
 mod details;
 mod help;
+mod messages;
 mod table;
 mod theme;
 
@@ -31,7 +32,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::{Frame, Terminal};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, ModalKind};
 use crate::config::Config;
@@ -45,6 +46,18 @@ use self::theme::Theme;
 type Tui = Terminal<CrosstermBackend<Stdout>>;
 
 const SIGNAL_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Main-screen row budget. The minimum 80x20 terminal fits every section with
+/// one routine status row. Operation messages take table rows above the table
+/// minimum first, then details rows, so they are not clipped by routine layout.
+const HEADER_ROWS: u16 = 3;
+const TABLE_MIN_ROWS: u16 = 7;
+const DETAILS_ROWS: u16 = 9;
+
+/// Below a border plus one content row the details panel shows nothing useful.
+const DETAILS_MIN_ROWS: u16 = 3;
+const STATUS_ROUTINE_ROWS: u16 = 1;
+
 static TUI_SESSION_LOCK: Mutex<()> = Mutex::new(());
 static TERMINAL_ACTIVE: AtomicBool = AtomicBool::new(false);
 
@@ -238,6 +251,7 @@ impl TuiSignalGuard {
         if !self.installed {
             return Ok(());
         }
+
         // SAFETY: these actions were returned by successful `sigaction` calls
         // and remain valid for the lifetime of the guard.
         unsafe {
@@ -708,6 +722,7 @@ fn event_loop(
         if let Some(error) = poll_workers(app) {
             return Err(error.into());
         }
+
         // Poll signals/workers at 100 ms, but redraw the age only when its
         // displayed whole second changes. Input and worker results request frames.
         let age = app.refresh_age().map(|age| age.as_secs());
@@ -774,7 +789,10 @@ fn poll_workers(app: &mut App) -> Option<WorkerFailure> {
 
 fn handle_modal_scroll(app: &mut App, key: KeyEvent) -> bool {
     if key.kind != KeyEventKind::Press
-        || !matches!(app.modal(), ModalKind::Details | ModalKind::Help)
+        || !matches!(
+            app.modal(),
+            ModalKind::Details | ModalKind::Help | ModalKind::Messages
+        )
     {
         return false;
     }
@@ -819,27 +837,45 @@ fn draw(frame: &mut Frame, app: &mut App, theme: Theme, details_text: &mut detai
         return;
     }
 
+    let message_rows_max = area
+        .height
+        .saturating_sub(HEADER_ROWS + TABLE_MIN_ROWS + STATUS_ROUTINE_ROWS);
+    let messages = status_message_rows(app, usize::from(area.width), usize::from(message_rows_max));
+    let message_rows = u16::try_from(messages.len()).unwrap_or(message_rows_max);
+    // Messages first take table rows above its minimum, then details rows.
+    let spare_table_rows = message_rows_max.saturating_sub(DETAILS_ROWS);
+    let details_rows = DETAILS_ROWS
+        .checked_sub(message_rows.saturating_sub(spare_table_rows))
+        .filter(|rows| *rows >= DETAILS_MIN_ROWS)
+        .unwrap_or(0);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
-            Constraint::Min(7),
-            Constraint::Length(9),
-            Constraint::Length(1),
+            Constraint::Length(HEADER_ROWS),
+            Constraint::Min(TABLE_MIN_ROWS),
+            Constraint::Length(details_rows),
+            Constraint::Length(message_rows + STATUS_ROUTINE_ROWS),
         ])
         .split(area);
 
     render_header(frame, chunks[0], theme);
     table::render(frame, chunks[1], app, theme);
-    details::render_panel(frame, chunks[2], app, theme, details_text);
-    render_status(frame, chunks[3], app, theme);
+    if details_rows > 0 {
+        details::render_panel(frame, chunks[2], app, theme, details_text);
+    }
+    render_status(frame, chunks[3], app, theme, messages);
 
     let modal_area = centered_rect(76, 76, area);
     match app.modal() {
         ModalKind::None => {}
         ModalKind::Details => details::render_modal(frame, modal_area, app, theme, details_text),
         ModalKind::Help => help::render(frame, centered_rect(90, 90, area), app, theme),
-        ModalKind::ConfirmKill => confirm::render(frame, modal_area, app, theme),
+        ModalKind::Messages => messages::render(frame, centered_rect(90, 90, area), app, theme),
+        ModalKind::ConfirmKill => {
+            if !confirm::render(frame, centered_rect(90, 90, area), app, theme) {
+                app.cancel_confirmation_for_layout();
+            }
+        }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         ModalKind::ConfirmTreeKill => {
             if !confirm::render_tree(frame, centered_rect(76, 90, area), app, theme) {
@@ -879,7 +915,89 @@ fn render_header(frame: &mut Frame, area: Rect, theme: Theme) {
     frame.render_widget(header, area);
 }
 
-fn render_status(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
+/// Pointer to the full report, appended when the status preview is elided.
+const STATUS_TRUNCATED_HINT: &str = "… press m for the full report";
+
+/// Labeled, sanitized kill results and errors, most urgent first.
+fn status_messages(app: &App) -> Vec<String> {
+    [
+        ("kill", app.kill_status()),
+        ("error", app.latest_error()),
+        ("filter error", app.filter_error()),
+    ]
+    .into_iter()
+    .filter_map(|(label, message)| Some(status_message(label, message?)))
+    .collect()
+}
+
+/// Operation outcomes and errors, word-wrapped to the terminal width.
+///
+/// Each message gets its own rows ahead of the routine status line, so neither
+/// long filters nor narrow terminals can push a kill result or a thaw-failure
+/// recovery instruction off screen. Text beyond `max_rows` is elided, and the
+/// last row then points to the scrollable full report.
+fn status_message_rows(app: &App, cols: usize, max_rows: usize) -> Vec<String> {
+    let mut rows = status_messages(app)
+        .iter()
+        .flat_map(|message| wrap_to_rows(message, cols))
+        .collect::<Vec<_>>();
+    if rows.len() > max_rows {
+        rows.truncate(max_rows);
+        if let Some(last) = rows.last_mut() {
+            let hint_width = STATUS_TRUNCATED_HINT.width();
+            if last.width() + 1 + hint_width > cols.max(1) {
+                while last.width() + 1 + hint_width > cols.max(1) && last.pop().is_some() {}
+                // Never leave a cut-off word, such as part of a PID, before the hint.
+                last.truncate(last.rfind(' ').unwrap_or(0));
+            }
+            if !last.is_empty() {
+                last.push(' ');
+            }
+            last.push_str(STATUS_TRUNCATED_HINT);
+        }
+    }
+    rows
+}
+
+fn status_message(label: &str, value: &str) -> String {
+    format!("{label}: {}", sanitize(value))
+}
+
+/// Greedy word wrap by terminal columns. A word wider than a row is split.
+fn wrap_to_rows(text: &str, cols: usize) -> Vec<String> {
+    let cols = cols.max(1);
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    let mut used = 0usize;
+    for word in text.split_whitespace() {
+        let width = word.width();
+        if used > 0 && used + 1 + width <= cols {
+            row.push(' ');
+            row.push_str(word);
+            used += 1 + width;
+            continue;
+        }
+        if used > 0 {
+            rows.push(std::mem::take(&mut row));
+            used = 0;
+        }
+        for ch in word.chars() {
+            let width = ch.width().unwrap_or(0);
+            if used > 0 && used + width > cols {
+                rows.push(std::mem::take(&mut row));
+                used = 0;
+            }
+            row.push(ch);
+            used += width;
+        }
+    }
+    if !row.is_empty() {
+        rows.push(row);
+    }
+    rows
+}
+
+fn render_status(frame: &mut Frame, area: Rect, app: &App, theme: Theme, messages: Vec<String>) {
     let filter = if app.filter_text().is_empty() {
         "none".to_owned()
     } else {
@@ -896,26 +1014,9 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         app.sort_mode().label(),
     );
 
-    if let Some(error) = app.filter_error() {
-        append_status_field(&mut status, "filter error", error);
-    }
-
-    if let Some(error) = app.latest_error() {
-        append_status_field(&mut status, "error", error);
-    }
-
-    if let Some(kill_status) = app.kill_status() {
-        append_status_field(&mut status, "kill", kill_status);
-    }
-
-    frame.render_widget(Paragraph::new(status).style(theme.status()), area);
-}
-
-fn append_status_field(status: &mut String, label: &str, value: &str) {
-    status.push_str(" | ");
-    status.push_str(label);
-    status.push_str(": ");
-    status.push_str(&sanitize(value));
+    let mut lines = messages.into_iter().map(Line::raw).collect::<Vec<_>>();
+    lines.push(Line::raw(status));
+    frame.render_widget(Paragraph::new(lines).style(theme.status()), area);
 }
 
 fn render_too_small(frame: &mut Frame, area: Rect, theme: Theme) {

@@ -4,8 +4,12 @@ use std::time::Duration;
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::layout::Rect;
 
-use super::{SIGNAL_POLL_INTERVAL, Theme, append_status_field, bounded_event_wait, draw};
+use super::{
+    SIGNAL_POLL_INTERVAL, Theme, bounded_event_wait, centered_rect, draw, status_message,
+    wrap_to_rows,
+};
 
 use crate::app::{App, ModalKind};
 use crate::config::Config;
@@ -54,6 +58,35 @@ fn render_text_cached(
         text.push('\n');
     }
     text
+}
+
+/// Text inside one bordered area of a rendered frame, with wrapped rows joined
+/// by single spaces, so assertions can check complete sentences that wrap.
+fn render_area_text(app: &mut App, width: u16, height: u16, area: Rect) -> String {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("test backend must initialize");
+    terminal
+        .draw(|frame| {
+            draw(
+                frame,
+                app,
+                Theme::from_environment(),
+                &mut super::details::TextCache::default(),
+            );
+        })
+        .expect("test frame must draw");
+    let buffer = terminal.backend().buffer();
+    let mut rows = Vec::new();
+    for y in area.top() + 1..area.bottom() - 1 {
+        let row = (area.left() + 1..area.right() - 1)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect::<String>();
+        rows.push(row.trim().to_owned());
+    }
+    rows.join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[test]
@@ -186,12 +219,90 @@ fn status_shows_active_search_text() {
 }
 
 #[test]
-fn status_fields_are_sanitized_before_rendering() {
-    let mut status = "Status: ok".to_owned();
+fn status_messages_are_sanitized_before_rendering() {
+    assert_eq!(
+        status_message("kill", "\x1b[31mfailed\nagain"),
+        "kill: failed again"
+    );
+}
 
-    append_status_field(&mut status, "kill", "\x1b[31mfailed\nagain");
+#[test]
+fn status_wrap_fits_rows_to_terminal_columns() {
+    assert_eq!(
+        wrap_to_rows("kill: sent SIGTERM to PID 42 (node)", 12),
+        ["kill: sent", "SIGTERM to", "PID 42", "(node)"],
+    );
+    assert_eq!(
+        wrap_to_rows(&"x".repeat(25), 10),
+        ["x".repeat(10), "x".repeat(10), "x".repeat(5)]
+    );
+    assert_eq!(wrap_to_rows("数据库数据库", 6), ["数据库", "数据库"]);
+    assert!(wrap_to_rows("", 10).is_empty());
+}
 
-    assert_eq!(status, "Status: ok | kill: failed again");
+fn rendered_rows_containing<'a>(text: &'a str, needle: &str) -> Vec<&'a str> {
+    text.lines().filter(|line| line.contains(needle)).collect()
+}
+
+#[test]
+fn cancelled_kill_status_is_visible_at_minimum_size() {
+    let config = Config::default();
+    let mut app = App::new_fake(&config);
+    app.apply_action(Action::StartSearch);
+    for ch in "proto:tcp scope:loopback node".chars() {
+        app.apply_action(Action::SearchAppend(ch));
+    }
+    app.apply_action(Action::FinishSearch);
+    app.apply_action(Action::RequestTerminate);
+    app.apply_action(Action::CancelKill);
+
+    let text = render_text(&mut app, 80, 20);
+
+    assert_eq!(text.lines().count(), 20);
+    assert!(text.contains("kill: kill cancelled"), "{text}");
+    assert!(text.contains("Status: 2/5 open ports"), "{text}");
+    assert!(text.contains("Open Ports"), "{text}");
+}
+
+#[test]
+fn long_recovery_messages_wrap_without_hiding_routine_status() {
+    let config = Config::default();
+    let mut app = App::new_fake(&config);
+    let pids = (40_000..40_024)
+        .map(|pid| pid.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let recovery = format!(
+        "permission denied for PID 40000; cleanup failed, so these PID(s) may remain stopped and require SIGCONT: {pids}"
+    );
+    app.set_kill_status_for_test(&recovery);
+    app.set_latest_error_for_test("collecting ports before tree kill failed");
+
+    let text = render_text(&mut app, 80, 20);
+
+    let flattened = text
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(flattened.contains(&format!("kill: {recovery}")), "{text}");
+    assert!(
+        flattened.contains("error: collecting ports before tree kill failed"),
+        "{text}"
+    );
+    assert!(text.contains("Status: 5/5 open ports"), "{text}");
+    assert_eq!(
+        rendered_rows_containing(&text, "Open Ports").len(),
+        1,
+        "{text}"
+    );
+
+    // Only text that cannot fit at all is elided, and the elision is marked.
+    app.set_kill_status_for_test(&"stopped ".repeat(400));
+    let text = render_text(&mut app, 80, 20);
+    assert!(text.contains('…'), "{text}");
+    assert!(text.contains("Status: 5/5 open ports"), "{text}");
+    assert!(text.contains("Open Ports"), "{text}");
 }
 
 #[test]
@@ -775,6 +886,7 @@ fn tree_confirmation_modal_renders_loading_then_preview() {
             start_time_marker: crate::observation::ProcessStartMarker::linux(55).ok(),
             owner_uid: None,
             process_group: None,
+            executable_name: None,
         },
         crate::tree::TreeProcessInfo {
             pid: 18_430,
@@ -785,6 +897,7 @@ fn tree_confirmation_modal_renders_loading_then_preview() {
             start_time_marker: crate::observation::ProcessStartMarker::linux(56).ok(),
             owner_uid: None,
             process_group: None,
+            executable_name: None,
         },
     ];
     let preview =
@@ -812,6 +925,7 @@ fn tree_confirmation_modal_renders_loading_then_preview() {
             start_time_marker: crate::observation::ProcessStartMarker::linux(u64::from(pid)).ok(),
             owner_uid: None,
             process_group: None,
+            executable_name: None,
         });
     }
     let preview = crate::tree::plan_process_tree(
@@ -889,4 +1003,100 @@ fn details_cache_tracks_selection_refresh_and_missing_metadata() {
     let missing = render_text_cached(&mut app, 100, 30, &mut cache);
     assert!(missing.contains("Command: -"));
     assert!(!missing.contains("changed-command"));
+}
+
+#[test]
+fn maximum_thaw_failure_report_is_reachable_in_full_at_minimum_size() {
+    let config = Config::default();
+    let mut app = App::new_fake(&config);
+    let pids = (40_000..40_256)
+        .map(|pid| pid.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let recovery = format!(
+        "permission denied for PID 40000; cleanup failed, so these PID(s) may remain stopped and require SIGCONT: {pids}"
+    );
+    app.set_kill_status_for_test(&recovery);
+    app.set_latest_error_for_test("collecting ports after the tree kill failed");
+
+    let preview = render_text(&mut app, 80, 20);
+    assert!(preview.contains("press m for the full report"), "{preview}");
+    assert!(
+        preview.contains("remain stopped and require SIGCONT"),
+        "{preview}"
+    );
+    assert!(
+        preview.contains(", 40078, … press m for the full report"),
+        "the elided preview must end on a whole PID: {preview}"
+    );
+    assert!(preview.contains("Status: 5/5 open ports"), "{preview}");
+    assert!(!preview.contains("40255"), "{preview}");
+
+    app.apply_action(Action::OpenMessages);
+    assert_eq!(app.modal(), ModalKind::Messages);
+    let report = centered_rect(90, 90, Rect::new(0, 0, 80, 20));
+    let top = render_area_text(&mut app, 80, 20, report);
+    assert!(
+        top.starts_with("kill: permission denied for PID 40000; cleanup failed"),
+        "{top}"
+    );
+
+    app.set_modal_scroll(u16::MAX);
+    let bottom = render_area_text(&mut app, 80, 20, report);
+    assert!(bottom.contains("40254, 40255"), "{bottom}");
+    assert!(
+        bottom.contains("error: collecting ports after the tree kill failed"),
+        "{bottom}"
+    );
+}
+
+#[test]
+fn full_report_view_without_messages_says_so() {
+    let config = Config::default();
+    let mut app = App::new_fake(&config);
+    app.apply_action(Action::OpenMessages);
+
+    let text = render_text(&mut app, 80, 20);
+
+    assert!(
+        text.contains("No kill results or errors to show."),
+        "{text}"
+    );
+    app.apply_action(Action::CloseModal);
+    assert_eq!(app.modal(), ModalKind::None);
+}
+
+#[test]
+fn crowded_single_confirmation_shows_every_warning_in_full_at_minimum_size() {
+    let config = Config::default();
+    let mut app = App::new_fake(&config);
+    for _ in 0..3 {
+        app.apply_action(Action::MoveDown);
+    }
+    app.apply_action(Action::RequestForceKill);
+    let confirmation = app.kill_confirmation().expect("confirmation opens");
+    assert!(confirmation.target.protected);
+    assert!(confirmation.target.system_process);
+
+    let modal = centered_rect(90, 90, Rect::new(0, 0, 80, 20));
+    let text = render_area_text(&mut app, 80, 20, modal);
+
+    for complete_line in [
+        "Force-kill PID 1201 (postgres)",
+        "Ports: TCP 0.0.0.0:5432",
+        "Command: kill -9 1201",
+        "Warning: SIGKILL is immediate; prefer normal termination first.",
+        "Warning: protected process; stronger confirmation is required.",
+        "Warning: system/service process; verify this is safe to terminate.",
+        "Warning: process metadata is partial; termination may fail with permission denied.",
+        "Protected process: type 1201 or postgres and press Enter.",
+        "Input:",
+        "Esc cancels.",
+    ] {
+        assert!(
+            text.contains(complete_line),
+            "missing {complete_line:?}:\n{text}"
+        );
+    }
+    assert_eq!(app.modal(), ModalKind::ConfirmKill);
 }

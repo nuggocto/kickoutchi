@@ -20,7 +20,6 @@ use crate::protection::mark_protected;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::scoped::run_group_kill;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use super::scoped::run_tree_kill;
 use super::{ExitReason, KillArgs};
 
@@ -29,10 +28,10 @@ pub(super) fn run_kill(
     config: &Config,
     entries: &[PortEntryView<'_>],
 ) -> ExitReason {
-    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     if args.tree {
         return run_tree_kill(args, config, entries);
     }
+
     // clap rejects `--tree --group` at parse time, so exactly one scope
     // branch can be taken here.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -520,9 +519,8 @@ fn prompt_confirmation(
             );
         }
         ConfirmationRequirement::ProtectedProcess => eprint!(
-            "Protected process: type PID {} or process name {} to confirm: ",
-            target.pid,
-            sanitize(target.process_name_or_unknown()),
+            "Protected process: type {} to confirm: ",
+            target.protected_confirmation_choices(),
         ),
     }
     std::io::stderr().flush()?;

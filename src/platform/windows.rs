@@ -7,9 +7,10 @@
 //! because PID reuse can otherwise attach metadata to the wrong process.
 
 use std::collections::{HashMap, HashSet};
-use std::ffi::c_void;
+use std::ffi::{OsString, c_void};
 use std::mem::{align_of, size_of};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -778,6 +779,66 @@ fn query_process_path(handle: &OwnedHandle, max_bytes: usize) -> Option<PathBuf>
     .map(PathBuf::from)
 }
 
+/// File name of an open process's executable image.
+///
+/// The UTF-16 buffer grows from `MAX_PATH` to the long-path maximum, so a short
+/// executable name in a deep install directory still resolves. Callers bound
+/// the returned name for their own policy. `Ok(None)` means the image path has
+/// no file-name component.
+pub(crate) fn process_image_file_name(handle: &OwnedHandle) -> std::io::Result<Option<String>> {
+    process_image_file_name_with(|buffer, length| {
+        let result = unsafe {
+            // SAFETY: the handle has query access, `buffer` is initialized and
+            // writable for `*length` code units, and no pointer is retained.
+            QueryFullProcessImageNameW(
+                handle.as_raw_handle(),
+                PROCESS_NAME_WIN32,
+                buffer.as_mut_ptr(),
+                length,
+            )
+        };
+        if result == 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    })
+}
+
+fn process_image_file_name_with(
+    mut query: impl FnMut(&mut [u16], &mut u32) -> std::io::Result<()>,
+) -> std::io::Result<Option<String>> {
+    let mut capacity = 260usize;
+    loop {
+        let mut path = vec![0u16; capacity];
+        let mut length = u32::try_from(path.len()).expect("bounded image path fits u32");
+        match query(&mut path, &mut length) {
+            Ok(()) => {
+                let length = usize::try_from(length).unwrap_or(usize::MAX);
+                let path = path.get(..length).ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "QueryFullProcessImageNameW reported more code units than its buffer",
+                    )
+                })?;
+                let path = OsString::from_wide(path);
+                return Ok(Path::new(&path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned()));
+            }
+            Err(error)
+                if windows_io_error_code(&error) == Some(ERROR_INSUFFICIENT_BUFFER)
+                    && capacity < WINDOWS_PROCESS_PATH_CODE_UNITS_MAX =>
+            {
+                capacity = capacity
+                    .saturating_mul(2)
+                    .min(WINDOWS_PROCESS_PATH_CODE_UNITS_MAX);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 fn process_path_buffer_code_units(max_bytes: usize) -> usize {
     // A UTF-16 code unit contributes at least one byte to the decoded WTF-8/UTF-8
     // path, so the final byte budget is also a safe code-unit bound. Capping at
@@ -817,6 +878,7 @@ fn query_process_command_line_with(
         if required < size_of::<UNICODE_STRING>() || required > native_max {
             return None;
         }
+
         // UNICODE_STRING contains a pointer and therefore needs pointer
         // alignment; a u16 allocation is insufficient on 64-bit Windows.
         let words = required.div_ceil(size_of::<u64>());
@@ -1172,6 +1234,7 @@ fn tree_process_infos_from_snapshot_with(
                     .verified
                     .and_then(|parent_pid| names.get(&parent_pid).cloned()),
                 process_name: metadata.process_name.clone(),
+                executable_name: None,
                 start_time_marker: markers.get(pid).copied().flatten(),
                 owner_uid: None,
                 process_group: None,

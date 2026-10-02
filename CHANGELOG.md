@@ -7,11 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.6] - 2026-10-02
+
 ### Fixed
 
 - `kick kill` no longer blames `--yes` when a target becomes protected after
   interactive confirmation. That refusal now says the process became protected
   and asks for a rerun; the `--yes` wording remains for `--yes` refusals.
+- An empty answer can no longer confirm a protected process. Before, a
+  protected name made only of terminal escape sequences sanitized to an empty
+  string, so pressing Enter, or closing standard input, matched it. Prompts now
+  offer the process name only when it can be typed as displayed; the PID always
+  works.
+- macOS tree and group kills, and `inspect`, now apply executable-basename
+  protection like list rows do. A configured name longer than the kernel's
+  process name now protects scoped roots and descendants through planning and
+  the final pre-signal check.
+- TUI kill outcomes and errors get their own status rows ahead of the routine
+  status line, wrapped to the terminal width. At 80 columns they were cut off,
+  including thaw-failure recovery instructions. When a report is longer than
+  the status area, such as a cleanup failure listing many stopped PIDs, the
+  preview says so and `m` opens the complete, scrollable report.
+- The TUI termination confirmation wraps its warnings instead of cutting them
+  off at the modal edge. If a terminal cannot show every warning and the
+  prompt, the confirmation is cancelled, as tree confirmations already were.
+- TUI details show a selected process's owner UID and children only when they
+  were read from the same process generation as the row. A PID reused after
+  the snapshot no longer mixes two processes in one view.
+- Windows single-process kills read the full executable path before checking
+  protection, so a short executable name in a long directory path is no longer
+  refused.
+- The release archive validator bounds every decoded TAR/XZ byte, rejects data
+  after the TAR terminator, and stops reading ZIP members at their declared
+  size.
+
+### Changed
+
+- Scheduled parser campaigns upload failure artifacts with a reproduction note
+  for 14 days.
+- Watch filters reuse the shared bind-scope classifier, and code that covered
+  every supported platform no longer repeats the platform list.
 
 ## [1.4.5] - 2026-09-15
 
@@ -1578,7 +1613,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tracing` diagnostics routed to stderr only, never the TUI surface.
 - Unit tests for the quit predicate, including the key-release edge case.
 
-[Unreleased]: https://github.com/nuggocto/kickoutchi/compare/v1.4.5...HEAD
+[Unreleased]: https://github.com/nuggocto/kickoutchi/compare/v1.4.6...HEAD
+[1.4.6]: https://github.com/nuggocto/kickoutchi/compare/v1.4.5...v1.4.6
 [1.4.5]: https://github.com/nuggocto/kickoutchi/compare/v1.4.4...v1.4.5
 [1.4.4]: https://github.com/nuggocto/kickoutchi/compare/v1.4.3...v1.4.4
 [1.4.3]: https://github.com/nuggocto/kickoutchi/compare/v1.4.2...v1.4.3

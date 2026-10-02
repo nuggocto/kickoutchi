@@ -225,9 +225,13 @@ pub(crate) fn entry_views(rows: &[PortEntry]) -> Vec<PortEntryView<'_>> {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ProcessContext {
     pub(crate) owner_uid: Option<u32>,
-    /// Platform-specific process start marker, used purely as a kill-target
-    /// identity guard. We never render or serialize it: it only exists so a PID
-    /// that exits and has its PID reused is caught before signal delivery.
+    /// Start marker of the process generation this context was read from.
+    ///
+    /// Selected-row details attach the owner UID and children only when this
+    /// matches the row's snapshot identity, so a reused PID cannot pair one
+    /// process's socket with another's metadata. Termination identity comes
+    /// from the snapshot, not from this field. It is never rendered or
+    /// serialized.
     pub(crate) process_start_time_marker: Option<ProcessStartMarker>,
     pub(crate) children: ChildProcessSnapshot,
     pub(crate) docker: Option<DockerPortContext>,
@@ -301,7 +305,8 @@ impl DockerContainerPort {
     }
 }
 
-fn bind_scope(local_addr: IpAddr) -> BindScope {
+/// Classify a local bind address, treating IPv4-mapped IPv6 as IPv4.
+pub(crate) fn bind_scope(local_addr: IpAddr) -> BindScope {
     let addr = match local_addr {
         // Normalize IPv4-mapped IPv6 (::ffff:127.0.0.1) down to real V4 so the
         // loopback/unspecified checks below see the actual address family. The

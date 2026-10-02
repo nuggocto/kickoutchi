@@ -15,6 +15,7 @@ const WATCH_EVENTS_PER_POLL_MAX: usize = match SOCKET_OBSERVATIONS_MAX.checked_m
     Some(limit) => limit,
     None => panic!("socket observation limit cannot be doubled"),
 };
+
 pub(crate) const WATCH_EVENT_BATCH_MAX: usize = 4_096;
 pub(crate) const WATCH_EVENT_EVIDENCE_MAX: usize = 8;
 pub(crate) const WATCH_EVENT_GAPS_MAX: usize = 8;

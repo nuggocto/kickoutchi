@@ -1078,10 +1078,12 @@ impl ProcessReadTable {
 /// The internal seam implemented by native adapters.
 pub(crate) trait ObservationSource {
     fn wall_clock(&mut self) -> Result<SystemTime, ObservationError>;
+
     fn collect_native_pass(
         &mut self,
         profile: MetadataProfile,
     ) -> Result<NativeObservationPass, ObservationError>;
+
     fn read_processes(
         &mut self,
         sorted_pids: &[u32],

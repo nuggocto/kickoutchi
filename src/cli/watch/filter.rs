@@ -1,12 +1,11 @@
 //! Pure filtering for watch events.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
 
 use crate::config::Config;
 use crate::display::human_endpoint_text;
 use crate::labels::normalize_ip_address;
-use crate::model::BindScope;
+use crate::model::bind_scope;
 use crate::observation::{
     EndpointIdentity, Ipv6Scope, MetadataCompleteness, NetworkSnapshot, OwnerCompleteness,
     OwnerObservation, ProcessIdentity, ProcessObservation, SocketObservation, SocketState,
@@ -554,16 +553,6 @@ fn lowered_contains(value: &str, lowered_needle: &str) -> bool {
 
 const fn truth(value: bool) -> Truth {
     if value { Truth::True } else { Truth::False }
-}
-
-fn bind_scope(address: IpAddr) -> BindScope {
-    if address.is_unspecified() {
-        BindScope::Public
-    } else if address.is_loopback() {
-        BindScope::Loopback
-    } else {
-        BindScope::Local
-    }
 }
 
 fn state_matches(state: SocketState, filter: StateFilter) -> bool {

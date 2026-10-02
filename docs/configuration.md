@@ -127,11 +127,23 @@ matching is always against the exact process name rather than a substring.
 Matching follows platform process-name conventions:
 
 - Linux and macOS compare names exactly and case-sensitively.
-- Linux also recognizes the UTF-8-safe 15-byte `/proc/comm` prefix of a longer
-  configured name, because the kernel exposes that truncated name.
+- Linux also recognizes the first 15 bytes of a longer configured name, because
+  `/proc/<pid>/comm` exposes only that prefix. When the cut splits a UTF-8
+  character, the partial character becomes U+FFFD on both sides, as Kickoutchi
+  reads `comm`.
+- macOS also accepts a configured name followed by `:` or ASCII whitespace in
+  the process name, as in a `postgres: checkpointer` title. A configured name
+  also matches the executable's file name exactly, because the kernel process
+  name is truncated. Rows, filters, tree and group kills, `inspect`, and the
+  final check before a signal all apply this rule. An unreadable executable
+  path adds no protection.
 - Windows compares process names case-insensitively, including Unicode casing
   on a native Windows build.
 - No platform uses arbitrary substring matching for protection.
+
+A protected process is confirmed by typing its PID, or its process name as the
+prompt shows it. When the displayed name is empty or starts or ends with
+whitespace, the prompt offers only the PID, and an empty answer never confirms.
 
 Adding a name changes protection policy everywhere it is evaluated, including
 kill confirmation and `protected:` filtering. It cannot remove protection from

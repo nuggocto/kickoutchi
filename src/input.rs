@@ -15,6 +15,7 @@ pub(crate) enum Action {
     MoveUp,
     OpenDetails,
     OpenHelp,
+    OpenMessages,
     CloseModal,
     RequestTerminate,
     RequestForceKill,
@@ -59,6 +60,7 @@ pub(crate) fn action_for_key(
     if modal == ModalKind::ConfirmKill {
         return kill_confirmation_action_for_key(key);
     }
+
     // The tree confirmation modal captures text exactly like the single-kill
     // one; the app routes the shared actions to whichever confirmation is open.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -77,6 +79,7 @@ pub(crate) fn action_for_key(
         KeyCode::Char('?') => Action::OpenHelp,
         _ if modal != ModalKind::None => Action::Noop,
         KeyCode::Char('r') => Action::Refresh,
+        KeyCode::Char('m') => Action::OpenMessages,
         KeyCode::Char('/') => Action::StartSearch,
         KeyCode::Char('s') => Action::CycleSort,
         KeyCode::Char(ch)
@@ -236,6 +239,18 @@ mod tests {
         assert_eq!(
             act(KeyCode::Char('s'), ModalKind::None, false),
             Action::CycleSort
+        );
+        assert_eq!(
+            act(KeyCode::Char('m'), ModalKind::None, false),
+            Action::OpenMessages
+        );
+        assert_eq!(
+            act(KeyCode::Char('m'), ModalKind::Messages, false),
+            Action::Noop
+        );
+        assert_eq!(
+            act(KeyCode::Esc, ModalKind::Messages, false),
+            Action::CloseModal
         );
     }
 

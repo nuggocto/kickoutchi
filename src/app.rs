@@ -11,10 +11,9 @@ use crate::collector;
 #[cfg(test)]
 use crate::collector::{Collector, FakeCollector};
 use crate::config::Config;
-use crate::display::sanitize;
 use crate::input::Action;
 use crate::model::{PortEntry, PortEntryView, ProcessContext, Protocol, SortMode};
-use crate::observation::Ipv6Scope;
+use crate::observation::{Ipv6Scope, ProcessStartMarker};
 use crate::platform;
 use crate::process::{
     self, CONFIRMATION_INPUT_MAX_BYTES, ConfirmationRequirement, KillMode, KillTarget,
@@ -70,6 +69,7 @@ pub(crate) enum ModalKind {
     None,
     Details,
     Help,
+    Messages,
     ConfirmKill,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     ConfirmTreeKill,
@@ -81,6 +81,8 @@ enum Modal {
     None,
     Details,
     Help,
+    /// The complete kill results and errors that the status preview may elide.
+    Messages,
     ConfirmKill(KillConfirmation),
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     ConfirmTreeKill(TreeKillConfirmation),
@@ -413,11 +415,22 @@ impl App {
         let stale = worker.stale;
         self.context_worker = None;
         if !stale {
+            // Process-owned facts belong only to the process generation that
+            // supplied them. Context without a marker carries none of them.
+            let same_generation = |marker: Option<ProcessStartMarker>| {
+                result
+                    .process_start_time_marker
+                    .is_none_or(|context_marker| marker == Some(context_marker))
+            };
             let updated_target = worker_key
                 .pid
-                .and_then(|pid| self.kill_target_with_optional_context(pid, Some(&result)));
+                .and_then(|pid| self.kill_target_with_optional_context(pid, Some(&result)))
+                .filter(|target| same_generation(target.process_start_time_marker));
 
-            if self.selected_row().map(RowKey::from) == Some(worker_key) {
+            if self.selected_row().is_some_and(|row| {
+                RowKey::from(row) == worker_key
+                    && same_generation(row.process_identity.map(|identity| identity.start_marker))
+            }) {
                 self.selected_context_key = Some(worker_key);
                 self.selected_process_context = Some(result.clone());
             }
@@ -667,7 +680,6 @@ impl App {
         self.modal_scroll = rows;
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn cancel_confirmation_for_layout(&mut self) {
         self.cancel_confirmation();
         self.kill_status = Some(
@@ -708,6 +720,7 @@ impl App {
             Modal::None => ModalKind::None,
             Modal::Details => ModalKind::Details,
             Modal::Help => ModalKind::Help,
+            Modal::Messages => ModalKind::Messages,
             Modal::ConfirmKill(_) => ModalKind::ConfirmKill,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             Modal::ConfirmTreeKill(_) => ModalKind::ConfirmTreeKill,
@@ -735,6 +748,11 @@ impl App {
             Action::OpenHelp => {
                 self.modal_scroll = 0;
                 self.modal = Modal::Help;
+            }
+            Action::OpenMessages => {
+                self.search_mode = false;
+                self.modal_scroll = 0;
+                self.modal = Modal::Messages;
             }
             Action::CloseModal => {
                 self.modal = Modal::None;
@@ -942,9 +960,8 @@ impl App {
                         .delivery_label(confirmation.target.platform),
                 ),
                 ConfirmationRequirement::ProtectedProcess => format!(
-                    "type PID {} or process name {} to confirm",
-                    confirmation.target.pid,
-                    sanitize(confirmation.target.process_name_or_unknown()),
+                    "type {} to confirm",
+                    confirmation.target.protected_confirmation_choices(),
                 ),
             });
         }
@@ -1150,9 +1167,8 @@ impl App {
                     TreeSubmitVerdict::AdvanceToWord
                 } else {
                     TreeSubmitVerdict::Reject(format!(
-                        "type PID {} or process name {} to confirm",
-                        confirmation.target.pid,
-                        sanitize(confirmation.target.process_name_or_unknown()),
+                        "type {} to confirm",
+                        confirmation.target.protected_confirmation_choices(),
                     ))
                 }
             }
@@ -1482,6 +1498,16 @@ impl App {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_kill_status_for_test(&mut self, status: &str) {
+        self.kill_status = Some(status.to_owned());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_latest_error_for_test(&mut self, error: &str) {
+        self.latest_error = Some(error.to_owned());
+    }
+
+    #[cfg(test)]
     pub(crate) fn apply_test_rows(&mut self, rows: Vec<PortEntry>, now: Instant) {
         self.apply_network_snapshot(crate::observation::snapshot_from_test_rows(rows), now);
     }
@@ -1598,6 +1624,7 @@ impl App {
             if Some(worker.key) == selected_key && !worker.stale {
                 return;
             }
+
             // One worker owns the process/Docker scan until its channel drains.
             // A single boolean is the bounded latest-request queue: the current
             // selection is read only when the worker finishes, so repeated row

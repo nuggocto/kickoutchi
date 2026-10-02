@@ -549,9 +549,12 @@ fn kill_target_from_tree_info(
     info: &tree::TreeProcessInfo,
     protected_names: &[String],
 ) -> KillTarget {
-    let protected = info.process_name.as_deref().is_some_and(|name| {
-        crate::protection::is_protected_process_name(TREE_HOST_PLATFORM, name, protected_names)
-    });
+    let protected = crate::protection::is_protected_by_names(
+        TREE_HOST_PLATFORM,
+        info.process_name.as_deref(),
+        info.executable_name.as_deref(),
+        protected_names,
+    );
     let system_process = SystemProcessCheck {
         platform: TREE_HOST_PLATFORM,
         pid: Some(info.pid),
@@ -858,9 +861,8 @@ fn prompt_tree_confirmation(
             preview.len(),
         ),
         TreeConfirmation::ProtectedRoot => eprint!(
-            "Protected root: type PID {} or process name {} to confirm: ",
-            root.pid,
-            sanitize(root.process_name_or_unknown()),
+            "Protected root: type {} to confirm: ",
+            root.protected_confirmation_choices(),
         ),
     }
     std::io::stderr().flush()?;
@@ -1191,9 +1193,8 @@ fn prompt_group_confirmation(
             members.len(),
         ),
         TreeConfirmation::ProtectedRoot => eprint!(
-            "Protected root: type PID {} or process name {} to confirm: ",
-            root.pid,
-            sanitize(root.process_name_or_unknown()),
+            "Protected root: type {} to confirm: ",
+            root.protected_confirmation_choices(),
         ),
     }
     std::io::stderr().flush()?;

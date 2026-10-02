@@ -299,9 +299,12 @@ pub(crate) fn fresh_process_evidence(
         .map_err(|error| process_evidence_io_error(pid, &error))?
         .or_else(|| process_name_from_bsd_info(&before))
         .ok_or(ProcessEvidenceError::NameMissing { pid })?;
+    let executable_name = read_executable_name(pid);
     let after =
         read_process_bsdinfo(pid).map_err(|error| process_evidence_io_error(pid, &error))?;
-    fresh_process_evidence_from_reads(pid, &before, name, &after)
+    let mut evidence = fresh_process_evidence_from_reads(pid, &before, name, &after)?;
+    evidence.executable_name = executable_name;
+    Ok(evidence)
 }
 
 fn fresh_process_evidence_from_reads(
@@ -330,6 +333,7 @@ fn fresh_process_evidence_from_reads(
         pid,
         start_marker: after_marker,
         name,
+        executable_name: None,
     })
 }
 
@@ -1078,8 +1082,9 @@ fn collect_scoped_group_process_infos(
     for pid in pids {
         match read_process_bsdinfo(pid) {
             Ok(info) => {
-                let row = tree_process_info_from_readable_bsd(pid, &info)?;
+                let mut row = tree_process_info_from_readable_bsd(pid, &info)?;
                 if pid == root_pid || row.process_group == Some(pgid) {
+                    row.executable_name = read_executable_name(pid);
                     infos.push(row);
                 }
             }
@@ -1121,7 +1126,9 @@ fn read_tree_process_info(
             ));
         }
     };
-    tree_process_info_from_readable_bsd(pid, &info).map(Some)
+    let mut row = tree_process_info_from_readable_bsd(pid, &info)?;
+    row.executable_name = read_executable_name(pid);
+    Ok(Some(row))
 }
 
 fn tree_process_info_from_readable_bsd(
@@ -1246,6 +1253,7 @@ fn tree_process_info_from_bsd(
         unverified_parent_pid: None,
         parent_process_name: None,
         process_name: Some(process_name),
+        executable_name: None,
         start_time_marker: Some(start_time_marker),
         owner_uid: Some(info.pbi_uid),
         process_group: nonzero_pid(info.pbi_pgid),
@@ -2010,6 +2018,16 @@ fn read_executable_path_bounded(pid: u32, max_bytes: usize) -> std::io::Result<O
     let written_bytes = checked_returned_buffer_len(written_bytes, buffer.len(), "proc_pidpath")?;
     buffer.truncate(written_bytes);
     Ok(Some(PathBuf::from(OsStr::from_bytes(&buffer))))
+}
+
+/// Executable basename used as protection evidence. An unreadable path adds
+/// no protection, matching socket-row policy, which decides from the path
+/// only when the collector could read it.
+fn read_executable_name(pid: u32) -> Option<String> {
+    read_executable_path_bounded(pid, crate::observation::EXECUTABLE_PATH_MAX_BYTES)
+        .ok()
+        .flatten()
+        .and_then(|path| path.file_name()?.to_str().map(str::to_owned))
 }
 
 fn read_command_line(pid: u32) -> std::io::Result<Option<String>> {
