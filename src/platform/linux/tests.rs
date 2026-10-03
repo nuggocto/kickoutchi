@@ -2289,13 +2289,24 @@ fn deleted_executable_reports_only_a_running_file_that_was_removed() {
         .spawn()
         .expect("spawn copied sleep");
     let pid = child.id();
-    assert!(
-        child
-            .try_wait()
-            .expect("child status is readable")
-            .is_none(),
-        "the copied sleep must still be running"
-    );
+    // Wait until the child really runs the copy. Deleting it before the exec
+    // completes makes the exec fail and leaves a zombie with no executable.
+    let exe_link = PathBuf::from(format!("/proc/{pid}/exe"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::fs::read_link(&exe_link).ok().as_ref() != Some(&copy) {
+        assert!(
+            child
+                .try_wait()
+                .expect("child status is readable")
+                .is_none(),
+            "the copied sleep exited before it was observed running"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the child never ran the copied executable"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     let identity = |pid| {
         let start_marker = super::process_start_time_marker(pid).expect("readable marker");
         crate::observation::ProcessIdentity { pid, start_marker }
@@ -2305,6 +2316,15 @@ fn deleted_executable_reports_only_a_running_file_that_was_removed() {
     let before = super::deleted_executable(running);
     std::fs::remove_file(&copy).expect("remove the running executable");
     let after = super::deleted_executable(running);
+    // Facts for a failure message, read while the child is still alive.
+    let observed = format!(
+        "link={:?} nlink={:?} running={}",
+        std::fs::read_link(&exe_link).ok(),
+        std::fs::metadata(&exe_link)
+            .ok()
+            .map(|metadata| std::os::unix::fs::MetadataExt::nlink(&metadata)),
+        child.try_wait().ok().flatten().is_none(),
+    );
     let recycled = super::deleted_executable(crate::observation::ProcessIdentity {
         pid,
         start_marker: crate::observation::ProcessStartMarker::linux(1).expect("nonzero"),
@@ -2314,7 +2334,11 @@ fn deleted_executable_reports_only_a_running_file_that_was_removed() {
     let _ = std::fs::remove_dir_all(&directory);
 
     assert_eq!(before, None, "a present executable is not deleted");
-    assert_eq!(after, Some(copy), "the original path without the suffix");
+    assert_eq!(
+        after,
+        Some(copy),
+        "the original path without the suffix ({observed})"
+    );
     assert_eq!(
         recycled, None,
         "another identity must not borrow the answer"
