@@ -2275,7 +2275,14 @@ fn deleted_executable_reports_only_a_running_file_that_was_removed() {
     let directory = temp_proc_root("deleted-executable");
     std::fs::create_dir_all(&directory).expect("temp directory");
     let copy = directory.join("sleeper");
-    std::fs::copy("/bin/sleep", &copy).expect("copy sleep");
+    // Build sandboxes such as Nix have no /bin; find `sleep` on PATH.
+    let sleep = std::env::var_os("PATH")
+        .iter()
+        .flat_map(std::env::split_paths)
+        .map(|directory| directory.join("sleep"))
+        .find(|candidate| candidate.is_file())
+        .expect("a sleep executable is on PATH");
+    std::fs::copy(&sleep, &copy).expect("copy sleep");
     let mut child = std::process::Command::new(&copy)
         .arg("30")
         .spawn()
