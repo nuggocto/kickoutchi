@@ -40,6 +40,9 @@ pub(super) struct SettleReport {
     /// PIDs whose exit check kept failing, with the last unsanitized error.
     pub(super) unknown: Vec<(u32, String)>,
     pub(super) ports: PortsStatus,
+    /// The confirmed ports seen on the last poll when `ports` is
+    /// `StillVisible`; empty otherwise.
+    pub(super) visible_ports: Vec<KillTargetPort>,
 }
 
 /// The reads the settle loop performs. Tests inject all three.
@@ -67,6 +70,7 @@ pub(super) fn settle(
     } else {
         PortsStatus::StillVisible
     };
+    let mut visible_ports = Vec::new();
 
     for attempt in 0..SETTLE_ATTEMPTS_MAX {
         pending.retain(|identity| match (probe.observe_exit)(*identity) {
@@ -86,12 +90,17 @@ pub(super) fn settle(
         });
 
         if ports_status == PortsStatus::StillVisible {
+            visible_ports.clear();
             ports_status = match (probe.collect_ports)() {
                 Err(error) => PortsStatus::RefreshFailed(error.to_string()),
-                Ok(entries) if any_confirmed_port_visible(ports, &entries) => {
-                    PortsStatus::StillVisible
+                Ok(entries) => {
+                    visible_ports = confirmed_ports_visible(ports, &entries);
+                    if visible_ports.is_empty() {
+                        PortsStatus::Cleared
+                    } else {
+                        PortsStatus::StillVisible
+                    }
                 }
-                Ok(_) => PortsStatus::Cleared,
             };
         }
 
@@ -118,14 +127,20 @@ pub(super) fn settle(
         running,
         unknown,
         ports: ports_status,
+        visible_ports,
     }
 }
 
-fn any_confirmed_port_visible(ports: &[KillTargetPort], entries: &[PortEntry]) -> bool {
-    entries
+/// The confirmed ports present in `entries`, sorted. `ports` must be sorted.
+fn confirmed_ports_visible(ports: &[KillTargetPort], entries: &[PortEntry]) -> Vec<KillTargetPort> {
+    let mut visible = entries
         .iter()
-        .map(PortEntryView::from)
-        .any(|entry| process::kill_target_has_port(ports, &KillTargetPort::from(entry)))
+        .map(|entry| KillTargetPort::from(PortEntryView::from(entry)))
+        .filter(|port| process::kill_target_has_port(ports, port))
+        .collect::<Vec<_>>();
+    visible.sort_unstable();
+    visible.dedup();
+    visible
 }
 
 /// The settle window as shown to users, for example `2.0s`.

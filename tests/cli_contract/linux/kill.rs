@@ -623,3 +623,50 @@ fn pid_kill_warns_when_the_port_closes_but_the_process_keeps_running() {
         "the lingering helper must still be running"
     );
 }
+
+#[test]
+fn batch_pid_kill_confirms_once_and_prints_one_summary() {
+    let _host_observation = lock_host_observation();
+    let (mut first, _first_port, first_ready) = spawn_listener_process();
+    let _first_ready = FileGuard(first_ready);
+    let (mut second, _second_port, second_ready) = spawn_listener_process();
+    let _second_ready = FileGuard(second_ready);
+    let pids = format!("{},{}", first.id(), second.id());
+
+    let killed = kickoutchi_with_stdin(&["kill", "--pid", &pids], "y\n");
+
+    let text = stderr(&killed);
+    assert_eq!(killed.status.code(), Some(0), "{text}");
+    assert!(text.contains("Terminate 2 processes:"), "{text}");
+    assert_eq!(text.matches("to confirm").count(), 1, "{text}");
+    assert!(
+        text.contains(
+            "summary: sent SIGTERM to 2 of 2 process(es); 2 exited; 2 of 2 confirmed port(s) no longer visible; 0 failed"
+        ),
+        "{text}"
+    );
+    // A clean batch has no per-process result lines.
+    assert!(!text.contains("sent SIGTERM to PID"), "{text}");
+    wait_for_child_exit(&mut first);
+    wait_for_child_exit(&mut second);
+}
+
+#[test]
+fn batch_kill_with_an_unknown_target_sends_nothing() {
+    let _host_observation = lock_host_observation();
+    let (mut helper, _port, ready_file) = spawn_listener_process();
+    let _ready_file = FileGuard(ready_file);
+    // PID 0 is never a valid kill target.
+    let pids = format!("{},0", helper.id());
+
+    let refused = kickoutchi(&["kill", "--pid", &pids, "--yes"]);
+
+    let text = stderr(&refused);
+    assert_eq!(refused.status.code(), Some(1), "{text}");
+    assert!(
+        text.contains("1 of 2 target(s) cannot be killed, so no signal was sent"),
+        "{text}"
+    );
+    assert!(!text.contains("summary:"), "{text}");
+    assert_helper_survived_refusal(&mut helper);
+}

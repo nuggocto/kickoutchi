@@ -610,7 +610,7 @@ impl PartialOrd for KillTargetPort {
 }
 
 impl KillTargetPort {
-    fn label(&self) -> String {
+    pub(crate) fn label(&self) -> String {
         format!(
             "{} {}",
             self.protocol.label(),

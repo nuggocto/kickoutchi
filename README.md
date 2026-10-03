@@ -142,6 +142,7 @@ kick inspect --port 3000                # inspect the owning process family
 kick watch --port 3000 --duration 30s   # stream socket changes
 kick why 3000                            # probe TCP loopback bindability
 kick kill --port 3000                    # confirm, then terminate one owner
+kick kill --pid 4242,4243,4244 --yes     # several processes, one summary
 kick kill --pid 12345 --tree             # terminate a verified process tree
 kick kill --pid 12345 --group            # Linux/macOS process group
 ```
@@ -172,6 +173,25 @@ checks.
 Kickoutchi always refuses PID 0, PID 1, Windows System PID 4, and its own current
 PID. Tree and group kills also refuse a scope containing Kickoutchi itself so
 the safety pipeline cannot terminate midway through revalidation or cleanup.
+
+### Several targets
+
+Repeat `--pid` or `--port`, or separate values with commas, to terminate up to
+128 processes with one command. Each target goes through the single-process
+checks: resolution, a retained handle, revalidation against a fresh snapshot,
+and identity-checked delivery. Kickoutchi resolves every target first. If any
+target cannot be resolved, is protected, or cannot be proven to own its port,
+it lists each refusal and sends nothing. Otherwise it shows one banner, asks
+once, and prints one summary line, for example:
+
+```text
+summary: sent SIGTERM to 31 of 31 process(es); 31 exited; 31 of 31 confirmed port(s) no longer visible; 0 failed
+```
+
+Failures, survivors, and ports that stayed visible get their own lines below
+the summary. The exit code is the most serious outcome across targets: 1, then
+4, then 6, then 3. `--tree` and `--group` take one target, and PIDs and ports
+cannot be mixed in one command.
 
 ### After termination
 

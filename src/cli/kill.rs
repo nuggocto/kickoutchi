@@ -420,30 +420,42 @@ fn candidate_labels(rows: &[PortEntryView<'_>]) -> Vec<String> {
 }
 
 pub(super) fn print_target_error(error: KillTargetError) -> ExitReason {
+    let (lines, reason) = target_error_lines(error);
+    for (index, line) in lines.iter().enumerate() {
+        if index == 0 {
+            eprintln!("error: {line}");
+        } else {
+            eprintln!("  {line}");
+        }
+    }
+    reason
+}
+
+/// The refusal for an unresolvable target: the message, any candidate lines,
+/// and the exit reason.
+pub(super) fn target_error_lines(error: KillTargetError) -> (Vec<String>, ExitReason) {
     match error {
-        KillTargetError::NoMatch => {
-            eprintln!("error: no open port matches the requested target");
-            ExitReason::NoMatch
-        }
-        KillTargetError::MissingPid { port } => {
-            eprintln!(
-                "error: port {port} is visible, but no owning PID is available; rerun with higher privileges or pass --pid when known",
-            );
-            ExitReason::PermissionDenied
-        }
+        KillTargetError::NoMatch => (
+            vec!["no open port matches the requested target".to_owned()],
+            ExitReason::NoMatch,
+        ),
+        KillTargetError::MissingPid { port } => (
+            vec![format!(
+                "port {port} is visible, but no owning PID is available; rerun with higher privileges or pass --pid when known",
+            )],
+            ExitReason::PermissionDenied,
+        ),
         KillTargetError::AmbiguousPort { port, candidates } => {
-            eprintln!(
-                "error: port {port} is owned by multiple PIDs; refusing to guess. Use --pid with one of:",
-            );
-            for candidate in candidates {
-                eprintln!("  {candidate}");
-            }
-            ExitReason::Failure
+            let mut lines = vec![format!(
+                "port {port} is owned by multiple PIDs; refusing to guess. Use --pid with one of:",
+            )];
+            lines.extend(candidates);
+            (lines, ExitReason::Failure)
         }
-        KillTargetError::UnsafePid(reason) => {
-            eprintln!("error: unsafe PID blocked: {}", reason.message());
-            ExitReason::Failure
-        }
+        KillTargetError::UnsafePid(reason) => (
+            vec![format!("unsafe PID blocked: {}", reason.message())],
+            ExitReason::Failure,
+        ),
     }
 }
 
@@ -586,6 +598,8 @@ fn exit_reason_for_outcome(outcome: &TerminationOutcome) -> ExitReason {
         | TerminationOutcome::ThawFailed { .. } => ExitReason::Failure,
     }
 }
+
+pub(super) mod batch;
 
 #[cfg(test)]
 mod tests;

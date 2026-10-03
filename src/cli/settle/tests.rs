@@ -109,6 +109,14 @@ fn ports_still_visible_after_the_bounded_window() {
     );
 
     assert_eq!(report.ports, PortsStatus::StillVisible);
+    assert_eq!(
+        report
+            .visible_ports
+            .iter()
+            .map(|port| port.local_port)
+            .collect::<Vec<_>>(),
+        [3001]
+    );
     assert_eq!(script.port_polls, SETTLE_ATTEMPTS_MAX);
     // No sleep follows the final poll.
     assert_eq!(script.sleeps, SETTLE_ATTEMPTS_MAX - 1);
@@ -202,6 +210,7 @@ fn report(exited: &[u32], running: &[u32], ports: PortsStatus) -> SettleReport {
         running: running.to_vec(),
         unknown: Vec::new(),
         ports,
+        visible_ports: Vec::new(),
     }
 }
 

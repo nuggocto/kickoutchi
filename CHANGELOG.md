@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `kick kill` accepts several targets: repeat `--pid` or `--port`, or separate
+  values with commas, up to 128 per command. Cleaning up many stale processes
+  used to take one command per process with several lines of output each. A
+  batch now resolves every target first and sends nothing if any target
+  cannot be resolved, is protected, or cannot be proven to own its port. It
+  then shows one banner, asks for one confirmation, and prints one summary
+  line with the processes signalled, the exits observed, the confirmed ports
+  no longer visible, and the failures. Only failures, survivors, and
+  still-visible ports get detail lines. Every target keeps the single-process
+  safety checks. The exit code is the most serious outcome across targets.
+  `--tree` and `--group` still take one target.
+
 ### Changed
 
 - `kick kill` now checks whether the signalled process exited instead of

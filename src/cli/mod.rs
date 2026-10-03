@@ -15,7 +15,7 @@ use std::num::NonZeroU16;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{ArgGroup, Args, Parser, Subcommand};
+use clap::{ArgAction, ArgGroup, Args, Parser, Subcommand};
 
 use crate::collector;
 use crate::config::{Config, REFRESH_INTERVAL_SECONDS_MAX, REFRESH_INTERVAL_SECONDS_MIN};
@@ -111,7 +111,7 @@ pub(crate) enum Command {
     /// guidance.
     List(ListArgs),
     /// Terminate a verified port owner, process tree, or process group.
-    Kill(KillArgs),
+    Kill(KillCommandArgs),
     /// Show a process's family, group, and ports without sending signals.
     Inspect(InspectArgs),
     /// Stream bounded socket changes until interrupted or the duration expires.
@@ -211,22 +211,25 @@ pub(crate) struct ListArgs {
     snapshot_json: bool,
 }
 
-/// `kill` requires one target, either a PID or a port.
+/// `kill` takes PIDs or ports, never both. Several targets kill several
+/// single processes behind one confirmation and one summary.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is one independent CLI flag; clap's derive requires bools, and `--tree --group` is already rejected at parse time. `allow`, not `expect`: only Linux and macOS have `--group`, so Windows stays under the threshold"
 )]
 #[derive(Debug, Args)]
 #[command(group(ArgGroup::new("target").required(true).args(["pid", "port"])))]
-pub(crate) struct KillArgs {
-    /// PID to target. A plain PID kill requires a visible owned port; a scoped
+pub(crate) struct KillCommandArgs {
+    /// PID to target; repeat it or separate PIDs with commas to kill several
+    /// processes. A plain PID kill requires a visible owned port; a scoped
     /// kill may start from a live portless root. Unsafe PIDs are refused.
-    #[arg(long)]
-    pid: Option<u32>,
+    #[arg(long, value_delimiter = ',', action = ArgAction::Append)]
+    pid: Vec<u32>,
 
-    /// Terminate the process that owns this port.
-    #[arg(long, value_parser = parse_port)]
-    port: Option<u16>,
+    /// Terminate the process that owns this port; repeat it or separate
+    /// ports with commas to kill several owners.
+    #[arg(long, value_delimiter = ',', action = ArgAction::Append, value_parser = parse_port)]
+    port: Vec<u16>,
 
     /// Force kill instead of normal termination where the platform supports a distinction.
     #[arg(long)]
@@ -239,17 +242,85 @@ pub(crate) struct KillArgs {
 
     /// Terminate the whole process tree rooted at the target, not just the one
     /// process. Opt-in; typed confirmation unless --yes passes all-clear gates.
-    /// May start from a live root with no visible port. Linux, macOS, and
-    /// Windows CLI only.
+    /// May start from a live root with no visible port. Takes one target.
+    /// Linux, macOS, and Windows CLI only.
     #[arg(long)]
     tree: bool,
 
     /// Terminate every process sharing the target's group ID, including members
     /// that reparented away from the tree. Opt-in; typed confirmation unless
     /// --yes passes all-clear gates. May start from a live root with no visible
-    /// port. Linux and macOS only.
+    /// port. Takes one target. Linux and macOS only.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[arg(long, conflicts_with = "tree")]
+    group: bool,
+}
+
+impl KillCommandArgs {
+    /// One single-target request per distinct selector, in command-line order.
+    fn targets(&self) -> Result<Vec<KillArgs>, String> {
+        let mut pids = self.pid.clone();
+        dedup_in_order(&mut pids);
+        let mut ports = self.port.clone();
+        dedup_in_order(&mut ports);
+        let targets = pids
+            .into_iter()
+            .map(|pid| self.target(Some(pid), None))
+            .chain(ports.into_iter().map(|port| self.target(None, Some(port))))
+            .collect::<Vec<_>>();
+        if targets.len() > kill::batch::BATCH_TARGETS_MAX {
+            return Err(format!(
+                "at most {} targets can be killed at once",
+                kill::batch::BATCH_TARGETS_MAX
+            ));
+        }
+        if targets.len() > 1 && self.scoped() {
+            return Err(
+                "--tree and --group take one target; run one scoped kill per root".to_owned(),
+            );
+        }
+        Ok(targets)
+    }
+
+    fn target(&self, pid: Option<u32>, port: Option<u16>) -> KillArgs {
+        KillArgs {
+            pid,
+            port,
+            force: self.force,
+            yes: self.yes,
+            tree: self.tree,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            group: self.group,
+        }
+    }
+
+    fn scoped(&self) -> bool {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let group = self.group;
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let group = false;
+        self.tree || group
+    }
+}
+
+fn dedup_in_order<T: Copy + Ord>(values: &mut Vec<T>) {
+    let mut seen = std::collections::BTreeSet::new();
+    values.retain(|value| seen.insert(*value));
+}
+
+/// One kill request: exactly one of `pid` and `port` is set.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the independent CLI flags; `allow`, not `expect`, because Windows has no `group`"
+)]
+#[derive(Debug, Clone)]
+pub(crate) struct KillArgs {
+    pid: Option<u32>,
+    port: Option<u16>,
+    force: bool,
+    yes: bool,
+    tree: bool,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     group: bool,
 }
 
@@ -297,7 +368,17 @@ pub(crate) fn run(
     };
     match command {
         Command::List(args) => run_list_snapshot(args, config, &snapshot),
-        Command::Kill(args) => {
+        Command::Kill(command) => {
+            let targets = match command.targets() {
+                Ok(targets) => targets,
+                Err(message) => {
+                    eprintln!("error: {message}");
+                    return ExitReason::InvalidArguments;
+                }
+            };
+            let [args] = targets.as_slice() else {
+                return kill::batch::run_batch_kill(&targets, config, &snapshot);
+            };
             // Descriptors resolve protection during construction, so this is the
             // whole projection: no owned legacy rows, no second marking pass.
             let descriptors = match snapshot.port_entry_descriptors_matching(
@@ -369,9 +450,21 @@ fn refuse_unprovable_port_kill(
     snapshot: &crate::observation::NetworkSnapshot,
     entries: &[PortEntryView<'_>],
 ) -> Option<ExitReason> {
+    let message = unprovable_port_kill_message(args, port, snapshot, entries)?;
+    eprintln!("error: {message}");
+    Some(ExitReason::PermissionDenied)
+}
+
+/// Why a port-selected kill must be refused before any prompt, if it must.
+/// Every such refusal exits with `PermissionDenied`.
+fn unprovable_port_kill_message(
+    args: &KillArgs,
+    port: u16,
+    snapshot: &crate::observation::NetworkSnapshot,
+    entries: &[PortEntryView<'_>],
+) -> Option<String> {
     if let Some(message) = hidden_port_owner_message(snapshot, port) {
-        eprintln!("error: {message}");
-        return Some(ExitReason::PermissionDenied);
+        return Some(message);
     }
     // Other resolution failures keep their existing messages.
     let (pid, rows) = resolve_single_port_owner(port, entries).ok()?;
@@ -391,12 +484,11 @@ fn refuse_unprovable_port_kill(
         .iter()
         .find_map(|row| row.process_name)
         .map_or_else(|| "<unknown>".to_owned(), crate::display::sanitize);
-    eprintln!(
-        "error: kick cannot prove that PID {pid} ({name}) is the only holder of port {port}: {}; an unreadable process could share the socket, so kick will not signal by port. Run `{}` to target the verified owner, or rerun with higher privileges",
+    Some(format!(
+        "kick cannot prove that PID {pid} ({name}) is the only holder of port {port}: {}; an unreadable process could share the socket, so kick will not signal by port. Run `{}` to target the verified owner, or rerun with higher privileges",
         OwnerVisibility::of(snapshot).unreadable_clause(),
         pid_kill_suggestion(args, pid),
-    );
-    Some(ExitReason::PermissionDenied)
+    ))
 }
 
 /// The `--pid` form of a port-selected kill, keeping its scope and mode.
@@ -819,6 +911,64 @@ mod tests {
         assert!(Cli::try_parse_from(["kickoutchi", "kill", "--pid", "1", "--port", "80"]).is_err());
         assert!(Cli::try_parse_from(["kickoutchi", "kill", "--pid", "18422"]).is_ok());
         assert!(Cli::try_parse_from(["kickoutchi", "kill", "--port", "3000", "--force"]).is_ok());
+    }
+
+    fn kill_command(arguments: &[&str]) -> super::KillCommandArgs {
+        let mut invocation = vec!["kick", "kill"];
+        invocation.extend(arguments);
+        let Some(Command::Kill(command)) = Cli::try_parse_from(invocation)
+            .expect("valid kill invocation")
+            .command
+        else {
+            panic!("expected a kill command");
+        };
+        command
+    }
+
+    #[test]
+    fn kill_accepts_repeated_and_comma_separated_targets_in_order() {
+        let targets = kill_command(&["--pid", "30,10", "--pid", "20", "--pid", "10", "--yes"])
+            .targets()
+            .expect("three distinct PIDs");
+
+        let pids = targets.iter().map(|target| target.pid).collect::<Vec<_>>();
+        assert_eq!(
+            pids,
+            [Some(30), Some(10), Some(20)],
+            "first occurrence wins"
+        );
+        assert!(
+            targets
+                .iter()
+                .all(|target| target.port.is_none() && target.yes)
+        );
+
+        let ports = kill_command(&["--port", "3000,3001"])
+            .targets()
+            .expect("two ports");
+        assert_eq!(
+            ports.iter().map(|target| target.port).collect::<Vec<_>>(),
+            [Some(3000), Some(3001)]
+        );
+        // PIDs and ports still cannot be mixed.
+        assert!(Cli::try_parse_from(["kick", "kill", "--pid", "1", "--port", "2"]).is_err());
+    }
+
+    #[test]
+    fn scoped_kills_and_oversized_batches_are_usage_errors() {
+        assert!(kill_command(&["--pid", "1,2", "--tree"]).targets().is_err());
+        assert!(kill_command(&["--pid", "7", "--tree"]).targets().is_ok());
+
+        let too_many = (1..=super::kill::batch::BATCH_TARGETS_MAX + 1)
+            .map(|pid| pid.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(kill_command(&["--pid", &too_many]).targets().is_err());
+        let at_limit = (1..=super::kill::batch::BATCH_TARGETS_MAX)
+            .map(|pid| pid.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(kill_command(&["--pid", &at_limit]).targets().is_ok());
     }
 
     #[test]
