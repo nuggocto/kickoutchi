@@ -1,6 +1,6 @@
 [package]
 name = "kickoutchi"
-version = "1.5.1"
+version = "1.5.2"
 edition = "2024"
 rust-version = "1.95.0"
 description = "A clean TUI and CLI port janitor: see which process owns each open local port and kick it out safely"

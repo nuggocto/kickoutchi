@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-10-03
+
 ### Added
 
 - `kick watch --matched-only` emits only events that definitely match the
@@ -1714,7 +1716,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tracing` diagnostics routed to stderr only, never the TUI surface.
 - Unit tests for the quit predicate, including the key-release edge case.
 
-[Unreleased]: https://github.com/nuggocto/kickoutchi/compare/v1.5.1...HEAD
+[Unreleased]: https://github.com/nuggocto/kickoutchi/compare/v1.5.2...HEAD
+[1.5.2]: https://github.com/nuggocto/kickoutchi/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/nuggocto/kickoutchi/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/nuggocto/kickoutchi/compare/v1.4.6...v1.5.0
 [1.4.6]: https://github.com/nuggocto/kickoutchi/compare/v1.4.5...v1.4.6
