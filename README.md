@@ -218,6 +218,7 @@ kick watch
 kick watch --tcp --address 127.0.0.1 --port 3000
 kick watch --filter label:web --interval 500ms
 kick watch --filter state:established --duration 30s --json
+kick watch --filter pid:4242 --matched-only
 ```
 
 Intervals are `100ms..=60s` and default to `1s`. Explicit durations are
@@ -227,6 +228,13 @@ Watch is polling, not a kernel event feed. Activity entirely between polls can b
 missed, and event times describe capture intervals rather than exact kernel event
 times. Failed polls emit `collection_gap`; three consecutive failures stop the
 command. Ctrl-C, duration expiry, and a closed stdout consumer exit successfully.
+
+When a filter depends on a fact Kickoutchi cannot read, such as the owner of
+another user's socket, the event is emitted as `indeterminate` so a possible
+match is never hidden. A PID filter can therefore print events for unrelated
+sockets. `--matched-only` drops those and keeps only definite matches; a match
+behind a permission boundary is then not reported. Collection gaps are always
+emitted.
 
 ## Explain Availability
 

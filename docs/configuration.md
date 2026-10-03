@@ -413,8 +413,10 @@ evaluate the previous observation. A replacement event is retained when the
 complete expression matches either its previous side or its current side. A
 definite false result suppresses the endpoint event. A true result is emitted as
 `matched`; an uncertainty-preserving result is emitted as `indeterminate` with
-applicable evidence gaps. With no selector or filter, emitted endpoint events
-use `not_applied`.
+applicable evidence gaps. `kick watch --matched-only` suppresses
+`indeterminate` events like definite non-matches, at the cost of hiding possible
+matches behind unreadable facts. With no selector or filter, emitted endpoint
+events use `not_applied`.
 
 `collection_gap` records describe polling failure rather than an endpoint and
 bypass endpoint/filter selection. Filters therefore cannot hide the fact that

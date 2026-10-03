@@ -152,6 +152,8 @@ pub(super) fn evaluate_event(
     match result {
         Truth::False => None,
         Truth::True => Some(FilterResult::Matched),
+        // Opting into definite matches treats a possible match like a miss.
+        Truth::Unknown if options.matched_only => None,
         Truth::Unknown => Some(FilterResult::Indeterminate),
     }
 }

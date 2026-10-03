@@ -42,6 +42,10 @@ const WATCH_DURATION_MIN: Duration = Duration::from_millis(100);
 const WATCH_DURATION_MAX: Duration = Duration::from_hours(168);
 const CANCELLATION_POLL_MAX: Duration = Duration::from_millis(25);
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is one independent CLI flag, and clap's derive requires bools"
+)]
 #[derive(Debug, Args)]
 pub(crate) struct WatchArgs {
     /// Include TCP; combine with --udp. Neither flag means both protocols.
@@ -77,6 +81,15 @@ pub(crate) struct WatchArgs {
     /// Emit `kickoutchi.watch_event/1` NDJSON to stdout; diagnostics use stderr.
     #[arg(long)]
     json: bool,
+    /// Emit only events that definitely match the selectors and filter.
+    ///
+    /// Without this flag, an event whose match depends on an unreadable fact,
+    /// such as another user's owner PID, is emitted as `indeterminate` so a
+    /// possible match is never hidden. This flag drops those events, so a
+    /// match behind a permission boundary is not reported. Collection gaps are
+    /// still emitted.
+    #[arg(long)]
+    matched_only: bool,
 }
 
 #[derive(Debug)]
@@ -87,6 +100,8 @@ struct WatchOptions {
     port: Option<u16>,
     terms: Vec<FilterTerm>,
     filter_active: bool,
+    /// Drop `indeterminate` events instead of emitting them.
+    matched_only: bool,
     interval: Duration,
     duration: Option<Duration>,
     json: bool,
@@ -153,6 +168,7 @@ impl WatchOptions {
                 || args.port.is_some()
                 || !terms.is_empty(),
             terms,
+            matched_only: args.matched_only,
             interval,
             duration,
             json: args.json,

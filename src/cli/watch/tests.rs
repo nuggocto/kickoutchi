@@ -255,6 +255,7 @@ fn default_interval_is_one_second_and_scope_requires_ipv6_address() {
         interval: WATCH_INTERVAL_DEFAULT_TOKEN.to_owned(),
         duration: Some("100ms".to_owned()),
         json: true,
+        matched_only: false,
     };
     // The declared default reaches the parser as a plain token, so resolve
     // it through a real clap parse rather than trusting a hand-written
@@ -300,6 +301,7 @@ fn protocol_flags_normalize_to_exact_internal_selection() {
             interval: WATCH_INTERVAL_DEFAULT_TOKEN.to_owned(),
             duration: None,
             json: false,
+            matched_only: false,
         };
 
         let options = WatchOptions::parse(&args).expect("protocol flags are valid");
@@ -404,6 +406,7 @@ fn options(duration: Duration) -> WatchOptions {
         port: Some(65_535),
         terms: Vec::new(),
         filter_active: true,
+        matched_only: false,
         interval: WATCH_INTERVAL_MIN,
         duration: Some(duration),
         json: true,
@@ -2401,4 +2404,98 @@ fn event_evidence_retains_zero_maximum_and_counts_the_first_omission() {
         assert_eq!(evidence.len(), retained, "count={count}");
         assert_eq!(actual_omitted, omitted, "count={count}");
     }
+}
+
+#[test]
+fn matched_only_drops_possible_matches_but_keeps_definite_ones() {
+    let config = Config::default();
+    let mut matched_only = filtered_options("pid:4242");
+    matched_only.matched_only = true;
+
+    // The PID filter cannot be decided for an unreadable owner.
+    let mut hidden = snapshot();
+    hidden.sockets.truncate(1);
+    hidden.owner_completeness =
+        OwnerCompleteness::partial([EvidenceGapCode::OwnerPermissionDenied]).unwrap();
+    hidden.completeness = SnapshotCompleteness::Partial;
+    hidden.evidence_gaps.push(EvidenceGap::new(
+        EvidenceImpact::Ownership,
+        EvidenceGapCode::OwnerPermissionDenied,
+        None,
+        Some(4_242),
+        "permission denied before the PID's socket ownership could be attributed",
+    ));
+    let hidden_event = WatchEvent {
+        kind: EventKind::Bind,
+        previous_snapshot: None,
+        current_snapshot: Some(&hidden),
+        previous_socket: None,
+        current_socket: Some(&hidden.sockets[0]),
+        multiplicity: 1,
+        certainty: Certainty::Proven,
+    };
+    assert_eq!(
+        evaluate_event(
+            hidden_event,
+            &filtered_options("pid:4242"),
+            &config,
+            None,
+            Some(&mut FilterCache::default()),
+        ),
+        Some(FilterResult::Indeterminate),
+        "the default still reports a possible match"
+    );
+    assert_eq!(
+        evaluate_event(
+            hidden_event,
+            &matched_only,
+            &config,
+            None,
+            Some(&mut FilterCache::default()),
+        ),
+        None
+    );
+
+    // A definite match is unaffected.
+    let owned = owned_snapshot(4_242, Some("node"), MetadataCompleteness::Complete);
+    let owned_event = WatchEvent {
+        kind: EventKind::Bind,
+        previous_snapshot: None,
+        current_snapshot: Some(&owned),
+        previous_socket: None,
+        current_socket: Some(&owned.sockets[0]),
+        multiplicity: 1,
+        certainty: Certainty::Proven,
+    };
+    assert_eq!(
+        evaluate_event(
+            owned_event,
+            &matched_only,
+            &config,
+            None,
+            Some(&mut FilterCache::default()),
+        ),
+        Some(FilterResult::Matched)
+    );
+}
+
+#[test]
+fn matched_only_parses_from_the_command_line() {
+    let parsed = <crate::cli::Cli as clap::Parser>::try_parse_from([
+        "kick",
+        "watch",
+        "--filter",
+        "pid:4242",
+        "--matched-only",
+    ])
+    .expect("watch --matched-only parses");
+    let Some(crate::cli::Command::Watch(args)) = parsed.command else {
+        panic!("expected a watch command");
+    };
+
+    assert!(
+        WatchOptions::parse(&args)
+            .expect("valid options")
+            .matched_only
+    );
 }

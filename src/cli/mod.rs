@@ -138,7 +138,8 @@ pub(crate) enum Command {
     /// `scope_id:`, `family:`, and watch-only `state:`. Missing owner or process
     /// metadata can produce an emitted `indeterminate` match when those facts are
     /// needed to decide an otherwise possible event; definite nonmatches remain
-    /// suppressed. See the filter documentation for accepted values.
+    /// suppressed. `--matched-only` suppresses `indeterminate` events too. See
+    /// the filter documentation for accepted values.
     ///
     /// An initial collection failure emits no records and exits 1. After a valid
     /// baseline, an unusable poll emits and flushes `collection_gap`, retains the

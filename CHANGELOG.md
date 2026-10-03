@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `kick watch --matched-only` emits only events that definitely match the
+  selectors and filter. By default, an event whose match depends on an
+  unreadable fact, such as the owner PID of another user's socket, is emitted
+  as `indeterminate` so a possible match is never hidden. A PID filter could
+  therefore print many unrelated records. The flag drops them, at the cost of
+  not reporting a match behind a permission boundary. Collection gaps are
+  still emitted, and the default is unchanged.
+
 ### Fixed
 
 - The SIGKILL hint after a process outlives `SIGTERM` now gives a command that

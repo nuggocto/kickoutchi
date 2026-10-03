@@ -642,7 +642,7 @@ At most eight evidence items and eight applicable evidence gaps are retained per
 
 - `not_applied` when no selector or user filter is active.
 - `matched` when the selected event side is a definite match.
-- `indeterminate` when missing ownership or metadata prevents a definite answer. The event is emitted with applicable gaps so incomplete data cannot silently hide a possible match.
+- `indeterminate` when missing ownership or metadata prevents a definite answer. The event is emitted with applicable gaps so incomplete data cannot silently hide a possible match. With `--matched-only`, these events are suppressed like definite non-matches, so a consumer that opts in never receives `indeterminate`.
 
 Baseline and bind evaluate the current side, release evaluates the previous side, and replacement matches when either complete side matches. Process-related AND terms must all match one conceptual owner row rather than different owners.
 
