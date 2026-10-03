@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-10-03
+
 ### Fixed
 
 - `kick why` no longer reports a port held by an unreadable process as
@@ -1681,7 +1683,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tracing` diagnostics routed to stderr only, never the TUI surface.
 - Unit tests for the quit predicate, including the key-release edge case.
 
-[Unreleased]: https://github.com/nuggocto/kickoutchi/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/nuggocto/kickoutchi/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/nuggocto/kickoutchi/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/nuggocto/kickoutchi/compare/v1.4.6...v1.5.0
 [1.4.6]: https://github.com/nuggocto/kickoutchi/compare/v1.4.5...v1.4.6
 [1.4.5]: https://github.com/nuggocto/kickoutchi/compare/v1.4.4...v1.4.5
