@@ -296,7 +296,7 @@ fn summary_counts_outcomes_and_details_only_problems() {
     );
     assert_eq!(
         lines[2],
-        "  still running 2.0s after SIGTERM: PID 103 (docs); rerun with --force to send SIGKILL"
+        "  still running 2.0s after SIGTERM: PID 103 (docs); rerun `kick kill --pid 103 --tree --force` to send SIGKILL (it also stops the process's children)"
     );
     assert!(
         lines[3].starts_with("  still visible: TCP 127.0.0.1:3002;"),

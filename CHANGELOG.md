@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The SIGKILL hint after a process outlives `SIGTERM` now gives a command that
+  works. It always said "rerun with --force", but a plain `kick kill --pid`
+  only targets processes that still own a visible port. A server that closed
+  its listener and kept running was exactly the case the warning was for, and
+  the suggested retry then failed with exit 3. The hint now names
+  `kick kill --pid PID --force` only while the process still owns its port,
+  and `kick kill --pid PID --tree --force` otherwise, noting that a tree kill
+  also stops the process's children. Batch and tree or group summaries
+  suggest the tree retry for each survivor.
+- A plain `kick kill --pid` of a process that still exists but owns no visible
+  port now says so and names the `--tree` command that can target it, instead
+  of "no open port matches the requested target". The exit code is still 3.
+
+### Changed
+
+- `kick kill --help` now states that exit code 0 means the signal was
+  accepted, not that the process exited, and describes the post-delivery
+  report and batch exit codes.
+
 ## [1.5.1] - 2026-10-03
 
 ### Fixed

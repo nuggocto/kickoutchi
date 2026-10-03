@@ -151,12 +151,31 @@ pub(super) fn settle_window_text() -> String {
     format!("{:.1}s", window.as_secs_f64())
 }
 
-/// Advice for a process that outlived its terminating signal.
-fn force_hint(target: &KillTarget, mode: KillMode) -> &'static str {
-    if mode == KillMode::Terminate && target.platform != crate::model::Platform::Windows {
-        "; rerun with --force to send SIGKILL"
-    } else {
-        ""
+/// The command that sends `SIGKILL` to processes that outlived `SIGTERM`, as
+/// a clause to append to a warning, or an empty string when none applies.
+///
+/// A plain `--pid` kill only targets a process that still owns a visible port,
+/// so it is suggested only when `plain_kill_works`. Otherwise the suggestion
+/// is a scoped `--tree` kill, which may start from a live portless process
+/// but also stops its children. Windows termination is already hard.
+pub(super) fn sigkill_retry_hint(
+    platform: crate::model::Platform,
+    mode: KillMode,
+    survivors: &[u32],
+    plain_kill_works: bool,
+) -> String {
+    if mode != KillMode::Terminate || platform == crate::model::Platform::Windows {
+        return String::new();
+    }
+    match survivors {
+        [] => String::new(),
+        [pid] if plain_kill_works => {
+            format!("; rerun `kick kill --pid {pid} --force` to send SIGKILL")
+        }
+        [pid] => format!(
+            "; rerun `kick kill --pid {pid} --tree --force` to send SIGKILL (it also stops the process's children)"
+        ),
+        _ => "; rerun `kick kill --pid PID --tree --force` for each to send SIGKILL (it also stops their children)".to_owned(),
     }
 }
 
@@ -185,7 +204,13 @@ pub(super) fn single_report_lines(
             "warning: {identity} is still running {} after {}; it may still be shutting down{}",
             settle_window_text(),
             mode.delivery_label(target.platform),
-            force_hint(target, mode),
+            // A plain retry needs the process to still own a confirmed port.
+            sigkill_retry_hint(
+                target.platform,
+                mode,
+                &[target.pid],
+                report.ports == PortsStatus::StillVisible,
+            ),
         ));
     }
     lines.extend(ports_line(&report.ports));
@@ -217,7 +242,7 @@ pub(super) fn scoped_report_lines(
             crate::tree::format_pid_list(&report.running),
             settle_window_text(),
             mode.delivery_label(root.platform),
-            force_hint(root, mode),
+            sigkill_retry_hint(root.platform, mode, &report.running, false),
         ));
     }
     if !report.unknown.is_empty() {

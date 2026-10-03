@@ -244,14 +244,61 @@ fn single_report_warns_when_the_process_outlives_sigterm() {
         &report(&[], &[18_422], PortsStatus::Cleared),
     );
 
+    // Its ports closed, so a plain --pid retry would be refused: the hint
+    // must name the scoped kill that can target a portless process.
     assert_eq!(
         lines[0],
         format!(
-            "warning: PID 18422 (node) is still running {} after SIGTERM; it may still be shutting down; rerun with --force to send SIGKILL",
+            "warning: PID 18422 (node) is still running {} after SIGTERM; it may still be shutting down; rerun `kick kill --pid 18422 --tree --force` to send SIGKILL (it also stops the process's children)",
             settle_window_text()
         )
     );
     assert_eq!(lines[1], "confirmed target ports are no longer visible");
+}
+
+#[test]
+fn a_survivor_that_still_owns_its_port_gets_the_plain_retry() {
+    let target = target_on(&[3000]);
+
+    let lines = single_report_lines(
+        &target,
+        KillMode::Terminate,
+        true,
+        &report(&[], &[18_422], PortsStatus::StillVisible),
+    );
+
+    assert!(
+        lines[0].ends_with("; rerun `kick kill --pid 18422 --force` to send SIGKILL"),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn retry_hints_cover_several_survivors_and_unknown_ports() {
+    use crate::model::Platform;
+
+    for ports in [
+        PortsStatus::NotChecked,
+        PortsStatus::RefreshFailed("boom".to_owned()),
+    ] {
+        let lines = single_report_lines(
+            &target_on(&[3000]),
+            KillMode::Terminate,
+            true,
+            &report(&[], &[18_422], ports),
+        );
+        assert!(lines[0].contains("--tree --force"), "{lines:?}");
+    }
+
+    assert_eq!(
+        super::sigkill_retry_hint(Platform::Linux, KillMode::Terminate, &[7, 8], false),
+        "; rerun `kick kill --pid PID --tree --force` for each to send SIGKILL (it also stops their children)"
+    );
+    assert!(super::sigkill_retry_hint(Platform::Linux, KillMode::Terminate, &[], false).is_empty());
+    assert!(super::sigkill_retry_hint(Platform::Linux, KillMode::Force, &[7], true).is_empty());
+    assert!(
+        super::sigkill_retry_hint(Platform::Windows, KillMode::Terminate, &[7], true).is_empty()
+    );
 }
 
 #[test]

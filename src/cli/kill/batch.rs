@@ -23,7 +23,8 @@ use crate::process::{
 
 use super::{
     POST_KILL_VISIBILITY_PROFILE, deleted_executable_note, exit_reason_for_outcome,
-    read_confirmation_line, resolve_kill_target, revalidate_single_cli_target, target_error_lines,
+    read_confirmation_line, resolve_kill_target, revalidate_single_cli_target,
+    target_refusal_lines,
 };
 use crate::cli::{ExitReason, KillArgs, settle, unprovable_port_kill_message};
 
@@ -270,7 +271,7 @@ fn plan<'a, Handle>(
         let target = match resolve_kill_target(args, &entries, &mut *io.context) {
             Ok(target) => target,
             Err(error) => {
-                let (lines, reason) = target_error_lines(error);
+                let (lines, reason) = target_refusal_lines(args, error, &mut io.context);
                 refusals.push(refuse(lines, reason));
                 continue;
             }
@@ -470,11 +471,9 @@ fn summary_lines(summary: &Summary<'_>) -> Vec<String> {
         lines.push(line);
     }
     if !settled.running.is_empty() {
-        let hint = if mode == KillMode::Terminate && platform != crate::model::Platform::Windows {
-            "; rerun with --force to send SIGKILL"
-        } else {
-            ""
-        };
+        // Whether a survivor still owns one of the visible ports is unknown
+        // here, so suggest the retry that also works without a port.
+        let hint = settle::sigkill_retry_hint(platform, mode, &settled.running, false);
         lines.push(format!(
             "  still running {} after {delivery}: {}{hint}",
             settle::settle_window_text(),

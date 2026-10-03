@@ -3,7 +3,7 @@ use std::cell::RefCell;
 
 use super::{
     KillCollectors, KillTargetError, read_confirmation_line_from, resolve_kill_target,
-    run_kill_with,
+    run_kill_with, target_refusal_lines,
 };
 use crate::cli::test_support::{entry, entry_with_pid, no_context};
 use crate::cli::{ExitReason, KillArgs};
@@ -605,4 +605,49 @@ fn confirmation_input_handles_empty_lines_and_invalid_utf8() {
     let error = read_confirmation_line_from(&mut invalid, CONFIRMATION_INPUT_MAX_BYTES)
         .expect_err("invalid UTF-8 must be rejected");
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+}
+
+#[test]
+fn a_live_portless_pid_is_explained_instead_of_reported_as_no_match() {
+    let live = |_pid: u32| no_context(0);
+    let gone = |_pid: u32| crate::model::ProcessContext::default();
+
+    let (lines, reason) = target_refusal_lines(
+        &kill_pid(18_422, true, true),
+        KillTargetError::NoMatch,
+        &mut { live },
+    );
+    assert_eq!(reason, ExitReason::NoMatch, "the exit code is unchanged");
+    assert_eq!(lines.len(), 1);
+    assert!(
+        lines[0].starts_with("PID 18422 still exists but owns no visible open port"),
+        "{lines:?}"
+    );
+    assert!(
+        lines[0].contains("`kick kill --pid 18422 --tree`"),
+        "{lines:?}"
+    );
+
+    // A PID that no longer exists keeps the plain no-match wording.
+    let (lines, reason) = target_refusal_lines(
+        &kill_pid(18_422, true, true),
+        KillTargetError::NoMatch,
+        &mut { gone },
+    );
+    assert_eq!(reason, ExitReason::NoMatch);
+    assert_eq!(lines, ["no open port matches the requested target"]);
+
+    // Port targets and other refusals are not reworded.
+    let (lines, _) = target_refusal_lines(
+        &kill_port(3000, true, true),
+        KillTargetError::NoMatch,
+        &mut { live },
+    );
+    assert_eq!(lines, ["no open port matches the requested target"]);
+    let (_, reason) = target_refusal_lines(
+        &kill_pid(1, true, true),
+        KillTargetError::UnsafePid(UnsafePidReason::One),
+        &mut { live },
+    );
+    assert_eq!(reason, ExitReason::Failure);
 }

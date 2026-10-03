@@ -82,7 +82,11 @@ fn run_kill_with<Handle>(
     };
     let target = match resolve_kill_target(args, entries, &mut collectors.context) {
         Ok(target) => target,
-        Err(error) => return print_target_error(error),
+        Err(error) => {
+            let (lines, reason) = target_refusal_lines(args, error, &mut collectors.context);
+            print_refusal_lines(&lines);
+            return reason;
+        }
     };
 
     let requirement = match process::confirmation_requirement(
@@ -421,6 +425,46 @@ fn candidate_labels(rows: &[PortEntryView<'_>]) -> Vec<String> {
 
 pub(super) fn print_target_error(error: KillTargetError) -> ExitReason {
     let (lines, reason) = target_error_lines(error);
+    print_refusal_lines(&lines);
+    reason
+}
+
+/// The refusal for a kill target, naming a PID that still exists but owns no
+/// visible port instead of reporting that nothing matched.
+///
+/// A plain `--pid` kill deliberately targets only port owners, so this only
+/// explains the refusal and points at the scoped kill that can target the
+/// process. The exit reason stays `NoMatch`.
+pub(super) fn target_refusal_lines<CollectContext>(
+    args: &KillArgs,
+    error: KillTargetError,
+    collect_context: &mut CollectContext,
+) -> (Vec<String>, ExitReason)
+where
+    CollectContext: FnMut(u32) -> ProcessContext,
+{
+    if error == KillTargetError::NoMatch
+        && let Some(pid) = args.pid
+        && process::unsafe_pid_reason(pid).is_none()
+        && collect_context(pid).process_start_time_marker.is_some()
+    {
+        // Windows termination is already hard, so there is no SIGKILL step.
+        let force = if cfg!(windows) {
+            ""
+        } else {
+            " (add --force for SIGKILL)"
+        };
+        return (
+            vec![format!(
+                "PID {pid} still exists but owns no visible open port, and a plain --pid kill only targets port owners. Run `kick kill --pid {pid} --tree` to target it anyway; it also stops the process's children{force}"
+            )],
+            ExitReason::NoMatch,
+        );
+    }
+    target_error_lines(error)
+}
+
+fn print_refusal_lines(lines: &[String]) {
     for (index, line) in lines.iter().enumerate() {
         if index == 0 {
             eprintln!("error: {line}");
@@ -428,7 +472,6 @@ pub(super) fn print_target_error(error: KillTargetError) -> ExitReason {
             eprintln!("  {line}");
         }
     }
-    reason
 }
 
 /// The refusal for an unresolvable target: the message, any candidate lines,

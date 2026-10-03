@@ -45,7 +45,18 @@ fn plain_pid_refuses_a_live_portless_process_without_signalling_it() {
     assert_eq!(output.status.code(), Some(3));
     assert!(output.stdout.is_empty(), "refusal must not write to stdout");
     let error = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(error, "error: no open port matches the requested target\n");
+    // The refusal names the live portless PID and the scoped kill that can
+    // target it, rather than claiming nothing matched.
+    assert!(
+        error.starts_with(&format!(
+            "error: PID {pid} still exists but owns no visible open port"
+        )),
+        "{error}"
+    );
+    assert!(
+        error.contains(&format!("`kick kill --pid {pid} --tree`")),
+        "{error}"
+    );
     assert!(
         helper
             .child_mut()

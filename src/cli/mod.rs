@@ -111,6 +111,17 @@ pub(crate) enum Command {
     /// guidance.
     List(ListArgs),
     /// Terminate a verified port owner, process tree, or process group.
+    ///
+    /// After delivery, kill waits up to two seconds and reports, on separate
+    /// stderr lines, whether each signalled process exited and whether its
+    /// confirmed ports are still visible. Exit code 0 means the signal was
+    /// accepted, not that the process exited: a process can close its ports
+    /// and keep running, which kill reports as a warning.
+    ///
+    /// Several `--pid` or `--port` values kill several processes behind one
+    /// confirmation and one summary. Nothing is sent if any target is refused.
+    /// The exit code is then the most serious outcome across targets: 1, then
+    /// 4, then 6, then 3.
     Kill(KillCommandArgs),
     /// Show a process's family, group, and ports without sending signals.
     Inspect(InspectArgs),

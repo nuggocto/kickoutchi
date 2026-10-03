@@ -605,10 +605,8 @@ fn pid_kill_warns_when_the_port_closes_but_the_process_keeps_running() {
         text.contains("is still running 2.0s after SIGTERM"),
         "{text}"
     );
-    assert!(
-        text.contains("rerun with --force to send SIGKILL"),
-        "{text}"
-    );
+    let tree_retry = format!("`kick kill --pid {pid_text} --tree --force`");
+    assert!(text.contains(&tree_retry), "{text}");
     assert!(
         text.contains("confirmed target ports are no longer visible"),
         "{text}"
@@ -622,6 +620,23 @@ fn pid_kill_warns_when_the_port_closes_but_the_process_keeps_running() {
             .is_none(),
         "the lingering helper must still be running"
     );
+
+    // A plain retry is refused because the process no longer owns a port,
+    // and the refusal says so instead of reporting that nothing matched.
+    let plain = kickoutchi(&["kill", "--pid", &pid_text, "--force", "--yes"]);
+    let plain_text = stderr(&plain);
+    assert_eq!(plain.status.code(), Some(3), "{plain_text}");
+    assert!(
+        plain_text.contains("still exists but owns no visible open port"),
+        "{plain_text}"
+    );
+
+    // The suggested retry works.
+    let retried = kickoutchi(&["kill", "--pid", &pid_text, "--tree", "--force", "--yes"]);
+    let retried_text = stderr(&retried);
+    assert_eq!(retried.status.code(), Some(0), "{retried_text}");
+    assert!(retried_text.contains("sent SIGKILL"), "{retried_text}");
+    wait_for_child_exit(&mut helper);
 }
 
 #[test]

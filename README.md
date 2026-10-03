@@ -156,7 +156,9 @@ A plain `kill --pid PID` targets one process only when a fresh socket snapshot
 verifies that the PID owns at least one visible open port. It does not fall back
 to the process table for a live, portless PID. Use `--tree` (or `--group` on
 Linux and macOS) when the root process owns no visible port; those scoped modes
-can resolve a live root from a fresh process-table snapshot.
+can resolve a live root from a fresh process-table snapshot. A plain kill of a
+PID that still exists but owns no port says so and names the `--tree` command,
+instead of reporting that nothing matched.
 
 On Linux, `kill --port` also needs proof that the visible owner is the only
 holder of the socket. When other processes on the host cannot be read, one of
@@ -199,10 +201,13 @@ A delivered signal is not an exit, and a closed listener is not an exit either.
 After delivery, `kill` waits up to two seconds and reports two facts on their
 own lines: whether each signalled process exited, and whether the confirmed
 ports are still visible. A process that closes its listener but keeps running
-gets a warning, with a `--force` hint after `SIGTERM` on Linux and macOS. Tree
-and group kills report how many signalled members exited and name the PIDs
-still running. Exit code 0 still means the signal was accepted; read the report
-lines to learn whether the process is gone.
+gets a warning with the exact command that sends `SIGKILL` on Linux and macOS.
+While the process still owns its port, that is `kick kill --pid PID --force`.
+Once its ports are closed, a plain `--pid` kill no longer applies (see above), so
+the hint is `kick kill --pid PID --tree --force`, which also stops the process's
+children. Tree and group kills report how many signalled members exited and
+name the PIDs still running. Exit code 0 still means the signal was accepted;
+read the report lines to learn whether the process is gone.
 
 ## Watch Changes
 
