@@ -25,6 +25,7 @@ use crate::display::sanitize;
 use crate::inspect;
 use crate::model::Platform;
 use crate::model::{PortEntryView, SortMode};
+use crate::owner_visibility::OwnerVisibility;
 use crate::platform;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::tree;
@@ -314,12 +315,104 @@ pub(crate) fn run(
                 .iter()
                 .map(|descriptor| snapshot.port_entry_view(descriptor))
                 .collect::<Vec<_>>();
+            if let Some(port) = args.port
+                && let Some(reason) = refuse_unprovable_port_kill(args, port, &snapshot, &entries)
+            {
+                return reason;
+            }
             run_kill(args, config, &entries)
         }
-        Command::Inspect(args) => run_inspect(args, config, &snapshot),
+        Command::Inspect(args) => {
+            if let Some(port) = args.port
+                && let Some(message) = hidden_port_owner_message(&snapshot, port)
+            {
+                eprintln!("error: {message}");
+                return ExitReason::PermissionDenied;
+            }
+            run_inspect(args, config, &snapshot)
+        }
         Command::Watch(_) => unreachable!("watch is dispatched before one-shot collection"),
         Command::Why(_) => unreachable!("why is dispatched before one-shot collection"),
     }
+}
+
+/// Explain a selected port whose visible socket has no visible owner.
+///
+/// Port resolution would refuse the same port as `MissingPid`; this gives the
+/// refusal its cause (another user's socket, incomplete attribution, or no
+/// readable holder) without changing the exit code.
+fn hidden_port_owner_message(
+    snapshot: &crate::observation::NetworkSnapshot,
+    port: u16,
+) -> Option<String> {
+    let socket = snapshot.sockets.iter().find(|socket| {
+        socket.local_endpoint.port.get() == port
+            && matches!(
+                socket.state,
+                crate::observation::SocketState::Listen | crate::observation::SocketState::Bound
+            )
+            && socket.owners.is_empty()
+    })?;
+    Some(OwnerVisibility::of(snapshot).hidden_port_owner_message(port, socket))
+}
+
+/// Refuse a port-selected kill before any prompt when the snapshot cannot
+/// prove the visible owner is the port's only holder.
+///
+/// The same authority check runs again before delivery; refusing here only
+/// avoids asking for a confirmation that cannot succeed, and says why. An
+/// unreadable process anywhere on the host could share the socket, so the
+/// refusal names the verified owner and suggests targeting it by PID.
+fn refuse_unprovable_port_kill(
+    args: &KillArgs,
+    port: u16,
+    snapshot: &crate::observation::NetworkSnapshot,
+    entries: &[PortEntryView<'_>],
+) -> Option<ExitReason> {
+    if let Some(message) = hidden_port_owner_message(snapshot, port) {
+        eprintln!("error: {message}");
+        return Some(ExitReason::PermissionDenied);
+    }
+    // Other resolution failures keep their existing messages.
+    let (pid, rows) = resolve_single_port_owner(port, entries).ok()?;
+    // These refusals come first in the normal flow and keep their own
+    // wording and exit codes: an unsafe PID has no `--pid` alternative, and
+    // `--yes` on a protected owner exits 6.
+    if crate::process::unsafe_pid_reason(pid).is_some()
+        || (args.yes && rows.iter().any(|row| row.protected))
+    {
+        return None;
+    }
+    match collector::kill_ports_from_snapshot(snapshot, None, Some(port)) {
+        Err(error) if error.is_ownership_permission_denied() => {}
+        _ => return None,
+    }
+    let name = rows
+        .iter()
+        .find_map(|row| row.process_name)
+        .map_or_else(|| "<unknown>".to_owned(), crate::display::sanitize);
+    eprintln!(
+        "error: kick cannot prove that PID {pid} ({name}) is the only holder of port {port}: {}; an unreadable process could share the socket, so kick will not signal by port. Run `{}` to target the verified owner, or rerun with higher privileges",
+        OwnerVisibility::of(snapshot).unreadable_clause(),
+        pid_kill_suggestion(args, pid),
+    );
+    Some(ExitReason::PermissionDenied)
+}
+
+/// The `--pid` form of a port-selected kill, keeping its scope and mode.
+fn pid_kill_suggestion(args: &KillArgs, pid: u32) -> String {
+    let mut command = format!("kick kill --pid {pid}");
+    if args.tree {
+        command.push_str(" --tree");
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if args.group {
+        command.push_str(" --group");
+    }
+    if args.force {
+        command.push_str(" --force");
+    }
+    command
 }
 
 fn write_stdout(text: &str) -> Option<ExitReason> {
@@ -940,6 +1033,141 @@ mod tests {
 
         assert_eq!(minimum.refresh_interval, Some(1));
         assert_eq!(maximum.refresh_interval, Some(3600));
+    }
+
+    #[test]
+    fn port_kill_is_refused_before_the_prompt_without_complete_authority() {
+        use super::{KillArgs, pid_kill_suggestion, refuse_unprovable_port_kill};
+
+        let snapshot = crate::test_support::permission_denied_owner_snapshot();
+        let descriptors = snapshot
+            .port_entry_descriptors(&[])
+            .expect("fixture projects");
+        let entries = descriptors
+            .iter()
+            .map(|descriptor| snapshot.port_entry_view(descriptor))
+            .collect::<Vec<_>>();
+        let args = KillArgs {
+            pid: None,
+            port: Some(3000),
+            force: true,
+            yes: true,
+            tree: true,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            group: false,
+        };
+
+        assert_eq!(
+            refuse_unprovable_port_kill(&args, 3000, &snapshot, &entries),
+            Some(ExitReason::PermissionDenied)
+        );
+        // The suggestion keeps scope and mode but never adds --yes.
+        assert_eq!(
+            pid_kill_suggestion(&args, 18_422),
+            "kick kill --pid 18422 --tree --force"
+        );
+    }
+
+    #[test]
+    fn earlier_port_kill_refusals_keep_their_own_exit_codes() {
+        use super::{KillArgs, refuse_unprovable_port_kill};
+
+        let mut snapshot = crate::test_support::permission_denied_owner_snapshot();
+        let descriptors = snapshot
+            .port_entry_descriptors(&[])
+            .expect("fixture projects");
+        // The unverified owner has no readable name, so mark its row the way
+        // a matching protection rule would.
+        let protected_entries = descriptors
+            .iter()
+            .map(|descriptor| {
+                let mut entry = snapshot.port_entry_view(descriptor);
+                entry.protected = entry.local_port == 3000;
+                entry
+            })
+            .collect::<Vec<_>>();
+        let args = KillArgs {
+            pid: None,
+            port: Some(3000),
+            force: false,
+            yes: true,
+            tree: false,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            group: false,
+        };
+
+        // `--yes` on a protected owner is left to the exit-6 refusal.
+        assert_eq!(
+            refuse_unprovable_port_kill(&args, 3000, &snapshot, &protected_entries),
+            None
+        );
+
+        // An unsafe owner PID is left to the unsafe-PID refusal.
+        for socket in &mut snapshot.sockets {
+            for owner in &mut socket.owners {
+                if let crate::observation::OwnerObservation::UnverifiedPid { pid, .. } = owner {
+                    *pid = 1;
+                }
+            }
+        }
+        let descriptors = snapshot
+            .port_entry_descriptors(&[])
+            .expect("fixture projects");
+        let entries = descriptors
+            .iter()
+            .map(|descriptor| snapshot.port_entry_view(descriptor))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            refuse_unprovable_port_kill(&args, 3000, &snapshot, &entries),
+            None
+        );
+    }
+
+    #[test]
+    fn port_kill_with_complete_authority_reaches_the_normal_flow() {
+        use super::{KillArgs, refuse_unprovable_port_kill};
+
+        let rows = vec![entry(3000)];
+        let snapshot = crate::observation::snapshot_from_test_rows(rows);
+        let descriptors = snapshot
+            .port_entry_descriptors(&[])
+            .expect("fixture projects");
+        let entries = descriptors
+            .iter()
+            .map(|descriptor| snapshot.port_entry_view(descriptor))
+            .collect::<Vec<_>>();
+        let args = KillArgs {
+            pid: None,
+            port: Some(3000),
+            force: false,
+            yes: true,
+            tree: false,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            group: false,
+        };
+
+        assert_eq!(
+            refuse_unprovable_port_kill(&args, 3000, &snapshot, &entries),
+            None
+        );
+    }
+
+    #[test]
+    fn hidden_port_owner_message_only_names_ownerless_sockets() {
+        let rows = vec![
+            entry_with_pid(3000, None, Protocol::Tcp, "hidden"),
+            entry(4000),
+        ];
+        let snapshot = crate::observation::snapshot_from_test_rows(rows);
+
+        let message = super::hidden_port_owner_message(&snapshot, 3000)
+            .expect("an ownerless socket is explained");
+        assert!(
+            message.starts_with("port 3000 is visible, but its owner"),
+            "{message}"
+        );
+        assert_eq!(super::hidden_port_owner_message(&snapshot, 4000), None);
+        assert_eq!(super::hidden_port_owner_message(&snapshot, 5000), None);
     }
 
     #[test]

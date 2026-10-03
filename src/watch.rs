@@ -695,6 +695,7 @@ mod tests {
             owners: owner.map_or_else(Vec::new, |owner| vec![OwnerObservation::Verified(owner)]),
             owner_completeness: OwnerCompleteness::Complete,
             socket_token: None,
+            local_uid: None,
         }
     }
 

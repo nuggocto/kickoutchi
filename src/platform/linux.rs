@@ -342,6 +342,7 @@ struct SocketRecord {
     state: ObservationSocketState,
     timer: Option<TcpTimerObservation>,
     inode: u64,
+    uid: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -536,6 +537,7 @@ fn native_pass_from_records(
                 state: record.state,
                 timer: record.timer,
                 token: PlatformSocketToken::linux_inode(record.inode),
+                local_uid: record.uid,
             },
             owner_pids: owner_scan
                 .owners
@@ -838,7 +840,7 @@ fn parse_socket_line(
     let _retransmits = fields
         .next()
         .ok_or(SocketParseError::MissingField { field: "retrnsmt" })?;
-    let _uid = fields
+    let uid_text = fields
         .next()
         .ok_or(SocketParseError::MissingField { field: "uid" })?;
     let _timeout = fields
@@ -884,6 +886,9 @@ fn parse_socket_line(
         state,
         timer,
         inode,
+        // A hint for explanations only, so a malformed value is dropped
+        // instead of failing collection.
+        uid: uid_text.parse::<u32>().ok(),
     }))
 }
 

@@ -52,6 +52,7 @@ fn socket(
         owners,
         owner_completeness,
         socket_token: None,
+        local_uid: None,
     }
 }
 

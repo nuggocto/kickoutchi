@@ -805,6 +805,7 @@ fn privileged_ownerless_ipv4_result_reports_one_aggregate_gap_without_omission()
         owners: Vec::new(),
         owner_completeness: OwnerCompleteness::Complete,
         socket_token: None,
+        local_uid: None,
     });
     runtime.snapshot.completeness = SnapshotCompleteness::Partial;
     runtime.snapshot.owner_completeness =

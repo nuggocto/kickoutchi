@@ -248,6 +248,20 @@ fn parses_ipv4_tcp_listen_rows() {
     assert_eq!(record.local_port, 3000);
     assert_eq!(record.state, SocketState::Listen);
     assert_eq!(record.inode, 12_345);
+    assert_eq!(record.uid, Some(1000));
+}
+
+#[test]
+fn a_malformed_socket_uid_is_dropped_without_failing_the_row() {
+    // The UID only feeds human explanations, so it must never cost a socket.
+    let line = row("0100007F:0BB8", "0A", 12_345).replace(" 1000 0 ", " -1 0 ");
+
+    let record = parse_socket_line(&line, Protocol::Tcp, AddressFamily::Ipv4, Some(100))
+        .expect("the row stays valid")
+        .expect("listen row is kept");
+
+    assert_eq!(record.uid, None);
+    assert_eq!(record.inode, 12_345);
 }
 
 #[test]
@@ -1472,6 +1486,7 @@ fn edge_free_owner_scan_denial_is_aggregated_not_socket_local() {
         state: SocketState::Listen,
         timer: None,
         inode: 77,
+        uid: None,
     };
     let mut scan = OwnerScanResult::default();
     scan.record_pid_losses(
@@ -1507,6 +1522,7 @@ fn global_scan_denial_does_not_reduce_verified_endpoint_completeness() {
         state: SocketState::Listen,
         timer: None,
         inode: 77,
+        uid: None,
     };
     let mut scan = OwnerScanResult {
         owners: HashMap::from([(77, vec![1234])]),
@@ -1624,6 +1640,7 @@ fn owner_scan_loss_stays_pid_specific_after_a_target_edge_is_discovered() {
         state: SocketState::Listen,
         timer: None,
         inode: 77,
+        uid: None,
     };
     let scan = collect_socket_owners_detailed(&proc_root, &HashSet::from([77]), 1, 2)
         .expect("production owner scan remains representable");

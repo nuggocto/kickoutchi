@@ -209,6 +209,7 @@ fn socket(port: u32) -> NativeSocketObservation {
         state: SocketState::Listen,
         timer: None,
         token: PlatformSocketToken::linux_inode(u64::from(port)),
+        local_uid: None,
     }
 }
 
@@ -867,6 +868,7 @@ fn platform_socket_tokens_survive_collection() {
         state: SocketState::Listen,
         timer: None,
         token: PlatformSocketToken::macos_socket_id(0xCAFE),
+        local_uid: None,
     };
     let mut source = FakeSource::new(stable_steps(
         vec![linux.clone(), macos.clone()],

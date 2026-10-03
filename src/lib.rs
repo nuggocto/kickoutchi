@@ -23,6 +23,7 @@ mod labels;
 mod model;
 mod observation;
 mod output;
+mod owner_visibility;
 mod platform;
 mod probe;
 mod process;

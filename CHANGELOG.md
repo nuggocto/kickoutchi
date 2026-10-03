@@ -18,6 +18,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--force` hint after `SIGTERM`. Exit checks compare the process start
   identity, so a recycled PID counts as exited. Tree and group kills report how
   many signalled members exited and list survivors. Exit codes are unchanged.
+- `kick list` explains `-` owner cells on stderr instead of leaving them
+  unexplained. Rows are grouped into sockets created by other users whose
+  processes could not be read (named by account and UID, for example
+  `root (uid 0)`), sockets with no attributed owner, and sockets that no
+  readable process holds. Notes also flag rows that show a PID but no process
+  name. Stdout and JSON output are unchanged. Linux keeps the socket UID from
+  `/proc/net/*` for these explanations, where it was parsed and discarded
+  before.
+- `kick kill --port` and `kick inspect --port` say why a visible port has no
+  visible owner, for example that the socket belongs to another user and how
+  many processes could not be read, instead of only "no owning PID is
+  available".
+- An unprivileged Linux `kick kill --port` that cannot prove the visible owner
+  is the only holder of the socket is now refused before the confirmation
+  prompt. Before, it printed the banner, asked for confirmation, and then
+  failed with "ownership ... became unavailable", although nothing had
+  changed. The error now gives the cause, at least N processes could not be
+  read, and the `kick kill --pid PID` command that targets the verified owner
+  with the same scope and mode. The exit code is still 4.
 
 ## [1.4.6] - 2026-10-02
 

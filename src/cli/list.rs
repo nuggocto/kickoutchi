@@ -7,6 +7,7 @@ use crate::config::Config;
 use crate::diagnostic::requested_diagnostic_port;
 use crate::observation::NetworkSnapshot;
 use crate::output;
+use crate::owner_visibility::OwnerVisibility;
 use crate::query::{self, QueryCapabilities, QueryOptions};
 
 use super::{ExitReason, ListArgs, maybe_print_no_match_diagnostic};
@@ -131,6 +132,11 @@ fn run_list_snapshot_buffered(
         return output_error_reason(&error);
     }
 
+    // Explain `-` cells on stderr so stdout stays a plain table.
+    if !args.json {
+        print_owner_notes(snapshot, &descriptors, &visible_indices);
+    }
+
     // An empty *filtered* result exits 3, so scripts can probe occupancy
     // (`kickoutchi list --port 3000 && echo busy`). An empty *unfiltered* list
     // means a quiet machine and is successful.
@@ -138,6 +144,25 @@ fn run_list_snapshot_buffered(
         return ExitReason::NoMatch;
     }
     ExitReason::Success
+}
+
+fn print_owner_notes(
+    snapshot: &NetworkSnapshot,
+    descriptors: &[crate::observation::PortEntryDescriptor],
+    visible_indices: &[usize],
+) {
+    let rows = visible_indices.iter().map(|&index| {
+        let descriptor = &descriptors[index];
+        let view = snapshot.port_entry_view(descriptor);
+        (
+            view.pid.is_some(),
+            view.process_name.is_some(),
+            snapshot.descriptor_socket(descriptor),
+        )
+    });
+    for note in OwnerVisibility::of(snapshot).table_notes(rows) {
+        eprintln!("{note}");
+    }
 }
 
 fn output_error_reason(error: &io::Error) -> ExitReason {

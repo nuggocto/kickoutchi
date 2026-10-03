@@ -592,6 +592,7 @@ fn fake_snapshot(profile: MetadataProfile) -> Result<NetworkSnapshot, Observatio
                 OwnerCompleteness::partial([EvidenceGapCode::OwnerAttributionIncomplete])?
             },
             socket_token: None,
+            local_uid: None,
         });
     }
     let ownerless_endpoint = sockets[3].local_endpoint.clone();

@@ -979,13 +979,30 @@ fn port_kill_refused_for_incomplete_authority(output: &Output) -> bool {
         && stderr.contains("ownership for PID")
         && stderr.contains("became unavailable before SIGTERM")
         && stderr.contains("no termination was sent");
+    let refused_before_prompt = refused_before_prompt_for_unreadable_processes(output);
 
-    if refused_during_collection || refused_during_revalidation {
+    if refused_during_collection || refused_during_revalidation || refused_before_prompt {
         assert!(!stderr.contains("sent SIG"), "{stderr}");
         true
     } else {
         false
     }
+}
+
+/// Whether a port kill was refused up front because unreadable processes
+/// could share the socket. That refusal must come before any banner or
+/// prompt and must name the `--pid` alternative.
+fn refused_before_prompt_for_unreadable_processes(output: &Output) -> bool {
+    let stderr = stderr(output);
+    let refused = output.status.code() == Some(4)
+        && stderr.contains("is the only holder of port")
+        && stderr.contains("could not be read (permission denied)");
+    if refused {
+        assert!(stderr.contains("Run `kick kill --pid "), "{stderr}");
+        assert!(!stderr.contains("Terminate "), "{stderr}");
+        assert!(!stderr.contains("to confirm"), "{stderr}");
+    }
+    refused
 }
 
 fn assert_helper_survived_refusal(helper: &mut ChildGuard) {

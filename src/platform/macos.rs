@@ -425,6 +425,7 @@ fn native_pass_from_records(
                     state: socket.state,
                     timer: None,
                     token: PlatformSocketToken::macos_socket_id(socket.socket_id),
+                    local_uid: None,
                 },
                 owner_pids,
                 owner_completeness: OwnerCompleteness::Complete,

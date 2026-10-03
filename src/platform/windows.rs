@@ -138,6 +138,7 @@ fn native_pass_from_records(
                 state: record.state,
                 timer: None,
                 token: None,
+                local_uid: None,
             },
             owner_pids,
             owner_completeness,

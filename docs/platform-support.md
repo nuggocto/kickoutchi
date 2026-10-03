@@ -87,7 +87,14 @@ PIDs, descriptor links, identities, or metadata. Permission denial while reading
 a required socket table fails collection; denial or disappearance during owner
 and metadata reads is retained as an explicit gap where possible.
 `kill --port` refuses when an ownership gap has no endpoint provenance because
-an unobserved process could share the selected socket.
+an unobserved process could share the selected socket. The CLI applies this
+check to its first snapshot, so the refusal comes before the confirmation
+prompt and names the `kill --pid` command for the verified owner.
+
+Linux socket rows also report the UID that created each socket. Human output
+uses it to explain an owner-less row, for example "the socket belongs to root
+(uid 0)". It is a hint, not ownership evidence, because descriptors can be
+inherited or passed between users, and it is not part of any JSON contract.
 
 The legacy list/TUI `permission` field compresses these Unix outcomes for 1.x
 compatibility. `partial` covers permission denial, process disappearance, races,

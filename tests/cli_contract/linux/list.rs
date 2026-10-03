@@ -456,3 +456,35 @@ fn udp_ipv6_socket_is_listed_through_the_real_binary() {
     assert!(out.contains(port_text.as_str()), "{out}");
     assert!(stdout_table_has_pid(&output, std::process::id()), "{out}");
 }
+
+#[test]
+fn owner_notes_explain_dash_rows_on_stderr_only() {
+    let _host_observation = lock_host_observation();
+    let output = kickoutchi(&["list"]);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+
+    let table = stdout(&output);
+    let notes = stderr(&output);
+    // The table stays machine-splittable: no notes leak into stdout.
+    assert!(!table.contains("note:"), "{table}");
+    let dash_pid_rows = table
+        .lines()
+        .skip(1)
+        .filter(|line| line.split_whitespace().nth(3) == Some("-"))
+        .count();
+    if dash_pid_rows == 0 {
+        assert!(!notes.contains("PID \"-\""), "{notes}");
+        return;
+    }
+    assert!(
+        notes.contains("note: PID \"-\" means the socket's owner is not visible:"),
+        "{notes}"
+    );
+    // Every dash row is counted in exactly one reason line.
+    let counted = notes
+        .lines()
+        .filter(|line| line.starts_with("  "))
+        .filter_map(|line| line.split_whitespace().next()?.parse::<usize>().ok())
+        .sum::<usize>();
+    assert_eq!(counted, dash_pid_rows, "{table}\n{notes}");
+}

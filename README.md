@@ -157,6 +157,14 @@ to the process table for a live, portless PID. Use `--tree` (or `--group` on
 Linux and macOS) when the root process owns no visible port; those scoped modes
 can resolve a live root from a fresh process-table snapshot.
 
+On Linux, `kill --port` also needs proof that the visible owner is the only
+holder of the socket. When other processes on the host cannot be read, one of
+them could share it, so an unprivileged port kill is refused before any prompt.
+The error names the verified owner and the equivalent `kick kill --pid PID`
+command; run that, or rerun with higher privileges. A port whose owner is
+hidden entirely is refused with the reason, for example that the socket belongs
+to another user.
+
 Treat `--yes` as authorization for exactly the resolved target or scope. It
 skips the prompt, but it does not broaden target resolution or bypass safety
 checks.
@@ -315,7 +323,10 @@ Published archives target:
   observations on Linux and macOS. It is not part of the literal IP address or
   an error.
 - `-` in the PID or process columns means ownership metadata was unavailable;
-  it does not mean the socket has no owner.
+  it does not mean the socket has no owner. `kick list` explains these rows on
+  stderr: sockets created by other users whose processes you cannot read
+  (named by account, from the Linux socket UID), sockets with no attributed
+  owner, and sockets that no readable process holds, such as kernel-held ones.
 
 The `SCOPE` column labels wildcard addresses `public`, loopback addresses
 `loopback`, and other concrete addresses `local`.

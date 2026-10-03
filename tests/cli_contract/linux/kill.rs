@@ -258,11 +258,15 @@ fn isolated_namespace_port_kill_signals_or_refuses_without_delivery() {
     let refused_during_revalidation = stderr.contains("ownership for PID")
         && stderr.contains("became unavailable before SIGTERM")
         && stderr.contains("no termination was sent");
+    let refused_before_prompt = stderr.contains("is the only holder of port");
     assert!(
-        signalled || refused_during_collection || refused_during_revalidation,
+        signalled
+            || refused_during_collection
+            || refused_during_revalidation
+            || refused_before_prompt,
         "{stderr}"
     );
-    if refused_during_collection || refused_during_revalidation {
+    if refused_during_collection || refused_during_revalidation || refused_before_prompt {
         assert!(!signalled, "{stderr}");
     }
 }
@@ -313,12 +317,14 @@ fn tree_kill_by_port_signals_only_with_complete_owner_evidence() {
 #[test]
 fn tree_kill_declined_at_prompt_leaves_tree_running_and_unfrozen() {
     let _host_observation = lock_host_observation();
-    let (helper, port, child_pid, ready_file) = spawn_tree_process("root-owns-port");
+    let (helper, _port, child_pid, ready_file) = spawn_tree_process("root-owns-port");
     let _child_cleanup = PidGuard::new(child_pid);
-    let port_text = port.to_string();
     let root_pid = helper.id();
+    let root_pid_text = root_pid.to_string();
 
-    let declined = kickoutchi_with_stdin(&["kill", "--port", port_text.as_str(), "--tree"], "\n");
+    // Select by PID: an unprivileged port selection can be refused before the
+    // prompt when unreadable host processes could share the socket.
+    let declined = kickoutchi_with_stdin(&["kill", "--pid", &root_pid_text, "--tree"], "\n");
 
     assert_eq!(declined.status.code(), Some(5), "{}", stderr(&declined));
     let declined_stderr = stderr(&declined);

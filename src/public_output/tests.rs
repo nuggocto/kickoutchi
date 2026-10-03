@@ -29,6 +29,7 @@ fn socket(port: u32, owners: Vec<OwnerObservation>) -> SocketObservation {
         owners,
         owner_completeness: OwnerCompleteness::Complete,
         socket_token: None,
+        local_uid: None,
     }
 }
 
@@ -581,6 +582,7 @@ fn tagged_variant_snapshot() -> NetworkSnapshot {
             socket_token: Some(PlatformSocketToken::MacOsSocketId(
                 NonZeroU64::new(11).expect("nonzero token"),
             )),
+            local_uid: None,
         },
         SocketObservation {
             local_endpoint: scoped_endpoint(Ipv6Scope::Unavailable),
@@ -589,6 +591,7 @@ fn tagged_variant_snapshot() -> NetworkSnapshot {
             owners: Vec::new(),
             owner_completeness: OwnerCompleteness::Complete,
             socket_token: None,
+            local_uid: None,
         },
         SocketObservation {
             local_endpoint: scoped_endpoint(Ipv6Scope::InterfaceIndex(
@@ -599,6 +602,7 @@ fn tagged_variant_snapshot() -> NetworkSnapshot {
             owners: Vec::new(),
             owner_completeness: OwnerCompleteness::Complete,
             socket_token: None,
+            local_uid: None,
         },
         SocketObservation {
             local_endpoint: scoped_endpoint(Ipv6Scope::Unscoped),
@@ -607,6 +611,7 @@ fn tagged_variant_snapshot() -> NetworkSnapshot {
             owners: Vec::new(),
             owner_completeness: OwnerCompleteness::Complete,
             socket_token: None,
+            local_uid: None,
         },
     ];
     snapshot

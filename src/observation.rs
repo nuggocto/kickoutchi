@@ -541,6 +541,11 @@ pub(crate) struct SocketObservation {
     pub(crate) owners: Vec<OwnerObservation>,
     pub(crate) owner_completeness: OwnerCompleteness,
     pub(crate) socket_token: Option<PlatformSocketToken>,
+    /// UID that created the socket, when the native source reports one. Only
+    /// Linux procfs socket rows carry it. It is a visibility hint for human
+    /// explanations, not ownership evidence: descriptors can be inherited or
+    /// passed to processes of other users.
+    pub(crate) local_uid: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -730,6 +735,7 @@ pub(crate) fn snapshot_from_test_rows(rows: Vec<PortEntry>) -> NetworkSnapshot {
             },
             owners,
             socket_token: None,
+            local_uid: None,
         });
     }
     NetworkSnapshot {
@@ -872,6 +878,11 @@ impl NetworkSnapshot {
         Ok(descriptors)
     }
 
+    /// The socket a projected row came from.
+    pub(crate) fn descriptor_socket(&self, descriptor: &PortEntryDescriptor) -> &SocketObservation {
+        &self.sockets[descriptor.socket_index as usize]
+    }
+
     pub(crate) fn port_entry_view(&self, descriptor: &PortEntryDescriptor) -> PortEntryView<'_> {
         let socket = &self.sockets[descriptor.socket_index as usize];
         let owner = (descriptor.owner_index != u32::MAX)
@@ -972,6 +983,8 @@ pub(crate) struct NativeSocketObservation {
     pub(crate) state: SocketState,
     pub(crate) timer: Option<TcpTimerObservation>,
     pub(crate) token: Option<PlatformSocketToken>,
+    /// See [`SocketObservation::local_uid`].
+    pub(crate) local_uid: Option<u32>,
 }
 
 impl PartialEq for NativeSocketObservation {
@@ -1760,6 +1773,7 @@ fn materialize_sockets(
                 merge_owner_completeness(&row.owner_completeness, &unverified_local)?
             },
             socket_token: native.token,
+            local_uid: native.local_uid,
         });
     }
 
