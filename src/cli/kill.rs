@@ -10,18 +10,18 @@ use crate::command;
 use crate::config::Config;
 use crate::display::{human_endpoint_text, sanitize};
 use crate::model::{PortEntry, PortEntryView, ProcessContext};
-use crate::observation::MetadataProfile;
+use crate::observation::{MetadataProfile, ProcessIdentity};
 use crate::platform;
 use crate::process::{
-    self, CONFIRMATION_INPUT_MAX_BYTES, ConfirmationRequirement, KillMode, KillTarget,
-    TerminationOutcome, UnsafePidReason, WarningScope,
+    self, CONFIRMATION_INPUT_MAX_BYTES, ConfirmationRequirement, ExitObservation, KillMode,
+    KillTarget, TerminationOutcome, UnsafePidReason, WarningScope,
 };
 use crate::protection::mark_protected;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::scoped::run_group_kill;
 use super::scoped::run_tree_kill;
-use super::{ExitReason, KillArgs};
+use super::{ExitReason, KillArgs, settle};
 
 pub(super) fn run_kill(
     args: &KillArgs,
@@ -49,6 +49,8 @@ pub(super) fn run_kill(
             visibility_ports: &mut || {
                 collector::collect_ports_with_profile(POST_KILL_VISIBILITY_PROFILE)
             },
+            observe_exit: &mut process::observe_exit,
+            sleep: &mut std::thread::sleep,
         },
         prompt_confirmation,
         process::prepare_termination,
@@ -60,6 +62,8 @@ struct KillCollectors<'a> {
     context: &'a mut dyn FnMut(u32) -> ProcessContext,
     kill_ports: &'a mut dyn FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
     visibility_ports: &'a mut dyn FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
+    observe_exit: &'a mut dyn FnMut(ProcessIdentity) -> ExitObservation,
+    sleep: &'a mut dyn FnMut(Duration),
 }
 
 fn run_kill_with<Handle>(
@@ -141,88 +145,49 @@ fn run_kill_with<Handle>(
     let outcome = terminate(&handle, &target, &config.protected_processes, mode);
     print_termination_outcome(&target, mode, &outcome);
     if outcome == TerminationOutcome::Success {
-        print_post_kill_refresh_status(&target, &mut collectors.visibility_ports);
+        print_single_settle_report(&target, mode, &mut collectors);
     }
     exit_reason_for_outcome(&outcome)
 }
 
-/// How many times the post-kill refresh re-reads the port table, and the pause
-/// between reads. Termination is asynchronous: a `SIGTERM`'d process needs a
-/// moment to run its handlers and close its sockets, so one immediate
-/// re-collect would report "still visible" on perfectly successful kills.
-/// Ten 100ms polls allow about one second for asynchronous shutdown.
-const POST_KILL_SETTLE_ATTEMPTS_MAX: usize = 10;
-const POST_KILL_SETTLE_RETRY_DELAY: Duration = Duration::from_millis(100);
 const POST_KILL_VISIBILITY_PROFILE: MetadataProfile = MetadataProfile::IdentityOnly;
 
-/// What the confirmed ports looked like once the settle window closed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum PostKillPortsStatus {
-    Cleared,
-    StillVisible,
-    RefreshFailed(String),
-}
-
-pub(super) fn print_post_kill_refresh_status<CollectPorts>(
+/// Poll the root's confirmed ports after a delivery that has no exit check of
+/// its own, and print the result.
+pub(super) fn print_post_kill_refresh_status(
     target: &KillTarget,
-    collect_ports: &mut CollectPorts,
-) where
-    CollectPorts: FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
-{
-    if let Some(message) = post_kill_refresh_status_message(target, collect_ports) {
+    collect_ports: &mut dyn FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
+) {
+    if let Some(message) = settle::ports_only_status_message(target, collect_ports) {
         eprintln!("{message}");
     }
 }
 
-pub(super) fn post_kill_refresh_status_message<CollectPorts>(
+/// Wait for one signalled process to exit and its confirmed ports to clear,
+/// then print both facts.
+fn print_single_settle_report(
     target: &KillTarget,
-    collect_ports: &mut CollectPorts,
-) -> Option<String>
-where
-    CollectPorts: FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
-{
-    // A portless root has no confirmed ports to poll.
-    if target.ports.is_empty() {
-        return None;
-    }
-    Some(match wait_for_confirmed_ports_to_clear(target, collect_ports, std::thread::sleep) {
-        PostKillPortsStatus::Cleared => "confirmed target ports are no longer visible".to_owned(),
-        PostKillPortsStatus::StillVisible => "warning: one or more confirmed ports are still visible after termination; another process may own them or shutdown may still be completing".to_owned(),
-        PostKillPortsStatus::RefreshFailed(error) => format!(
-            "warning: collecting ports after termination failed; refresh manually to verify the port disappeared: {error}",
-        ),
-    })
-}
-
-/// Poll the port table until every confirmed port is gone or the settle window
-/// runs out. The sleep is injected so tests can drive the loop without real
-/// delays. A refresh error returns a warning instead of claiming that ports
-/// cleared without evidence.
-fn wait_for_confirmed_ports_to_clear<CollectPorts, Sleep>(
-    target: &KillTarget,
-    collect_ports: &mut CollectPorts,
-    mut sleep: Sleep,
-) -> PostKillPortsStatus
-where
-    CollectPorts: FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
-    Sleep: FnMut(Duration),
-{
-    for attempt in 0..POST_KILL_SETTLE_ATTEMPTS_MAX {
-        let entries = match collect_ports() {
-            Ok(entries) => entries,
-            Err(error) => return PostKillPortsStatus::RefreshFailed(error.to_string()),
-        };
-        let still_visible = entries.iter().map(PortEntryView::from).any(|entry| {
-            process::kill_target_has_port(&target.ports, &process::KillTargetPort::from(entry))
+    mode: KillMode,
+    collectors: &mut KillCollectors<'_>,
+) {
+    let identity = target
+        .process_start_time_marker
+        .map(|start_marker| ProcessIdentity {
+            pid: target.pid,
+            start_marker,
         });
-        if !still_visible {
-            return PostKillPortsStatus::Cleared;
-        }
-        if attempt + 1 < POST_KILL_SETTLE_ATTEMPTS_MAX {
-            sleep(POST_KILL_SETTLE_RETRY_DELAY);
-        }
+    let report = settle::settle(
+        identity.as_slice(),
+        &target.ports,
+        &mut settle::SettleProbe {
+            collect_ports: collectors.visibility_ports,
+            observe_exit: collectors.observe_exit,
+            sleep: collectors.sleep,
+        },
+    );
+    for line in settle::single_report_lines(target, mode, identity.is_some(), &report) {
+        eprintln!("{line}");
     }
-    PostKillPortsStatus::StillVisible
 }
 
 pub(super) fn revalidate_cli_target<CollectContext, CollectPorts>(

@@ -14,9 +14,9 @@ use super::{
 };
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::{
-    UnixProcessState, UnixProcessStatus, finish_stopped_termination, macos_cont_if_matches_with,
-    macos_stop_observation_result, outcome_after_thaw, refuse_stopped_termination,
-    run_before_stop_deadline,
+    ExitObservation, UnixProcessState, UnixProcessStatus, exit_observation_from_state,
+    finish_stopped_termination, macos_cont_if_matches_with, macos_stop_observation_result,
+    outcome_after_thaw, refuse_stopped_termination, run_before_stop_deadline,
 };
 #[cfg(target_os = "macos")]
 use super::{finish_macos_stopped_process, macos_status_is_exited};
@@ -1118,4 +1118,59 @@ fn windows_termination_maps_permission_denied_and_missing_pid_separately() {
         windows_api_outcome("OpenProcess", &missing),
         TerminationOutcome::AlreadyExited,
     );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn exit_observation_tracks_the_signalled_identity_not_the_pid() {
+    let signalled = crate::observation::ProcessStartMarker::linux(55).expect("nonzero marker");
+    let recycled = crate::observation::ProcessStartMarker::linux(56).expect("nonzero marker");
+    let state = |marker, status| Ok(UnixProcessState { marker, status });
+    let os_error = |code| Err(std::io::Error::from_raw_os_error(code));
+
+    let cases = [
+        (
+            state(signalled, UnixProcessStatus::Running),
+            ExitObservation::Running,
+        ),
+        // A stopped process is still alive.
+        (
+            state(signalled, UnixProcessStatus::Stopped),
+            ExitObservation::Running,
+        ),
+        // A zombie has exited even though its PID is still listed.
+        (
+            state(signalled, UnixProcessStatus::Exited),
+            ExitObservation::Exited,
+        ),
+        // A recycled PID names a different process.
+        (
+            state(recycled, UnixProcessStatus::Running),
+            ExitObservation::Exited,
+        ),
+        (os_error(libc::ENOENT), ExitObservation::Exited),
+        (os_error(libc::ESRCH), ExitObservation::Exited),
+    ];
+    for (state, expected) in cases {
+        assert_eq!(exit_observation_from_state(signalled, state), expected);
+    }
+
+    let denied = exit_observation_from_state(signalled, os_error(libc::EACCES));
+    assert!(
+        matches!(denied, ExitObservation::Unknown(_)),
+        "a failed read must not claim an exit: {denied:?}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn exit_observation_sees_the_current_process_running() {
+    let pid = std::process::id();
+    let state = linux_process_state(pid).expect("own stat is readable");
+    let identity = crate::observation::ProcessIdentity {
+        pid,
+        start_marker: state.marker,
+    };
+
+    assert_eq!(super::observe_exit(identity), ExitObservation::Running);
 }

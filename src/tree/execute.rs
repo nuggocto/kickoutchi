@@ -88,6 +88,15 @@ impl FrozenNode {
             depth,
         }
     }
+
+    /// The authorized identity, when discovery read a start marker.
+    fn identity(&self) -> Option<crate::observation::ProcessIdentity> {
+        self.start_time_marker
+            .map(|start_marker| crate::observation::ProcessIdentity {
+                pid: self.pid,
+                start_marker,
+            })
+    }
 }
 
 /// The scope-specific half of the shared freeze pipeline.
@@ -147,6 +156,9 @@ pub(crate) struct TreeKillReport {
     pub(crate) total: usize,
     /// Processes that accepted the terminating signal.
     pub(crate) delivered: usize,
+    /// Start identities of the delivered processes, for exit verification. A
+    /// delivered member without a start marker is counted but not listed.
+    pub(crate) delivered_identities: Vec<crate::observation::ProcessIdentity>,
     /// Processes that were already gone or PID-recycled before final delivery.
     pub(crate) already_exited: usize,
     /// PIDs the OS refused to signal (permission).
@@ -898,6 +910,7 @@ fn signal_tree<Ops: TreeProcessOps>(
 
     let total = frozen.len();
     let mut delivered = 0;
+    let mut delivered_identities = Vec::new();
     let mut already_exited = 0;
     let mut denied = Vec::new();
     let mut thaw_failed = Vec::new();
@@ -906,6 +919,7 @@ fn signal_tree<Ops: TreeProcessOps>(
         match result {
             TreeSignalResult::Delivered => {
                 delivered += 1;
+                delivered_identities.extend(node.identity());
                 if mode == KillMode::Terminate && ops.cont(node.pid) == TreeSignalResult::Denied {
                     // SIGTERM remains pending for any stopped process, including
                     // one stopped before Kickoutchi observed it.
@@ -929,6 +943,7 @@ fn signal_tree<Ops: TreeProcessOps>(
     TreeKillReport {
         total,
         delivered,
+        delivered_identities,
         already_exited,
         denied,
         thaw_failed,
@@ -943,6 +958,7 @@ fn signal_group<Ops: TreeProcessOps>(
 ) -> TreeKillReport {
     let total = frozen.len();
     let mut delivered = 0;
+    let mut delivered_identities = Vec::new();
     let mut already_exited = 0;
     let mut denied = Vec::new();
     let mut thaw_failed = Vec::new();
@@ -952,6 +968,7 @@ fn signal_group<Ops: TreeProcessOps>(
         match ops.deliver(node.pid, mode) {
             TreeSignalResult::Delivered => {
                 delivered += 1;
+                delivered_identities.extend(node.identity());
                 if mode == KillMode::Terminate {
                     continue_after_delivery.push(node.pid);
                 }
@@ -979,6 +996,7 @@ fn signal_group<Ops: TreeProcessOps>(
     TreeKillReport {
         total,
         delivered,
+        delivered_identities,
         already_exited,
         denied,
         thaw_failed,

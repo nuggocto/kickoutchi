@@ -1,11 +1,9 @@
-use crate::model::PortEntryView;
 use crate::model::entry_views;
 use std::cell::RefCell;
 
 use super::{
-    KillCollectors, KillTargetError, POST_KILL_SETTLE_ATTEMPTS_MAX, PostKillPortsStatus,
-    read_confirmation_line_from, resolve_kill_target, run_kill_with,
-    wait_for_confirmed_ports_to_clear,
+    KillCollectors, KillTargetError, read_confirmation_line_from, resolve_kill_target,
+    run_kill_with,
 };
 use crate::cli::test_support::{entry, entry_with_pid, no_context};
 use crate::cli::{ExitReason, KillArgs};
@@ -14,7 +12,7 @@ use crate::config::Config;
 use crate::model::Protocol;
 use crate::observation::ObservationError;
 use crate::process::{
-    CONFIRMATION_INPUT_MAX_BYTES, ConfirmationRequirement, KillMode, KillTarget,
+    CONFIRMATION_INPUT_MAX_BYTES, ConfirmationRequirement, ExitObservation, KillMode,
     TerminationOutcome, UnsafePidReason,
 };
 use crate::test_support::permission_denied_owner_snapshot;
@@ -101,6 +99,8 @@ fn kill_port_without_readable_pid_exits_permission_denied() {
             context: &mut no_context,
             kill_ports: &mut || panic!("missing PID target must fail before revalidation"),
             visibility_ports: &mut || Ok(Vec::new()),
+            observe_exit: &mut |_| ExitObservation::Exited,
+            sleep: &mut |_| panic!("settled facts must not sleep"),
         },
         |_target, _mode, _requirement| panic!("missing PID target must not prompt"),
         |_pid| -> Result<u32, TerminationOutcome> {
@@ -176,6 +176,8 @@ fn kill_yes_sends_signal_without_prompt_for_unprotected_target() {
             context: &mut no_context,
             kill_ports: &mut || Ok(rows.clone()),
             visibility_ports: &mut || Ok(Vec::new()),
+            observe_exit: &mut |_| ExitObservation::Exited,
+            sleep: &mut |_| panic!("settled facts must not sleep"),
         },
         |_target, _mode, _requirement| panic!("--yes must skip normal prompts"),
         Ok::<u32, TerminationOutcome>,
@@ -204,6 +206,8 @@ fn protected_process_yes_returns_exit_6_without_signalling() {
             context: &mut no_context,
             kill_ports: &mut || Ok(rows.clone()),
             visibility_ports: &mut || Ok(Vec::new()),
+            observe_exit: &mut |_| ExitObservation::Exited,
+            sleep: &mut |_| panic!("settled facts must not sleep"),
         },
         |_target, _mode, _requirement| panic!("protected --yes must not prompt"),
         |_pid| -> Result<u32, TerminationOutcome> {
@@ -231,6 +235,8 @@ fn force_kill_uses_force_word_confirmation_when_configured() {
             context: &mut no_context,
             kill_ports: &mut || Ok(rows.clone()),
             visibility_ports: &mut || Ok(Vec::new()),
+            observe_exit: &mut |_| ExitObservation::Exited,
+            sleep: &mut |_| panic!("settled facts must not sleep"),
         },
         |_target, mode, requirement| {
             prompted = Some((mode, requirement));
@@ -260,6 +266,8 @@ fn declined_confirmation_cancels_without_signalling() {
             context: &mut no_context,
             kill_ports: &mut || Ok(rows.clone()),
             visibility_ports: &mut || Ok(Vec::new()),
+            observe_exit: &mut |_| ExitObservation::Exited,
+            sleep: &mut |_| panic!("settled facts must not sleep"),
         },
         |_target, _mode, requirement| {
             assert_eq!(requirement, ConfirmationRequirement::Yes);
@@ -293,6 +301,8 @@ fn target_is_revalidated_after_confirmation_before_signal() {
             context: &mut no_context,
             kill_ports: &mut || Ok(fresh_rows.clone()),
             visibility_ports: &mut || Ok(Vec::new()),
+            observe_exit: &mut |_| ExitObservation::Exited,
+            sleep: &mut |_| panic!("settled facts must not sleep"),
         },
         |_target, _mode, _requirement| panic!("--yes skips prompts"),
         |pid| {
@@ -327,6 +337,8 @@ fn prepare_failure_stops_before_revalidation_or_signal() {
                 Ok(rows.clone())
             },
             visibility_ports: &mut || Ok(Vec::new()),
+            observe_exit: &mut |_| ExitObservation::Exited,
+            sleep: &mut |_| panic!("settled facts must not sleep"),
         },
         |_target, _mode, _requirement| panic!("--yes skips prompts"),
         |_pid| -> Result<u32, TerminationOutcome> { Err(TerminationOutcome::AlreadyExited) },
@@ -356,6 +368,8 @@ fn target_losing_readable_pid_during_revalidation_exits_permission_denied() {
             context: &mut no_context,
             kill_ports: &mut || kill_ports_from_snapshot(&snapshot, None, Some(3000)),
             visibility_ports: &mut || Ok(Vec::new()),
+            observe_exit: &mut |_| ExitObservation::Exited,
+            sleep: &mut |_| panic!("settled facts must not sleep"),
         },
         |_target, _mode, _requirement| panic!("--yes skips prompts"),
         |pid| {
@@ -392,6 +406,8 @@ fn authoritative_snapshot_refusal_reaches_zero_delivery() {
                 ))
             },
             visibility_ports: &mut || Ok(Vec::new()),
+            observe_exit: &mut |_| ExitObservation::Exited,
+            sleep: &mut |_| panic!("settled facts must not sleep"),
         },
         |_target, _mode, _requirement| panic!("--yes skips prompts"),
         Ok::<u32, TerminationOutcome>,
@@ -427,6 +443,8 @@ fn port_owner_moving_after_handle_preparation_never_signals_old_owner() {
                 Ok(moved.clone())
             },
             visibility_ports: &mut || Ok(Vec::new()),
+            observe_exit: &mut |_| ExitObservation::Exited,
+            sleep: &mut |_| panic!("settled facts must not sleep"),
         },
         |_target, _mode, _requirement| panic!("--yes skips prompts"),
         |pid| {
@@ -458,6 +476,8 @@ fn kill_pid_losing_readable_owner_during_revalidation_exits_permission_denied() 
             context: &mut no_context,
             kill_ports: &mut || kill_ports_from_snapshot(&snapshot, Some(18_422), None),
             visibility_ports: &mut || Ok(Vec::new()),
+            observe_exit: &mut |_| ExitObservation::Exited,
+            sleep: &mut |_| panic!("settled facts must not sleep"),
         },
         |_target, _mode, _requirement| panic!("--yes skips prompts"),
         Ok::<u32, TerminationOutcome>,
@@ -487,6 +507,8 @@ fn target_becoming_protected_after_confirmation_blocks_signal() {
             context: &mut no_context,
             kill_ports: &mut || Ok(fresh_rows.clone()),
             visibility_ports: &mut || Ok(Vec::new()),
+            observe_exit: &mut |_| ExitObservation::Exited,
+            sleep: &mut |_| panic!("settled facts must not sleep"),
         },
         |_target, _mode, _requirement| panic!("--yes skips prompts"),
         Ok::<u32, TerminationOutcome>,
@@ -515,6 +537,8 @@ fn missing_fresh_protection_name_refuses_without_delivery() {
             context: &mut no_context,
             kill_ports: &mut || Ok(vec![fresh.clone()]),
             visibility_ports: &mut || Ok(Vec::new()),
+            observe_exit: &mut |_| ExitObservation::Exited,
+            sleep: &mut |_| panic!("settled facts must not sleep"),
         },
         |_target, _mode, _requirement| panic!("--yes skips prompts"),
         Ok::<u32, TerminationOutcome>,
@@ -581,109 +605,4 @@ fn confirmation_input_handles_empty_lines_and_invalid_utf8() {
     let error = read_confirmation_line_from(&mut invalid, CONFIRMATION_INPUT_MAX_BYTES)
         .expect_err("invalid UTF-8 must be rejected");
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
-}
-
-fn settle_target() -> KillTarget {
-    let row = entry(3000);
-    KillTarget::from_entries(18_422, [PortEntryView::from(&row)], None)
-}
-
-#[test]
-fn post_kill_settle_clears_when_ports_disappear_on_a_later_poll() {
-    // Model asynchronous SIGTERM teardown across several polls.
-    let target = settle_target();
-    let mut collect_calls = 0;
-    let mut sleeps = 0;
-
-    let status = wait_for_confirmed_ports_to_clear(
-        &target,
-        &mut || {
-            collect_calls += 1;
-            if collect_calls < 3 {
-                Ok(vec![entry(3000)])
-            } else {
-                Ok(Vec::new())
-            }
-        },
-        |_delay| sleeps += 1,
-    );
-
-    assert_eq!(status, PostKillPortsStatus::Cleared);
-    assert_eq!(collect_calls, 3);
-    assert_eq!(sleeps, 2);
-}
-
-#[test]
-fn post_kill_settle_reports_still_visible_after_bounded_attempts() {
-    let target = settle_target();
-    let mut collect_calls = 0;
-    let mut sleeps = 0;
-
-    let status = wait_for_confirmed_ports_to_clear(
-        &target,
-        &mut || {
-            collect_calls += 1;
-            Ok(vec![entry(3000)])
-        },
-        |_delay| sleeps += 1,
-    );
-
-    assert_eq!(status, PostKillPortsStatus::StillVisible);
-    assert_eq!(collect_calls, POST_KILL_SETTLE_ATTEMPTS_MAX);
-    // Do not sleep after the final poll.
-    assert_eq!(sleeps, POST_KILL_SETTLE_ATTEMPTS_MAX - 1);
-}
-
-#[test]
-fn post_kill_settle_stays_visible_while_any_confirmed_port_remains() {
-    // One remaining port keeps a multi-port target visible.
-    let row_a = entry(3000);
-    let row_b = entry(3001);
-    let target = KillTarget::from_entries(
-        18_422,
-        [PortEntryView::from(&row_a), PortEntryView::from(&row_b)],
-        None,
-    );
-    let mut collect_calls = 0;
-    let mut sleeps = 0;
-
-    let status = wait_for_confirmed_ports_to_clear(
-        &target,
-        &mut || {
-            collect_calls += 1;
-            // Port 3000 closes immediately; 3001 never does.
-            Ok(vec![entry(3001)])
-        },
-        |_delay| sleeps += 1,
-    );
-
-    assert_eq!(status, PostKillPortsStatus::StillVisible);
-    assert_eq!(collect_calls, POST_KILL_SETTLE_ATTEMPTS_MAX);
-    assert_eq!(sleeps, POST_KILL_SETTLE_ATTEMPTS_MAX - 1);
-}
-
-#[test]
-fn post_kill_settle_fails_closed_when_refresh_errors() {
-    let target = settle_target();
-    let mut collect_calls = 0;
-    let mut sleeps = 0;
-
-    let status = wait_for_confirmed_ports_to_clear(
-        &target,
-        &mut || {
-            collect_calls += 1;
-            if collect_calls == 1 {
-                Ok(vec![entry(3000)])
-            } else {
-                Err(CollectorError::WorkerExited)
-            }
-        },
-        |_delay| sleeps += 1,
-    );
-
-    // A failed refresh must not be spun into "cleared" or polled forever;
-    // it surfaces as the refresh warning immediately.
-    assert!(matches!(status, PostKillPortsStatus::RefreshFailed(_)));
-    assert_eq!(collect_calls, 2);
-    assert_eq!(sleeps, 1);
 }

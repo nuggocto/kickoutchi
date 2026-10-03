@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `kick kill` now checks whether the signalled process exited instead of
+  inferring it from the port. It waits up to two seconds after delivery and
+  reports the exit and the confirmed ports on separate lines. Before, a server
+  that closed its listener on `SIGTERM` but kept running was reported only as
+  "confirmed target ports are no longer visible", which read like a clean exit.
+  Now that case prints a warning that the process is still running, with a
+  `--force` hint after `SIGTERM`. Exit checks compare the process start
+  identity, so a recycled PID counts as exited. Tree and group kills report how
+  many signalled members exited and list survivors. Exit codes are unchanged.
+
 ## [1.4.6] - 2026-10-02
 
 ### Fixed

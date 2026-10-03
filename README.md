@@ -165,6 +165,17 @@ Kickoutchi always refuses PID 0, PID 1, Windows System PID 4, and its own curren
 PID. Tree and group kills also refuse a scope containing Kickoutchi itself so
 the safety pipeline cannot terminate midway through revalidation or cleanup.
 
+### After termination
+
+A delivered signal is not an exit, and a closed listener is not an exit either.
+After delivery, `kill` waits up to two seconds and reports two facts on their
+own lines: whether each signalled process exited, and whether the confirmed
+ports are still visible. A process that closes its listener but keeps running
+gets a warning, with a `--force` hint after `SIGTERM` on Linux and macOS. Tree
+and group kills report how many signalled members exited and name the PIDs
+still running. Exit code 0 still means the signal was accepted; read the report
+lines to learn whether the process is gone.
+
 ## Watch Changes
 
 `kick watch` polls full-state native snapshots and reports deterministic changes:

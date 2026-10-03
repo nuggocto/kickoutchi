@@ -46,6 +46,16 @@ const HELPER_READY_ENV: &str = "KICKOUTCHI_TEST_HELPER_READY";
 const HELPER_BIND_ANY_ENV: &str = "KICKOUTCHI_TEST_HELPER_BIND_ANY";
 const HELPER_NONDUMPABLE_ENV: &str = "KICKOUTCHI_TEST_HELPER_NONDUMPABLE";
 const HELPER_NAME_ENV: &str = "KICKOUTCHI_TEST_HELPER_NAME";
+const HELPER_LINGER_ENV: &str = "KICKOUTCHI_TEST_HELPER_LINGER";
+
+/// Set by the lingering listener's `SIGTERM` handler.
+static HELPER_TERM_SEEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn record_helper_term(_signal: libc::c_int) {
+    // Only an atomic store: async-signal-safe.
+    HELPER_TERM_SEEN.store(true, std::sync::atomic::Ordering::SeqCst);
+}
 const IPC_WAIT: Duration = Duration::from_secs(10);
 // Each no-match diagnostic runs in its own network namespace, where this
 // valid boundary port is guaranteed to have no unrelated host listener.
@@ -739,9 +749,21 @@ fn spawn_listener_process_with_metadata_access(
     spawn_listener_process_with_options(metadata_accessible, None)
 }
 
+fn spawn_lingering_listener_process() -> (ChildGuard, u16, PathBuf) {
+    spawn_listener_process_with_env(true, None, &[(HELPER_LINGER_ENV, "1")])
+}
+
 fn spawn_listener_process_with_options(
     metadata_accessible: bool,
     name: Option<&str>,
+) -> (ChildGuard, u16, PathBuf) {
+    spawn_listener_process_with_env(metadata_accessible, name, &[])
+}
+
+fn spawn_listener_process_with_env(
+    metadata_accessible: bool,
+    name: Option<&str>,
+    extra_env: &[(&str, &str)],
 ) -> (ChildGuard, u16, PathBuf) {
     let ready_file = temp_file_path("listener-ready");
     let mut command = Command::new(std::env::current_exe().expect("test binary path resolves"));
@@ -763,6 +785,7 @@ fn spawn_listener_process_with_options(
     if let Some(name) = name {
         command.env(HELPER_NAME_ENV, name);
     }
+    command.envs(extra_env.iter().copied());
     let child = command.spawn().expect("listener helper process must start");
     let guard = ChildGuard { child };
     wait_for_file(&ready_file);
@@ -1049,7 +1072,33 @@ fn helper_tcp_listener_process() {
     fs::write(&ready_tmp, bound_port.to_string()).expect("helper ready file must be written");
     fs::rename(&ready_tmp, &ready_file).expect("helper ready file must be published");
 
+    if std::env::var_os(HELPER_LINGER_ENV).is_some() {
+        linger_after_term(listener);
+    }
     park_bounded()
+}
+
+/// Close the listener on `SIGTERM` but keep running, like a server whose
+/// graceful shutdown stalls after it stops accepting.
+fn linger_after_term(listener: TcpListener) -> ! {
+    // SAFETY: the handler only performs an atomic store, and the function
+    // pointer stays valid for the life of the process.
+    let previous = unsafe {
+        libc::signal(
+            libc::SIGTERM,
+            record_helper_term as extern "C" fn(libc::c_int) as libc::sighandler_t,
+        )
+    };
+    assert_ne!(previous, libc::SIG_ERR, "helper SIGTERM handler must install");
+    let mut listener = Some(listener);
+    let deadline = std::time::Instant::now() + IPC_WAIT;
+    while std::time::Instant::now() < deadline {
+        if HELPER_TERM_SEEN.load(std::sync::atomic::Ordering::SeqCst) {
+            drop(listener.take());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::process::exit(0)
 }
 
 #[test]

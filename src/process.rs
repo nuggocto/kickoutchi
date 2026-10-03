@@ -275,6 +275,61 @@ impl TerminationOutcome {
     }
 }
 
+/// What a post-termination check observed about one signalled process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ExitObservation {
+    /// The process is gone or a zombie, or its PID now names another process.
+    Exited,
+    /// The same process identity is still alive, running or stopped.
+    Running,
+    /// The check failed. The text is unsanitized OS detail.
+    Unknown(String),
+}
+
+/// Observe whether a signalled process identity has exited.
+///
+/// The start marker is part of the question: a recycled PID with a different
+/// marker means the signalled process is gone.
+pub(crate) fn observe_exit(identity: ProcessIdentity) -> ExitObservation {
+    observe_exit_platform(identity)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn exit_observation_from_state(
+    expected: ProcessStartMarker,
+    state: std::io::Result<UnixProcessState>,
+) -> ExitObservation {
+    match state {
+        Ok(state) if state.marker != expected || state.status == UnixProcessStatus::Exited => {
+            ExitObservation::Exited
+        }
+        Ok(_) => ExitObservation::Running,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                || error.raw_os_error() == Some(libc::ESRCH) =>
+        {
+            ExitObservation::Exited
+        }
+        Err(error) => ExitObservation::Unknown(error.to_string()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn observe_exit_platform(identity: ProcessIdentity) -> ExitObservation {
+    exit_observation_from_state(
+        identity.start_marker,
+        linux::linux_process_state(identity.pid),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn observe_exit_platform(identity: ProcessIdentity) -> ExitObservation {
+    exit_observation_from_state(
+        identity.start_marker,
+        macos::macos_process_state(identity.pid),
+    )
+}
+
 #[derive(Debug)]
 pub(crate) struct TerminationHandle {
     pid: u32,
@@ -1002,7 +1057,9 @@ mod windows;
 #[cfg(all(test, windows))]
 use windows::windows_api_outcome;
 #[cfg(windows)]
-use windows::{prepare_termination_platform, terminate_handle_checked_platform};
+use windows::{
+    observe_exit_platform, prepare_termination_platform, terminate_handle_checked_platform,
+};
 
 #[cfg(test)]
 mod tests;

@@ -6,6 +6,7 @@
 mod kill;
 mod list;
 mod scoped;
+mod settle;
 mod watch;
 mod why;
 

@@ -63,7 +63,7 @@ struct TreeKillIo<'a> {
         TreeConfirmation,
     ) -> std::io::Result<bool>,
     collect_kill_ports: &'a mut dyn FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
-    collect_ports: &'a mut dyn FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
+    post_kill: report::PostKillIo<'a>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -91,8 +91,11 @@ pub(super) fn run_tree_kill(
             collect_context: &mut platform::collect_process_context,
             prompt: &mut prompt_tree_confirmation,
             collect_kill_ports: &mut || collector::collect_kill_ports(args.pid, args.port),
-            collect_ports: &mut || {
-                collector::collect_ports_with_profile(MetadataProfile::IdentityOnly)
+            post_kill: report::PostKillIo {
+                collect_ports: &mut || {
+                    collector::collect_ports_with_profile(MetadataProfile::IdentityOnly)
+                },
+                observe_exit: &mut process::observe_exit,
             },
         },
     )
@@ -157,7 +160,7 @@ where
     };
 
     if let Err(outcome) = tree::pin_root_before_revalidation(root.pid, ops) {
-        return map_tree_outcome(&root, mode, &outcome, &mut io.collect_ports);
+        return map_tree_outcome(&root, mode, &outcome, &mut io.post_kill);
     }
 
     let fresh_root = match revalidate_tree_root_before_freeze(
@@ -170,7 +173,7 @@ where
         ops,
     ) {
         Ok(root) => root,
-        Err(outcome) => return map_tree_outcome(&root, mode, &outcome, &mut io.collect_ports),
+        Err(outcome) => return map_tree_outcome(&root, mode, &outcome, &mut io.post_kill),
     };
 
     let outcome = tree::execute_tree_kill(
@@ -181,7 +184,7 @@ where
         confirmation,
         ops,
     );
-    map_tree_outcome(&fresh_root, mode, &outcome, &mut io.collect_ports)
+    map_tree_outcome(&fresh_root, mode, &outcome, &mut io.post_kill)
 }
 
 #[cfg(windows)]
@@ -930,8 +933,11 @@ pub(super) fn run_group_kill(
             collect_context: &mut platform::collect_process_context,
             prompt: &mut prompt_group_confirmation,
             collect_kill_ports: &mut || collector::collect_kill_ports(args.pid, args.port),
-            collect_ports: &mut || {
-                collector::collect_ports_with_profile(MetadataProfile::IdentityOnly)
+            post_kill: report::PostKillIo {
+                collect_ports: &mut || {
+                    collector::collect_ports_with_profile(MetadataProfile::IdentityOnly)
+                },
+                observe_exit: &mut process::observe_exit,
             },
         },
     )
@@ -1000,7 +1006,7 @@ where
     };
 
     if let Err(outcome) = tree::pin_root_before_revalidation(root.pid, ops) {
-        return map_group_outcome(&root, group.pgid(), mode, &outcome, &mut io.collect_ports);
+        return map_group_outcome(&root, group.pgid(), mode, &outcome, &mut io.post_kill);
     }
 
     let fresh_root = match revalidate_group_root_before_freeze(
@@ -1017,7 +1023,7 @@ where
     ) {
         Ok(root) => root,
         Err(outcome) => {
-            return map_group_outcome(&root, group.pgid(), mode, &outcome, &mut io.collect_ports);
+            return map_group_outcome(&root, group.pgid(), mode, &outcome, &mut io.post_kill);
         }
     };
 
@@ -1030,13 +1036,7 @@ where
         confirmation,
         ops,
     );
-    map_group_outcome(
-        &fresh_root,
-        group.pgid(),
-        mode,
-        &outcome,
-        &mut io.collect_ports,
-    )
+    map_group_outcome(&fresh_root, group.pgid(), mode, &outcome, &mut io.post_kill)
 }
 
 /// Run the group confirmation flow; mirrors [`confirm_tree_kill`], including

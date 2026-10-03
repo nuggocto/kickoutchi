@@ -560,3 +560,60 @@ fn read_ppid(pid: u32) -> u32 {
         .parse::<u32>()
         .expect("PPid must be numeric")
 }
+
+#[test]
+fn pid_kill_reports_the_exit_separately_from_the_closed_port() {
+    let _host_observation = lock_host_observation();
+    let (mut helper, _port, ready_file) = spawn_listener_process();
+    let _ready_file = FileGuard(ready_file);
+    let pid_text = helper.id().to_string();
+
+    let killed = kickoutchi(&["kill", "--pid", &pid_text, "--yes"]);
+
+    let text = stderr(&killed);
+    assert_eq!(killed.status.code(), Some(0), "{text}");
+    assert!(text.contains(&format!("PID {pid_text} (")), "{text}");
+    assert!(text.contains(") exited\n"), "{text}");
+    assert!(
+        text.contains("confirmed target ports are no longer visible"),
+        "{text}"
+    );
+    assert!(!text.contains("still running"), "{text}");
+    wait_for_child_exit(&mut helper);
+}
+
+#[test]
+fn pid_kill_warns_when_the_port_closes_but_the_process_keeps_running() {
+    let _host_observation = lock_host_observation();
+    let (mut helper, _port, ready_file) = spawn_lingering_listener_process();
+    let _ready_file = FileGuard(ready_file);
+    let pid_text = helper.id().to_string();
+
+    let killed = kickoutchi(&["kill", "--pid", &pid_text, "--yes"]);
+
+    let text = stderr(&killed);
+    // The signal was accepted, so the exit code is unchanged; the report must
+    // not claim the process exited.
+    assert_eq!(killed.status.code(), Some(0), "{text}");
+    assert!(
+        text.contains("is still running 2.0s after SIGTERM"),
+        "{text}"
+    );
+    assert!(
+        text.contains("rerun with --force to send SIGKILL"),
+        "{text}"
+    );
+    assert!(
+        text.contains("confirmed target ports are no longer visible"),
+        "{text}"
+    );
+    assert!(!text.contains(") exited"), "{text}");
+    assert!(
+        helper
+            .child
+            .try_wait()
+            .expect("helper status must be readable")
+            .is_none(),
+        "the lingering helper must still be running"
+    );
+}

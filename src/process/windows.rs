@@ -13,7 +13,10 @@ use windows_sys::Win32::System::Threading::{
 
 use crate::process_evidence::{FreshProcessEvidence, ProcessEvidenceError};
 
-use super::{KillMode, KillTarget, TerminationHandle, TerminationOutcome, check_final_evidence};
+use super::{
+    ExitObservation, KillMode, KillTarget, TerminationHandle, TerminationOutcome,
+    check_final_evidence,
+};
 
 pub(super) fn prepare_termination_platform(
     pid: u32,
@@ -39,6 +42,57 @@ pub(super) fn prepare_termination_platform(
         pid,
         process_handle,
     })
+}
+
+pub(super) fn observe_exit_platform(
+    identity: crate::observation::ProcessIdentity,
+) -> ExitObservation {
+    let handle = unsafe {
+        // SAFETY: OpenProcess takes a PID and access mask by value. We request no
+        // inherited handle, and no Rust-managed memory crosses this FFI boundary.
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            identity.pid,
+        )
+    };
+    if handle.is_null() {
+        let error = std::io::Error::last_os_error();
+        // An unknown PID is reported as an invalid parameter.
+        return if windows_error_code(&error) == Some(ERROR_INVALID_PARAMETER) {
+            ExitObservation::Exited
+        } else {
+            ExitObservation::Unknown(format!("OpenProcess failed: {error}"))
+        };
+    }
+    let process_handle = unsafe {
+        // SAFETY: OpenProcess returned a non-null owned process handle. OwnedHandle
+        // closes it exactly once.
+        OwnedHandle::from_raw_handle(handle)
+    };
+    match crate::platform::windows::process_start_time_marker_from_handle(&process_handle) {
+        Some(marker) if marker != identity.start_marker => return ExitObservation::Exited,
+        Some(_) => {}
+        None => {
+            return ExitObservation::Unknown("process creation time is unavailable".to_owned());
+        }
+    }
+    let result = unsafe {
+        // SAFETY: the handle is owned above and was opened with PROCESS_SYNCHRONIZE.
+        // A zero timeout only polls the signaled state.
+        WaitForSingleObject(process_handle.as_raw_handle(), 0)
+    };
+    match result {
+        WAIT_OBJECT_0 => ExitObservation::Exited,
+        WAIT_TIMEOUT => ExitObservation::Running,
+        WAIT_FAILED => ExitObservation::Unknown(format!(
+            "WaitForSingleObject failed: {}",
+            std::io::Error::last_os_error()
+        )),
+        other => ExitObservation::Unknown(format!(
+            "WaitForSingleObject returned unexpected status {other}"
+        )),
+    }
 }
 
 fn terminate_handle_platform(handle: &TerminationHandle, _mode: KillMode) -> TerminationOutcome {

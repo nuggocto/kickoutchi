@@ -12,44 +12,65 @@ use crate::tree;
 use crate::tree::TreeKillOutcome as TreeRefusal;
 
 use crate::cli::ExitReason;
-#[cfg(windows)]
-use crate::cli::kill::post_kill_refresh_status_message;
 use crate::cli::kill::print_post_kill_refresh_status;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use crate::cli::settle;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(super) fn map_tree_outcome<CollectPorts>(
+pub(super) fn map_tree_outcome(
     root: &KillTarget,
     mode: KillMode,
     outcome: &tree::TreeKillOutcome,
-    collect_ports: &mut CollectPorts,
-) -> ExitReason
-where
-    CollectPorts: FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
-{
+    post_kill: &mut PostKillIo<'_>,
+) -> ExitReason {
     let scope_of_target = format!("the tree rooted at {}", root.identity());
-    map_scoped_outcome(root, mode, outcome, "tree", &scope_of_target, collect_ports)
+    map_scoped_outcome(root, mode, outcome, "tree", &scope_of_target, post_kill)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(super) fn map_group_outcome<CollectPorts>(
+pub(super) fn map_group_outcome(
     root: &KillTarget,
     pgid: u32,
     mode: KillMode,
     outcome: &tree::TreeKillOutcome,
-    collect_ports: &mut CollectPorts,
-) -> ExitReason
-where
-    CollectPorts: FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
-{
+    post_kill: &mut PostKillIo<'_>,
+) -> ExitReason {
     let scope_of_target = format!("process group {pgid} of {}", root.identity());
-    map_scoped_outcome(
-        root,
-        mode,
-        outcome,
-        "group",
-        &scope_of_target,
-        collect_ports,
-    )
+    map_scoped_outcome(root, mode, outcome, "group", &scope_of_target, post_kill)
+}
+
+/// The reads a Unix scoped kill performs after delivery.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) struct PostKillIo<'a> {
+    pub(super) collect_ports:
+        &'a mut dyn FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
+    pub(super) observe_exit:
+        &'a mut dyn FnMut(crate::observation::ProcessIdentity) -> process::ExitObservation,
+}
+
+/// Wait for delivered members to exit and, when asked, the root's confirmed
+/// ports to clear, then print both facts.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn print_scoped_settle_report(
+    root: &KillTarget,
+    mode: KillMode,
+    report: &tree::TreeKillReport,
+    check_ports: bool,
+    post_kill: &mut PostKillIo<'_>,
+) {
+    let ports: &[process::KillTargetPort] = if check_ports { &root.ports } else { &[] };
+    let settled = settle::settle(
+        &report.delivered_identities,
+        ports,
+        &mut settle::SettleProbe {
+            collect_ports: post_kill.collect_ports,
+            observe_exit: post_kill.observe_exit,
+            sleep: &mut std::thread::sleep,
+        },
+    );
+    for line in settle::scoped_report_lines(root, mode, report.delivered, &settled) {
+        eprintln!("{line}");
+    }
 }
 
 #[cfg(windows)]
@@ -404,7 +425,9 @@ pub(super) fn map_windows_tree_system_failure(
                 sanitize(error),
             );
             let _ = writeln!(stderr, "{}", windows_tree_partial_report_text(root, report));
-            if let Some(message) = post_kill_refresh_status_message(root, collect_ports) {
+            if let Some(message) =
+                crate::cli::settle::ports_only_status_message(root, collect_ports)
+            {
                 let _ = writeln!(stderr, "{message}");
             }
             ExitReason::Failure
@@ -461,17 +484,14 @@ fn scoped_delivery_summary(
     clippy::too_many_lines,
     reason = "the exhaustive typed scoped-outcome mapping is intentionally centralized"
 )]
-fn map_scoped_outcome<CollectPorts>(
+fn map_scoped_outcome(
     root: &KillTarget,
     mode: KillMode,
     outcome: &tree::TreeKillOutcome,
     scope_noun: &str,
     scope_of_target: &str,
-    collect_ports: &mut CollectPorts,
-) -> ExitReason
-where
-    CollectPorts: FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
-{
+    post_kill: &mut PostKillIo<'_>,
+) -> ExitReason {
     use crate::tree::TreeKillOutcome;
 
     let delivery = mode.delivery_label(root.platform);
@@ -491,7 +511,7 @@ where
                 "{}",
                 scoped_delivery_summary(delivery, scope_noun, scope_of_target, report)
             );
-            print_post_kill_refresh_status(root, collect_ports);
+            print_scoped_settle_report(root, mode, report, true, post_kill);
             ExitReason::Success
         }
         TreeKillOutcome::Completed(report) => {
@@ -499,6 +519,9 @@ where
                 "{}",
                 scoped_delivery_summary(delivery, scope_noun, scope_of_target, report)
             );
+            // Denied or stopped members can keep ports open, so only exits of
+            // the delivered members are worth reporting here.
+            print_scoped_settle_report(root, mode, report, false, post_kill);
             if report.thaw_failed.is_empty() {
                 ExitReason::PermissionDenied
             } else {
@@ -514,7 +537,7 @@ where
                 "{} already exited before termination was sent",
                 root.identity(),
             );
-            print_post_kill_refresh_status(root, collect_ports);
+            print_post_kill_refresh_status(root, post_kill.collect_ports);
             tree_refusal_exit_reason(outcome)
         }
         TreeKillOutcome::PermissionDenied { .. } => {

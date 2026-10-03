@@ -24,7 +24,7 @@ pub(super) fn macos_status_is_exited(status: u32) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_process_state(pid: u32) -> std::io::Result<UnixProcessState> {
+pub(super) fn macos_process_state(pid: u32) -> std::io::Result<UnixProcessState> {
     let platform_pid = libc::pid_t::try_from(pid)
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "PID exceeds pid_t"))?;
     let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
