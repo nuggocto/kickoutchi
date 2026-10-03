@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `kick why` no longer reports a port held by an unreadable process as
+  `kernel_state_observed` with `proven` certainty. On Linux, a socket owned by
+  another user's process, such as a root or postgres daemon seen by a normal
+  user, has an empty owner set because the process cannot be read. That empty
+  set was taken as proof that no process held the socket. Now an empty owner
+  set gives `owner_hidden` with `unknown` certainty whenever snapshot-wide
+  owner attribution is incomplete, and the `visible_unreadable_owner` evidence
+  names the UID that created the socket. `kernel_state_observed` remains for
+  sockets that no process holds after every process was read. Exit codes are
+  unchanged, and kill authority already treated these sockets as unproven.
+
 ## [1.5.0] - 2026-10-03
 
 ### Added

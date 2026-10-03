@@ -838,7 +838,9 @@ fn privileged_ownerless_ipv4_result_reports_one_aggregate_gap_without_omission()
         .expect("gap array");
 
     assert_eq!(reason, ExitReason::NoMatch);
-    assert_eq!(value["results"][0]["verdict"], "kernel_state_observed");
+    // Unreadable processes could hold the socket, so its owner is hidden.
+    assert_eq!(value["results"][0]["verdict"], "owner_hidden");
+    assert_eq!(value["results"][0]["certainty"], "unknown");
     assert_eq!(gaps.len(), 1);
     assert_eq!(gaps[0]["code"], "owner_permission_denied");
     assert!(gaps[0]["pid"].is_null());

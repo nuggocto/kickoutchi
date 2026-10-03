@@ -293,12 +293,7 @@ fn address_in_use_verdict(
             {
                 return Verdict::Owned;
             }
-            if socket
-                .owners
-                .iter()
-                .any(|owner| matches!(owner, OwnerObservation::UnverifiedPid { .. }))
-                || !socket.owner_completeness.is_complete()
-            {
+            if owner_possibly_hidden(socket, snapshot) {
                 hidden_owner = true;
             } else if socket.owners.is_empty() {
                 ownerless_active = true;
@@ -314,6 +309,23 @@ fn address_in_use_verdict(
     } else {
         Verdict::ReservationOrPolicyUnknown
     }
+}
+
+/// Whether an active socket without a verified owner may still have one
+/// that this snapshot could not see.
+///
+/// An unverified owner PID or incomplete local attribution says so directly.
+/// An empty owner set says so too when snapshot-wide attribution was
+/// incomplete: an unreadable process anywhere on the host could hold the
+/// socket, so an empty set is not proof that no process does. Kill authority
+/// draws the same conclusion from the same snapshot gaps.
+fn owner_possibly_hidden(socket: &SocketObservation, snapshot: &NetworkSnapshot) -> bool {
+    socket
+        .owners
+        .iter()
+        .any(|owner| matches!(owner, OwnerObservation::UnverifiedPid { .. }))
+        || !socket.owner_completeness.is_complete()
+        || (socket.owners.is_empty() && !snapshot.owner_completeness.is_complete())
 }
 
 fn authoritative_sockets<'a>(
@@ -408,12 +420,19 @@ fn append_owner_evidence(
             .owners
             .iter()
             .any(|owner| matches!(owner, OwnerObservation::Verified(_)));
-        if !verified && (!socket.owners.is_empty() || !socket.owner_completeness.is_complete()) {
+        if !verified && owner_possibly_hidden(socket, snapshot) {
             evidence.push_with(|| Evidence {
                 code: EvidenceCode::VisibleUnreadableOwner,
                 source,
                 certainty: Certainty::Unknown,
-                message: "the endpoint is visible but its owner is not verified".to_owned(),
+                message: socket.local_uid.map_or_else(
+                    || "the endpoint is visible but its owner is not verified".to_owned(),
+                    |uid| {
+                        format!(
+                            "the endpoint is visible but its owner is not verified; uid {uid} created the socket"
+                        )
+                    },
+                ),
             });
         }
     }

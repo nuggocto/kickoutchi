@@ -73,6 +73,17 @@ fn why_reports_real_permission_limited_owner_evidence() {
     assert_eq!(value["results"][0]["probe"]["outcome"], "address_in_use");
     assert_eq!(value["completeness"], "partial");
     assert_eq!(value["owner_completeness"], "partial");
+    // The helper holds the socket but cannot be read: its owner is hidden, not
+    // an ownerless kernel socket.
+    assert_eq!(value["results"][0]["verdict"], "owner_hidden");
+    assert_eq!(value["results"][0]["certainty"], "unknown");
+    assert!(
+        value["results"][0]["evidence"]
+            .as_array()
+            .is_some_and(|evidence| evidence
+                .iter()
+                .any(|item| item["code"] == "visible_unreadable_owner"))
+    );
     assert!(
         value["results"][0]["evidence_gaps"]
             .as_array()

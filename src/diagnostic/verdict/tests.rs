@@ -367,9 +367,62 @@ fn ownerless_socket_retains_pid_scoped_global_attribution_gap() {
         None,
     );
 
-    assert_eq!(result.verdict, Verdict::KernelStateObserved);
+    // Incomplete snapshot-wide attribution means the empty owner set does not
+    // prove that no process holds the socket.
+    assert_eq!(result.verdict, Verdict::OwnerHidden);
     assert_eq!(result.evidence_gaps.len(), 1);
     assert_eq!(result.evidence_gaps[0].pid, Some(99));
+}
+
+#[test]
+fn ownerless_socket_is_kernel_state_only_when_attribution_was_complete() {
+    let target = endpoint(Protocol::Tcp, IpAddr::V4(Ipv4Addr::LOCALHOST));
+    let mut ownerless = socket(
+        target.clone(),
+        SocketState::Listen,
+        Vec::new(),
+        OwnerCompleteness::Complete,
+    );
+    ownerless.local_uid = Some(970);
+    let complete = snapshot(vec![ownerless]);
+    let mut incomplete = complete.clone();
+    incomplete.owner_completeness =
+        OwnerCompleteness::partial([EvidenceGapCode::OwnerPermissionDenied])
+            .expect("one reason fits");
+    let has_unreadable_owner = |evidence: &[Evidence]| {
+        evidence
+            .iter()
+            .any(|item| item.code == EvidenceCode::VisibleUnreadableOwner)
+    };
+
+    let proven = analyze(
+        &target,
+        Ipv6Mode::SystemDefault,
+        &complete,
+        &probe_result(ProbeOutcome::AddressInUse),
+        None,
+    );
+    let hidden = analyze(
+        &target,
+        Ipv6Mode::SystemDefault,
+        &incomplete,
+        &probe_result(ProbeOutcome::AddressInUse),
+        None,
+    );
+
+    assert_eq!(proven.verdict, Verdict::KernelStateObserved);
+    assert_eq!(proven.certainty, Certainty::Proven);
+    assert!(!has_unreadable_owner(&proven.evidence));
+
+    assert_eq!(hidden.verdict, Verdict::OwnerHidden);
+    assert_eq!(hidden.certainty, Certainty::Unknown);
+    let unreadable = hidden
+        .evidence
+        .iter()
+        .find(|item| item.code == EvidenceCode::VisibleUnreadableOwner)
+        .expect("hidden owners carry unreadable-owner evidence");
+    assert_eq!(unreadable.certainty, Certainty::Unknown);
+    assert!(unreadable.message.ends_with("uid 970 created the socket"));
 }
 
 #[test]

@@ -815,12 +815,14 @@ The exact bind probe is later than the snapshot and is authoritative for bindabi
 | Other OS error plus raced snapshot | `observation_raced` | `unknown` |
 | Other OS error with any non-raced snapshot | `indeterminate` | `unknown` |
 | Address in use plus matching active socket with a verified owner | `owned` | `proven` |
-| Address in use plus matching active socket with no verified owner and an unverified PID or incomplete local attribution | `owner_hidden` | `unknown`; the failed bind remains proven separately |
-| Address in use plus matching active socket with a complete empty local owner set | `kernel_state_observed` | `proven` for socket state; global ownership may remain unknown |
+| Address in use plus matching active socket with no verified owner and an unverified PID, incomplete local attribution, or an empty owner set while snapshot `owner_completeness` is not `complete` | `owner_hidden` | `unknown`; the failed bind remains proven separately |
+| Address in use plus matching active socket with a complete empty local owner set and complete snapshot `owner_completeness` | `kernel_state_observed` | `proven`: no readable process holds the socket |
 | Address in use plus matching non-listening TCP state | `kernel_state_observed` | `proven`; timer evidence remains estimated |
 | Address in use without an authoritative explanation | `reservation_or_policy_unknown` | `unknown`; the failed bind remains proven separately |
 
-An active socket is an exact or same-family wildcard TCP listener or bound UDP socket from a socket-set-stable snapshot. Relevant non-listening TCP states can explain address-in-use without claiming a visible listener.
+An active socket is an exact or same-family wildcard TCP listener or bound UDP socket from a socket-set-stable snapshot.
+
+An empty owner set proves that no process holds the socket only when every process could be read. When snapshot-wide attribution is incomplete, for example because other users' processes are unreadable, any of those processes could hold it, so the verdict is `owner_hidden` and its `visible_unreadable_owner` evidence names the UID that created the socket when Linux reports one. Relevant non-listening TCP states can explain address-in-use without claiming a visible listener.
 
 IPv6 authoritative exact and wildcard relationships require known equal scopes. Unavailable or different scope information contributes only `potential_scope_overlap` unknown evidence. Potential IPv4/IPv6 dual-stack overlap is supporting context only unless a native source proves the relevant socket option. Address shape alone never proves dual-stack behavior.
 
