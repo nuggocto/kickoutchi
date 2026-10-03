@@ -11,7 +11,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "=0.4.13"
-kickoutchi = { path = "..", version = "=1.4.6" }
+kickoutchi = { path = "..", version = "=1.5.0" }
 
 [[bin]]
 name = "config"
