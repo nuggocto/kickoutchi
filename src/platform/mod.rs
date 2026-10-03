@@ -51,6 +51,22 @@ pub(crate) fn process_start_time_marker(pid: u32) -> Option<ProcessStartMarker> 
     }
 }
 
+/// The original path of a process's executable when the file was deleted or
+/// replaced after the process started. Only Linux can tell; other platforms
+/// return `None`.
+pub(crate) fn deleted_executable(identity: ProcessIdentity) -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::deleted_executable(identity)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = identity;
+        None
+    }
+}
+
 pub(crate) fn collect_related_process_hints(port: u16) -> Vec<RelatedProcessHint> {
     #[cfg(target_os = "linux")]
     {

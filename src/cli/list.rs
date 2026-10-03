@@ -163,6 +163,72 @@ fn print_owner_notes(
     for note in OwnerVisibility::of(snapshot).table_notes(rows) {
         eprintln!("{note}");
     }
+    let deleted = deleted_executable_rows(
+        visible_indices
+            .iter()
+            .map(|&index| snapshot.port_entry_view(&descriptors[index])),
+        crate::platform::deleted_executable,
+    );
+    for note in deleted_executable_notes(&deleted) {
+        eprintln!("{note}");
+    }
+}
+
+/// Most deleted-executable processes named before the rest are counted.
+const DELETED_EXECUTABLE_NOTES_MAX: usize = 8;
+
+/// Listed processes whose executable was deleted or replaced, by PID, with
+/// their name and original path.
+///
+/// Only rows whose path carries the kernel's " (deleted)" suffix are probed;
+/// the probe confirms it, so a file really named that way is not reported.
+fn deleted_executable_rows<'a>(
+    views: impl Iterator<Item = crate::model::PortEntryView<'a>>,
+    mut probe: impl FnMut(crate::observation::ProcessIdentity) -> Option<std::path::PathBuf>,
+) -> std::collections::BTreeMap<u32, (String, std::path::PathBuf)> {
+    let mut deleted = std::collections::BTreeMap::new();
+    for view in views {
+        let (Some(identity), Some(path)) = (view.process_identity, view.executable_path) else {
+            continue;
+        };
+        if deleted.contains_key(&identity.pid)
+            || !path.as_os_str().as_encoded_bytes().ends_with(b" (deleted)")
+        {
+            continue;
+        }
+        if let Some(original) = probe(identity) {
+            let name = view.process_name.unwrap_or("<unknown>").to_owned();
+            deleted.insert(identity.pid, (name, original));
+        }
+    }
+    deleted
+}
+
+fn deleted_executable_notes(
+    deleted: &std::collections::BTreeMap<u32, (String, std::path::PathBuf)>,
+) -> Vec<String> {
+    if deleted.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![format!(
+        "note: {} listed process(es) run an executable that was deleted or replaced after they started (often a stale build or an upgraded package):",
+        deleted.len()
+    )];
+    for (pid, (name, path)) in deleted.iter().take(DELETED_EXECUTABLE_NOTES_MAX) {
+        lines.push(format!(
+            "  PID {pid} ({}): {}",
+            crate::display::sanitize(name),
+            crate::display::sanitize(&path.to_string_lossy()),
+        ));
+    }
+    if let Some(more) = deleted
+        .len()
+        .checked_sub(DELETED_EXECUTABLE_NOTES_MAX)
+        .filter(|more| *more > 0)
+    {
+        lines.push(format!("  ... and {more} more"));
+    }
+    lines
 }
 
 fn output_error_reason(error: &io::Error) -> ExitReason {
@@ -468,5 +534,77 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn deleted_executable_rows_probe_only_suffixed_paths_once_per_pid() {
+        use std::path::{Path, PathBuf};
+        use std::sync::Arc;
+
+        let mut stale = crate::cli::test_support::entry(3000);
+        stale.executable_path = Some(Arc::from(Path::new("/srv/app (deleted)")));
+        let mut stale_udp = stale.clone();
+        stale_udp.local_port = 3001;
+        let mut fresh = crate::cli::test_support::entry_with_pid(
+            4000,
+            Some(7),
+            crate::model::Protocol::Tcp,
+            "fresh",
+        );
+        fresh.executable_path = Some(Arc::from(Path::new("/usr/bin/fresh")));
+        let rows = [stale, stale_udp, fresh];
+        let mut probed = Vec::new();
+
+        let deleted = super::deleted_executable_rows(
+            rows.iter().map(crate::model::PortEntryView::from),
+            |identity| {
+                probed.push(identity.pid);
+                Some(PathBuf::from("/srv/app"))
+            },
+        );
+
+        assert_eq!(probed, [18_422], "one probe per suffixed PID");
+        assert_eq!(
+            deleted.get(&18_422),
+            Some(&("node".to_owned(), PathBuf::from("/srv/app")))
+        );
+        assert_eq!(deleted.len(), 1);
+    }
+
+    #[test]
+    fn a_failed_probe_is_not_reported_as_deleted() {
+        use std::path::Path;
+        use std::sync::Arc;
+
+        // A real file may be named "x (deleted)"; only the probe decides.
+        let mut row = crate::cli::test_support::entry(3000);
+        row.executable_path = Some(Arc::from(Path::new("/srv/x (deleted)")));
+
+        let deleted = super::deleted_executable_rows(
+            std::iter::once(crate::model::PortEntryView::from(&row)),
+            |_| None,
+        );
+
+        assert!(deleted.is_empty());
+    }
+
+    #[test]
+    fn deleted_executable_notes_name_a_bounded_number_of_processes() {
+        let deleted = (1..=10_u32)
+            .map(|pid| {
+                (
+                    pid,
+                    (format!("app{pid}"), std::path::PathBuf::from("/srv/app")),
+                )
+            })
+            .collect();
+
+        let lines = super::deleted_executable_notes(&deleted);
+
+        assert!(lines[0].starts_with("note: 10 listed process(es) run an executable"));
+        assert_eq!(lines[1], "  PID 1 (app1): /srv/app");
+        assert_eq!(lines.len(), 1 + super::DELETED_EXECUTABLE_NOTES_MAX + 1);
+        assert_eq!(lines.last().map(String::as_str), Some("  ... and 2 more"));
+        assert!(super::deleted_executable_notes(&std::collections::BTreeMap::new()).is_empty());
     }
 }

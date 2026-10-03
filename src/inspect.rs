@@ -8,6 +8,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 // Writing into a String is infallible, so the `let _ =` on each `write!` is
 // discarding a Result that cannot be Err.
 use std::fmt::Write as _;
+use std::path::PathBuf;
 
 use crate::display::{human_endpoint_text, sanitize};
 use crate::model::{Platform, PortEntryView};
@@ -170,10 +171,15 @@ where
         protected_names,
         platform,
         &scope,
+        &HashMap::new(),
         command_line,
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "every input is an independent, already-collected fact; bundling them would only rename the list"
+)]
 pub(crate) fn render_family_report_with_scope<CommandLine>(
     target_pid: u32,
     snapshot: &[TreeProcessInfo],
@@ -181,6 +187,7 @@ pub(crate) fn render_family_report_with_scope<CommandLine>(
     protected_names: &[String],
     platform: Platform,
     scope: &InspectScope,
+    deleted_executables: &HashMap<u32, PathBuf>,
     mut command_line: CommandLine,
 ) -> Result<String, InspectError>
 where
@@ -203,6 +210,7 @@ where
         platform,
         &mut command_line,
     );
+    render_target_clues(&mut out, target, &index, deleted_executables, platform);
     render_ancestors(
         &mut out,
         target,
@@ -221,6 +229,8 @@ where
         protected_names,
         platform,
     );
+
+    render_other_deleted_executables(&mut out, target_pid, &index, deleted_executables);
 
     let _ = write!(
         out,
@@ -277,6 +287,75 @@ fn render_target<CommandLine>(
             None => out.push_str("  Process group: unknown\n"),
         }
     }
+}
+
+/// Facts that often explain a stale process: its executable file is gone,
+/// or its launcher exited and an init or service manager adopted it.
+fn render_target_clues(
+    out: &mut String,
+    target: &TreeProcessInfo,
+    index: &PidIndex<'_>,
+    deleted_executables: &HashMap<u32, PathBuf>,
+    platform: Platform,
+) {
+    if let Some(path) = deleted_executables.get(&target.pid) {
+        let _ = writeln!(
+            out,
+            "  Executable: {} (deleted or replaced after this process started; a stale build or an upgraded package)",
+            sanitize(&path.to_string_lossy()),
+        );
+    }
+    if platform == Platform::Windows {
+        // Windows parent links are creation-time checked and often absent.
+        return;
+    }
+    let Some(parent_pid) = target.parent_pid else {
+        return;
+    };
+    let parent_name = index
+        .get(&parent_pid)
+        .and_then(|parent| parent.process_name.as_deref())
+        .or(target.parent_process_name.as_deref());
+    if parent_pid == 1 || ADOPTING_PARENT_NAMES.contains(&parent_name.unwrap_or_default()) {
+        let _ = writeln!(
+            out,
+            "  Parent: PID {parent_pid} ({}), an init or service manager. A process started from a terminal or dev tool lands here when its launcher exits, so this may be an orphan.",
+            sanitize(parent_name.unwrap_or("<unknown>")),
+        );
+    }
+}
+
+/// Parents that adopt orphans besides PID 1: the systemd user manager is a
+/// child subreaper.
+const ADOPTING_PARENT_NAMES: &[&str] = &["systemd"];
+
+fn render_other_deleted_executables(
+    out: &mut String,
+    target_pid: u32,
+    index: &PidIndex<'_>,
+    deleted_executables: &HashMap<u32, PathBuf>,
+) {
+    let mut others = deleted_executables
+        .keys()
+        .copied()
+        .filter(|pid| *pid != target_pid)
+        .collect::<Vec<_>>();
+    if others.is_empty() {
+        return;
+    }
+    others.sort_unstable();
+    let labels = others
+        .iter()
+        .map(|pid| {
+            let name = index
+                .get(pid)
+                .and_then(|info| info.process_name.as_deref())
+                .unwrap_or("<unknown>");
+            format!("PID {pid} ({})", sanitize(name))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let _ = writeln!(out, "Running deleted or replaced executables: {labels}");
 }
 
 fn render_ancestors<CommandLine>(
@@ -911,5 +990,79 @@ mod tests {
 
         // The walk shows the one real ancestor and stops instead of looping.
         assert!(report.contains("PID 200 (b)"), "{report}");
+    }
+
+    fn render_with_clues(
+        target: u32,
+        snapshot: &[TreeProcessInfo],
+        platform: Platform,
+        deleted: &[(u32, &str)],
+    ) -> String {
+        let scope = super::build_scope(target, snapshot, platform, &[]);
+        let deleted = deleted
+            .iter()
+            .map(|(pid, path)| (*pid, std::path::PathBuf::from(path)))
+            .collect();
+        super::render_family_report_with_scope(
+            target,
+            snapshot,
+            &[],
+            &[],
+            platform,
+            &scope,
+            &deleted,
+            |_| None,
+        )
+        .expect("target is present")
+    }
+
+    #[test]
+    fn report_flags_a_deleted_executable_on_the_target_and_other_members() {
+        let report = render_with_clues(
+            400,
+            &family_snapshot(),
+            Platform::Linux,
+            &[(400, "/srv/app/node"), (401, "/srv/app/worker")],
+        );
+
+        assert!(
+            report.contains(
+                "  Executable: /srv/app/node (deleted or replaced after this process started"
+            ),
+            "{report}"
+        );
+        assert!(
+            report.contains("Running deleted or replaced executables: PID 401 (worker)"),
+            "{report}"
+        );
+        // The target is not repeated in the list of other members.
+        assert!(!report.contains("executables: PID 400"), "{report}");
+    }
+
+    #[test]
+    fn report_without_deleted_executables_adds_no_executable_lines() {
+        let report = render_with_clues(400, &family_snapshot(), Platform::Linux, &[]);
+
+        assert!(!report.contains("Executable:"), "{report}");
+        assert!(!report.contains("deleted"), "{report}");
+    }
+
+    #[test]
+    fn report_suggests_an_orphan_only_when_init_or_a_service_manager_adopted_it() {
+        let mut snapshot = family_snapshot();
+        snapshot.push(info(500, Some(1), "devsrv", 500));
+        snapshot.push(info(1423, Some(1), "systemd", 1423));
+        snapshot.push(info(600, Some(1423), "devsrv", 600));
+
+        for target in [500, 600] {
+            let report = render_with_clues(target, &snapshot, Platform::Linux, &[]);
+            assert!(report.contains("this may be an orphan"), "{report}");
+        }
+        // A shell parent is the normal case.
+        let report = render_with_clues(400, &snapshot, Platform::Linux, &[]);
+        assert!(!report.contains("orphan"), "{report}");
+        // Windows parent links are not reliable enough for the hint.
+        let report = render_with_clues(500, &snapshot, Platform::Windows, &[]);
+        assert!(!report.contains("orphan"), "{report}");
     }
 }

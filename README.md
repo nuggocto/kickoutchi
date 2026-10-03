@@ -327,6 +327,11 @@ Published archives target:
   stderr: sockets created by other users whose processes you cannot read
   (named by account, from the Linux socket UID), sockets with no attributed
   owner, and sockets that no readable process holds, such as kernel-held ones.
+- On Linux, a process whose executable file was deleted or replaced after it
+  started, often a stale build or a process left over from a package upgrade,
+  is called out under `kick list`, in the `kick inspect` report, and in the
+  kill banner. `kick inspect` also notes when init or a service manager
+  adopted the process, a sign that its launcher exited and it may be orphaned.
 
 The `SCOPE` column labels wildcard addresses `public`, loopback addresses
 `loopback`, and other concrete addresses `local`.

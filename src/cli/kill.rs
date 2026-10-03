@@ -468,6 +468,23 @@ fn print_kill_banner(target: &KillTarget, mode: KillMode) {
             sanitize(&warning.text(WarningScope::Process))
         );
     }
+    if let Some(note) = deleted_executable_note(target) {
+        eprintln!("{note}");
+    }
+}
+
+/// A banner note when the target runs a deleted or replaced executable.
+pub(super) fn deleted_executable_note(target: &KillTarget) -> Option<String> {
+    let start_marker = target.process_start_time_marker?;
+    let path = platform::deleted_executable(ProcessIdentity {
+        pid: target.pid,
+        start_marker,
+    })?;
+    Some(format!(
+        "Note: {} runs an executable that was deleted or replaced after it started: {}",
+        target.identity(),
+        sanitize(&path.to_string_lossy()),
+    ))
 }
 
 fn prompt_confirmation(

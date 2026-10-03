@@ -572,6 +572,7 @@ fn run_inspect(
         .iter()
         .map(PortEntryView::from)
         .collect::<Vec<_>>();
+    let deleted_executables = deleted_executables_in(&report_scope);
     let command_line_identities = inspect::command_line_scope_identities(target_pid, &snapshot);
     let command_line = platform::inspect_command_line_reader(&command_line_identities);
     match inspect::render_family_report_with_scope(
@@ -581,19 +582,28 @@ fn run_inspect(
         &config.protected_processes,
         TREE_HOST_PLATFORM,
         &report_scope,
+        &deleted_executables,
         command_line,
     ) {
-        Ok(report) => {
-            if let Some(reason) = write_stdout(&report) {
-                return reason;
-            }
-            ExitReason::Success
-        }
+        Ok(report) => write_stdout(&report).unwrap_or(ExitReason::Success),
         Err(inspect::InspectError::TargetMissing) => {
             eprintln!("error: PID {target_pid} is not running");
             ExitReason::NoMatch
         }
     }
+}
+
+/// Processes in an inspect report whose executable was deleted or replaced.
+fn deleted_executables_in(
+    scope: &inspect::InspectScope,
+) -> std::collections::HashMap<u32, std::path::PathBuf> {
+    scope
+        .port_identities()
+        .iter()
+        .filter_map(|identity| {
+            platform::deleted_executable(*identity).map(|path| (identity.pid, path))
+        })
+        .collect()
 }
 
 /// Pick the PID to inspect. Unlike kill resolution there is no unsafe-PID

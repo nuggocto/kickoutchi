@@ -22,8 +22,8 @@ use crate::tree;
 use crate::tree::TreeKillOutcome as TreeRefusal;
 
 use super::kill::{
-    KillTargetError, print_target_error, read_confirmation_line, resolve_kill_target,
-    revalidate_cli_target,
+    KillTargetError, deleted_executable_note, print_target_error, read_confirmation_line,
+    resolve_kill_target, revalidate_cli_target,
 };
 use super::{ExitReason, KillArgs, TREE_HOST_PLATFORM};
 
@@ -851,6 +851,9 @@ fn print_tree_kill_banner(root: &KillTarget, preview: &tree::ProcessTreeTarget, 
             sanitize(&warning.text(process::WarningScope::Tree))
         );
     }
+    if let Some(note) = deleted_executable_note(root) {
+        eprintln!("{note}");
+    }
 }
 
 fn prompt_tree_confirmation(
@@ -1147,6 +1150,9 @@ fn print_group_kill_banner(root: &KillTarget, group: &tree::ProcessGroupTarget, 
             "Warning: {}.",
             sanitize(&warning.text(process::WarningScope::Group))
         );
+    }
+    if let Some(note) = deleted_executable_note(root) {
+        eprintln!("{note}");
     }
 }
 

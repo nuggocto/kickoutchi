@@ -2269,3 +2269,43 @@ fn native_metadata_profiles_preserve_socket_owners_and_limit_enrichment() {
         Some("worker --test")
     );
 }
+
+#[test]
+fn deleted_executable_reports_only_a_running_file_that_was_removed() {
+    let directory = temp_proc_root("deleted-executable");
+    std::fs::create_dir_all(&directory).expect("temp directory");
+    let copy = directory.join("sleeper");
+    std::fs::copy("/bin/sleep", &copy).expect("copy sleep");
+    let mut child = std::process::Command::new(&copy)
+        .arg("30")
+        .spawn()
+        .expect("spawn copied sleep");
+    let pid = child.id();
+    let identity = |pid| {
+        let start_marker = super::process_start_time_marker(pid).expect("readable marker");
+        crate::observation::ProcessIdentity { pid, start_marker }
+    };
+    let running = identity(pid);
+
+    let before = super::deleted_executable(running);
+    std::fs::remove_file(&copy).expect("remove the running executable");
+    let after = super::deleted_executable(running);
+    let recycled = super::deleted_executable(crate::observation::ProcessIdentity {
+        pid,
+        start_marker: crate::observation::ProcessStartMarker::linux(1).expect("nonzero"),
+    });
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_dir_all(&directory);
+
+    assert_eq!(before, None, "a present executable is not deleted");
+    assert_eq!(after, Some(copy), "the original path without the suffix");
+    assert_eq!(
+        recycled, None,
+        "another identity must not borrow the answer"
+    );
+    assert_eq!(
+        super::deleted_executable(identity(std::process::id())),
+        None
+    );
+}

@@ -37,6 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changed. The error now gives the cause, at least N processes could not be
   read, and the `kick kill --pid PID` command that targets the verified owner
   with the same scope and mode. The exit code is still 4.
+- Human output now shows clues that a process is stale. On Linux, `kick list`
+  notes listed processes whose executable was deleted or replaced after they
+  started, with the original path, and `kick inspect` and the kill banners show
+  the same fact. Before, only JSON carried it, as a raw ` (deleted)` suffix on
+  the path. Kickoutchi confirms the deletion from the running inode's link
+  count, so a file really named `x (deleted)` is not reported. `kick inspect`
+  also notes when the target's parent is PID 1 or a systemd service manager,
+  which means its launcher may have exited and left it orphaned.
 
 ## [1.4.6] - 2026-10-02
 

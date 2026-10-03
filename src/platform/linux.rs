@@ -10,6 +10,7 @@ use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::num::NonZeroU64;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use thiserror::Error;
@@ -628,6 +629,34 @@ pub(crate) fn process_start_time_marker(pid: u32) -> Option<ProcessStartMarker> 
     read_process_start_time_ticks(&path)
         .ok()
         .and_then(|ticks| ProcessStartMarker::linux(ticks).ok())
+}
+
+/// The original path of a process's executable when that file was deleted or
+/// replaced after the process started, or `None` when it was not, the process
+/// changed identity, or the facts are unreadable.
+pub(crate) fn deleted_executable(identity: ProcessIdentity) -> Option<PathBuf> {
+    let process_dir = Path::new(PROC_ROOT).join(identity.pid.to_string());
+    let marker_matches = || {
+        read_process_start_time_ticks(&process_dir.join("stat"))
+            .ok()
+            .and_then(|ticks| ProcessStartMarker::linux(ticks).ok())
+            == Some(identity.start_marker)
+    };
+    if !marker_matches() {
+        return None;
+    }
+    let exe = process_dir.join("exe");
+    let link = read_link_bounded(&exe, crate::observation::EXECUTABLE_PATH_MAX_BYTES).ok()?;
+    // `stat` follows the magic link to the running inode. The kernel's
+    // " (deleted)" suffix alone is ambiguous: a real file may carry that name.
+    let deleted = fs::metadata(&exe).ok()?.nlink() == 0;
+    // Re-check so a recycled PID cannot lend its executable to the old one.
+    if !deleted || !marker_matches() {
+        return None;
+    }
+    let bytes = link.as_os_str().as_bytes();
+    let original = bytes.strip_suffix(b" (deleted)").unwrap_or(bytes);
+    Some(PathBuf::from(std::ffi::OsStr::from_bytes(original)))
 }
 
 #[cfg(test)]
