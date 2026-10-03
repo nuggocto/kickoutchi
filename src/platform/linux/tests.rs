@@ -2274,7 +2274,8 @@ fn native_metadata_profiles_preserve_socket_owners_and_limit_enrichment() {
 fn deleted_executable_reports_only_a_running_file_that_was_removed() {
     let directory = temp_proc_root("deleted-executable");
     std::fs::create_dir_all(&directory).expect("temp directory");
-    let copy = directory.join("sleeper");
+    // Keep the name: multi-call coreutils builds pick the tool from argv[0].
+    let copy = directory.join("sleep");
     // Build sandboxes such as Nix have no /bin; find `sleep` on PATH.
     let sleep = std::env::var_os("PATH")
         .iter()
@@ -2288,6 +2289,13 @@ fn deleted_executable_reports_only_a_running_file_that_was_removed() {
         .spawn()
         .expect("spawn copied sleep");
     let pid = child.id();
+    assert!(
+        child
+            .try_wait()
+            .expect("child status is readable")
+            .is_none(),
+        "the copied sleep must still be running"
+    );
     let identity = |pid| {
         let start_marker = super::process_start_time_marker(pid).expect("readable marker");
         crate::observation::ProcessIdentity { pid, start_marker }
