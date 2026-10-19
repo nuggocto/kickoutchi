@@ -26,7 +26,7 @@ use super::{
     read_confirmation_line, resolve_kill_target, revalidate_single_cli_target,
     target_refusal_lines,
 };
-use crate::cli::{ExitReason, KillArgs, settle, unprovable_port_kill_message};
+use crate::cli::{ExitReason, KillArgs, KillSelector, settle, unprovable_port_kill_message};
 
 /// Most targets one command may name.
 pub(crate) const BATCH_TARGETS_MAX: usize = 128;
@@ -217,7 +217,13 @@ fn deliver<Handle>(
             config,
             &planned.target,
             &mut io.context,
-            &mut || collector::kill_ports_from_snapshot(&fresh, args.pid, args.port),
+            &mut || {
+                collector::kill_ports_from_snapshot(
+                    &fresh,
+                    args.selector.pid(),
+                    args.selector.port(),
+                )
+            },
         );
         let (target, outcome) = match revalidated {
             Ok(target) => {
@@ -262,7 +268,7 @@ fn plan<'a, Handle>(
             lines,
             reason,
         };
-        if let Some(port) = args.port
+        if let Some(port) = args.selector.port()
             && let Some(message) = unprovable_port_kill_message(args, port, snapshot, &entries)
         {
             refusals.push(refuse(vec![message], ExitReason::PermissionDenied));
@@ -307,10 +313,9 @@ fn plan<'a, Handle>(
 }
 
 fn selector_text(args: &KillArgs) -> String {
-    match (args.pid, args.port) {
-        (Some(pid), _) => format!("--pid {pid}"),
-        (None, Some(port)) => format!("--port {port}"),
-        (None, None) => unreachable!("every batch target has one selector"),
+    match args.selector {
+        KillSelector::Pid(pid) => format!("--pid {pid}"),
+        KillSelector::Port(port) => format!("--port {port}"),
     }
 }
 

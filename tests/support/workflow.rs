@@ -3,6 +3,8 @@ const FUZZ_WORKFLOW: &str = include_str!("../../.github/workflows/fuzz.yml");
 const RELEASE_WORKFLOW: &str = include_str!("../../.github/workflows/release.yml");
 const DIST_WORKSPACE: &str = include_str!("../../dist-workspace.toml");
 
+use std::collections::BTreeMap;
+
 use serde_yaml_ng::{Mapping, Value};
 
 fn parsed_workflow(source: &str) -> Value {
@@ -41,7 +43,8 @@ fn yaml_scalar(mapping: &Mapping, key: &str) -> Option<String> {
     mapping_value(mapping, key).map(scalar_text)
 }
 
-fn yaml_mapping(mapping: &Mapping, key: &str) -> Vec<(String, String)> {
+/// A scalar mapping by entry, ignoring the YAML order that GitHub ignores too.
+fn yaml_mapping(mapping: &Mapping, key: &str) -> BTreeMap<String, String> {
     required_mapping(
         mapping_value(mapping, key).unwrap_or_else(|| panic!("missing YAML mapping {key}")),
         key,
@@ -160,7 +163,7 @@ fn assert_workflow_security(source: &str) {
     let workflow = parsed_workflow(source);
     assert_eq!(
         yaml_mapping(workflow_root(&workflow), "permissions"),
-        [("contents".to_owned(), "read".to_owned())]
+        permission_map([("contents", "read")])
     );
     assert_permission_maps(&workflow);
 
@@ -212,21 +215,28 @@ fn assert_release_job_permissions(workflow: &Value) {
         let permissions =
             mapping_value(job, "permissions").map(|_| yaml_mapping(job, "permissions"));
         match name.as_str() {
-            "host" => assert_eq!(permissions, Some(vec![("contents".into(), "write".into())])),
+            "host" => assert_eq!(permissions, Some(permission_map([("contents", "write")]))),
             "attest-release-artifacts" => assert_eq!(
                 permissions,
-                Some(vec![
-                    ("contents".into(), "read".into()),
-                    ("id-token".into(), "write".into()),
-                    ("attestations".into(), "write".into()),
-                ])
+                Some(permission_map([
+                    ("contents", "read"),
+                    ("id-token", "write"),
+                    ("attestations", "write"),
+                ]))
             ),
             _ => assert!(
-                permissions.is_none_or(|values| values.iter().all(|(_, access)| access == "read")),
+                permissions.is_none_or(|values| values.values().all(|access| access == "read")),
                 "release job {name} has unnecessary write access"
             ),
         }
     }
+}
+
+fn permission_map<const N: usize>(entries: [(&str, &str); N]) -> BTreeMap<String, String> {
+    entries
+        .into_iter()
+        .map(|(scope, access)| (scope.to_owned(), access.to_owned()))
+        .collect()
 }
 
 fn assert_no_ref_expression_in_scripts(workflow: &str) {

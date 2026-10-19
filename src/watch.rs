@@ -60,37 +60,75 @@ impl Certainty {
     }
 }
 
+/// One observed socket and the snapshot that observed it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EventSide<'a> {
+    pub(crate) snapshot: &'a NetworkSnapshot,
+    pub(crate) socket: &'a SocketObservation,
+}
+
+/// The observation sides each event kind carries.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum EventSides<'a> {
+    Baseline(EventSide<'a>),
+    Bind(EventSide<'a>),
+    Release(EventSide<'a>),
+    Replacement {
+        previous: EventSide<'a>,
+        current: EventSide<'a>,
+    },
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct WatchEvent<'a> {
-    pub(crate) kind: EventKind,
-    pub(crate) previous_snapshot: Option<&'a NetworkSnapshot>,
-    pub(crate) current_snapshot: Option<&'a NetworkSnapshot>,
-    pub(crate) previous_socket: Option<&'a SocketObservation>,
-    pub(crate) current_socket: Option<&'a SocketObservation>,
+    pub(crate) sides: EventSides<'a>,
     pub(crate) multiplicity: u32,
     pub(crate) certainty: Certainty,
 }
 
 impl<'a> WatchEvent<'a> {
-    pub(crate) fn endpoint(self) -> &'a EndpointIdentity {
-        self.current_socket
-            .or(self.previous_socket)
-            .map(|socket| &socket.local_endpoint)
-            .expect("endpoint events always carry one socket side")
+    pub(crate) const fn kind(self) -> EventKind {
+        match self.sides {
+            EventSides::Baseline(_) => EventKind::Baseline,
+            EventSides::Bind(_) => EventKind::Bind,
+            EventSides::Release(_) => EventKind::Release,
+            EventSides::Replacement { .. } => EventKind::Replacement,
+        }
     }
 
-    pub(crate) fn event_socket(self) -> &'a SocketObservation {
-        match self.kind {
-            EventKind::Release => self
-                .previous_socket
-                .expect("release events carry the previous socket"),
-            EventKind::Baseline | EventKind::Bind => self
-                .current_socket
-                .expect("baseline and bind events carry the current socket"),
-            EventKind::Replacement => self
-                .current_socket
-                .expect("replacement events carry the current socket"),
+    /// The side from the earlier snapshot; baseline and bind events have none.
+    pub(crate) const fn previous(self) -> Option<EventSide<'a>> {
+        match self.sides {
+            EventSides::Release(previous) | EventSides::Replacement { previous, .. } => {
+                Some(previous)
+            }
+            EventSides::Baseline(_) | EventSides::Bind(_) => None,
         }
+    }
+
+    /// The side from the later snapshot; release events have none.
+    pub(crate) const fn current(self) -> Option<EventSide<'a>> {
+        match self.sides {
+            EventSides::Baseline(current)
+            | EventSides::Bind(current)
+            | EventSides::Replacement { current, .. } => Some(current),
+            EventSides::Release(_) => None,
+        }
+    }
+
+    /// The socket an event reports: the released socket for a release, the
+    /// current socket otherwise.
+    pub(crate) const fn event_socket(self) -> &'a SocketObservation {
+        match self.sides {
+            EventSides::Release(previous) => previous.socket,
+            EventSides::Baseline(current)
+            | EventSides::Bind(current)
+            | EventSides::Replacement { current, .. } => current.socket,
+        }
+    }
+
+    pub(crate) const fn endpoint(self) -> &'a EndpointIdentity {
+        &self.event_socket().local_endpoint
     }
 }
 
@@ -223,35 +261,35 @@ impl<'a> SnapshotDiff<'a> {
         loop {
             if let Some((previous, current, certainty)) = self.pending_replacement.take() {
                 return Some(WatchEvent {
-                    kind: EventKind::Replacement,
-                    previous_snapshot: Some(self.previous),
-                    current_snapshot: Some(self.current),
-                    previous_socket: Some(&self.previous.sockets[previous]),
-                    current_socket: Some(&self.current.sockets[current]),
+                    sides: EventSides::Replacement {
+                        previous: EventSide {
+                            snapshot: self.previous,
+                            socket: &self.previous.sockets[previous],
+                        },
+                        current: EventSide {
+                            snapshot: self.current,
+                            socket: &self.current.sockets[current],
+                        },
+                    },
                     multiplicity: 1,
                     certainty,
                 });
             }
             if let Some((side, index)) = self.next_remainder_index() {
-                return Some(match side {
-                    RemainderSide::Release => WatchEvent {
-                        kind: EventKind::Release,
-                        previous_snapshot: Some(self.previous),
-                        current_snapshot: Some(self.current),
-                        previous_socket: Some(&self.previous.sockets[index]),
-                        current_socket: None,
-                        multiplicity: 1,
-                        certainty: Certainty::Proven,
-                    },
-                    RemainderSide::Bind => WatchEvent {
-                        kind: EventKind::Bind,
-                        previous_snapshot: Some(self.previous),
-                        current_snapshot: Some(self.current),
-                        previous_socket: None,
-                        current_socket: Some(&self.current.sockets[index]),
-                        multiplicity: 1,
-                        certainty: Certainty::Proven,
-                    },
+                let sides = match side {
+                    RemainderSide::Release => EventSides::Release(EventSide {
+                        snapshot: self.previous,
+                        socket: &self.previous.sockets[index],
+                    }),
+                    RemainderSide::Bind => EventSides::Bind(EventSide {
+                        snapshot: self.current,
+                        socket: &self.current.sockets[index],
+                    }),
+                };
+                return Some(WatchEvent {
+                    sides,
+                    multiplicity: 1,
+                    certainty: Certainty::Proven,
                 });
             }
             if !self.prepare_next_bucket() {
@@ -480,11 +518,10 @@ impl<'a> Iterator for BaselineEvents<'a> {
         let index = *self.indices.get(self.position)?;
         self.position += 1;
         Some(WatchEvent {
-            kind: EventKind::Baseline,
-            previous_snapshot: None,
-            current_snapshot: Some(self.snapshot),
-            previous_socket: None,
-            current_socket: Some(&self.snapshot.sockets[index]),
+            sides: EventSides::Baseline(EventSide {
+                snapshot: self.snapshot,
+                socket: &self.snapshot.sockets[index],
+            }),
             multiplicity: 1,
             certainty: Certainty::Proven,
         })
@@ -612,21 +649,30 @@ fn compare_owner_set(left: &SocketObservation, right: &SocketObservation) -> Ord
 pub(crate) fn compare_event_prefix(left: WatchEvent<'_>, right: WatchEvent<'_>) -> Ordering {
     compare_endpoint_identity(left.endpoint(), right.endpoint())
         .then_with(|| left.event_socket().state.cmp(&right.event_socket().state))
-        .then_with(|| left.kind.cmp(&right.kind))
+        .then_with(|| left.kind().cmp(&right.kind()))
         .then_with(|| compare_event_tokens(left, right))
         .then_with(|| compare_event_owner_sets(left, right))
 }
 
 fn compare_event_tokens(left: WatchEvent<'_>, right: WatchEvent<'_>) -> Ordering {
-    match (left.kind, right.kind) {
-        (EventKind::Replacement, EventKind::Replacement) => compare_token(
-            left.previous_socket.and_then(|socket| socket.socket_token),
-            right.previous_socket.and_then(|socket| socket.socket_token),
+    match (left.sides, right.sides) {
+        (
+            EventSides::Replacement {
+                previous: left_previous,
+                current: left_current,
+            },
+            EventSides::Replacement {
+                previous: right_previous,
+                current: right_current,
+            },
+        ) => compare_token(
+            left_previous.socket.socket_token,
+            right_previous.socket.socket_token,
         )
         .then_with(|| {
             compare_token(
-                left.current_socket.and_then(|socket| socket.socket_token),
-                right.current_socket.and_then(|socket| socket.socket_token),
+                left_current.socket.socket_token,
+                right_current.socket.socket_token,
             )
         }),
         _ => compare_token(
@@ -637,23 +683,18 @@ fn compare_event_tokens(left: WatchEvent<'_>, right: WatchEvent<'_>) -> Ordering
 }
 
 fn compare_event_owner_sets(left: WatchEvent<'_>, right: WatchEvent<'_>) -> Ordering {
-    match (left.kind, right.kind) {
-        (EventKind::Replacement, EventKind::Replacement) => compare_owner_set(
-            left.previous_socket
-                .expect("replacement carries a previous socket"),
-            right
-                .previous_socket
-                .expect("replacement carries a previous socket"),
-        )
-        .then_with(|| {
-            compare_owner_set(
-                left.current_socket
-                    .expect("replacement carries a current socket"),
-                right
-                    .current_socket
-                    .expect("replacement carries a current socket"),
-            )
-        }),
+    match (left.sides, right.sides) {
+        (
+            EventSides::Replacement {
+                previous: left_previous,
+                current: left_current,
+            },
+            EventSides::Replacement {
+                previous: right_previous,
+                current: right_current,
+            },
+        ) => compare_owner_set(left_previous.socket, right_previous.socket)
+            .then_with(|| compare_owner_set(left_current.socket, right_current.socket)),
         _ => compare_owner_set(left.event_socket(), right.event_socket()),
     }
 }
@@ -742,7 +783,7 @@ mod tests {
             .unwrap()
             .map(|event| {
                 let event = event.unwrap();
-                (event.kind, event.endpoint().port.get())
+                (event.kind(), event.endpoint().port.get())
             })
             .collect()
     }
@@ -788,7 +829,7 @@ mod tests {
             .next()
             .unwrap()
             .unwrap();
-        assert_eq!(event.kind, EventKind::Replacement);
+        assert_eq!(event.kind(), EventKind::Replacement);
         assert_eq!(event.certainty, Certainty::Proven);
     }
 
@@ -801,7 +842,7 @@ mod tests {
             .next()
             .unwrap()
             .unwrap();
-        assert_eq!(event.kind, EventKind::Replacement);
+        assert_eq!(event.kind(), EventKind::Replacement);
         assert_eq!(event.certainty, Certainty::Heuristic);
     }
 
@@ -818,7 +859,7 @@ mod tests {
             .next()
             .unwrap()
             .unwrap();
-        assert_eq!(event.kind, EventKind::Replacement);
+        assert_eq!(event.kind(), EventKind::Replacement);
         assert_eq!(event.certainty, Certainty::Heuristic);
     }
 
@@ -849,7 +890,7 @@ mod tests {
         let current = snapshot(vec![current_socket]);
         let kinds = diff_snapshots(&previous, &current)
             .unwrap()
-            .map(|event| event.unwrap().kind)
+            .map(|event| event.unwrap().kind())
             .collect::<Vec<_>>();
         assert_eq!(kinds, [EventKind::Release, EventKind::Bind]);
     }
@@ -937,7 +978,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(events.len(), super::WATCH_EVENT_BATCH_MAX + 1);
-        assert!(events.iter().all(|event| event.kind == EventKind::Release));
+        assert!(
+            events
+                .iter()
+                .all(|event| event.kind() == EventKind::Release)
+        );
     }
 
     #[test]
@@ -974,7 +1019,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(event.kind, EventKind::Replacement);
+        assert_eq!(event.kind(), EventKind::Replacement);
         assert_eq!(event.certainty, Certainty::Heuristic);
     }
 
@@ -1006,8 +1051,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].kind, EventKind::Release);
-        assert_eq!(events[0].previous_socket.unwrap().owners, hidden_101.owners);
+        assert_eq!(events[0].kind(), EventKind::Release);
+        assert_eq!(
+            events[0].previous().unwrap().socket.owners,
+            hidden_101.owners
+        );
     }
 
     #[test]

@@ -90,7 +90,9 @@ pub(super) fn run_tree_kill(
         TreeKillIo {
             collect_context: &mut platform::collect_process_context,
             prompt: &mut prompt_tree_confirmation,
-            collect_kill_ports: &mut || collector::collect_kill_ports(args.pid, args.port),
+            collect_kill_ports: &mut || {
+                collector::collect_kill_ports(args.selector.pid(), args.selector.port())
+            },
             post_kill: report::PostKillIo {
                 collect_ports: &mut || {
                     collector::collect_ports_with_profile(MetadataProfile::IdentityOnly)
@@ -203,7 +205,9 @@ fn run_windows_tree_kill(
             collect_tree: &mut crate::platform::windows::collect_tree_process_infos,
             collect_context: &mut platform::collect_process_context,
             prompt: &mut prompt_tree_confirmation,
-            collect_kill_ports: &mut || collector::collect_kill_ports(args.pid, args.port),
+            collect_kill_ports: &mut || {
+                collector::collect_kill_ports(args.selector.pid(), args.selector.port())
+            },
             collect_ports: &mut || {
                 collector::collect_ports_with_profile(MetadataProfile::IdentityOnly)
             },
@@ -269,7 +273,7 @@ fn run_windows_tree_kill_with<RootHandle>(
 
     // A port-selected root must be retained before the final authoritative
     // endpoint collection. PID mode keeps its existing path.
-    let prepared_root = if args.port.is_some() {
+    let prepared_root = if args.selector.port().is_some() {
         match (io.prepare_root)(root.pid) {
             Ok(handle) => Some(handle),
             Err(outcome) => {
@@ -513,7 +517,7 @@ where
 {
     match (
         resolve_kill_target(args, entries, collect_context),
-        args.pid,
+        args.selector.pid(),
     ) {
         (Ok(target), _) => Ok(target),
         (Err(KillTargetError::NoMatch), Some(pid)) => {
@@ -935,7 +939,9 @@ pub(super) fn run_group_kill(
         TreeKillIo {
             collect_context: &mut platform::collect_process_context,
             prompt: &mut prompt_group_confirmation,
-            collect_kill_ports: &mut || collector::collect_kill_ports(args.pid, args.port),
+            collect_kill_ports: &mut || {
+                collector::collect_kill_ports(args.selector.pid(), args.selector.port())
+            },
             post_kill: report::PostKillIo {
                 collect_ports: &mut || {
                     collector::collect_ports_with_profile(MetadataProfile::IdentityOnly)

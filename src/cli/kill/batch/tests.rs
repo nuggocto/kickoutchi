@@ -2,7 +2,7 @@ use std::cell::RefCell;
 
 use super::{BatchIo, aggregate_exit, run_batch_kill_with};
 use crate::cli::test_support::{entry_with_pid, no_context};
-use crate::cli::{ExitReason, KillArgs, settle};
+use crate::cli::{ExitReason, KillArgs, KillSelector, settle};
 use crate::config::Config;
 use crate::model::{PortEntry, Protocol};
 use crate::observation::{NetworkSnapshot, snapshot_from_test_rows};
@@ -11,8 +11,7 @@ use crate::process::{ExitObservation, KillMode, KillTarget, TerminationOutcome};
 fn by_pid(pids: &[u32], yes: bool) -> Vec<KillArgs> {
     pids.iter()
         .map(|pid| KillArgs {
-            pid: Some(*pid),
-            port: None,
+            selector: KillSelector::Pid(*pid),
             force: false,
             yes,
             tree: false,
@@ -26,8 +25,7 @@ fn by_port(ports: &[u16]) -> Vec<KillArgs> {
     ports
         .iter()
         .map(|port| KillArgs {
-            pid: None,
-            port: Some(*port),
+            selector: KillSelector::Port(*port),
             force: false,
             yes: true,
             tree: false,

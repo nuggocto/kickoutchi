@@ -277,8 +277,9 @@ impl KillCommandArgs {
         dedup_in_order(&mut ports);
         let targets = pids
             .into_iter()
-            .map(|pid| self.target(Some(pid), None))
-            .chain(ports.into_iter().map(|port| self.target(None, Some(port))))
+            .map(KillSelector::Pid)
+            .chain(ports.into_iter().map(KillSelector::Port))
+            .map(|selector| self.target(selector))
             .collect::<Vec<_>>();
         if targets.len() > kill::batch::BATCH_TARGETS_MAX {
             return Err(format!(
@@ -294,10 +295,9 @@ impl KillCommandArgs {
         Ok(targets)
     }
 
-    fn target(&self, pid: Option<u32>, port: Option<u16>) -> KillArgs {
+    fn target(&self, selector: KillSelector) -> KillArgs {
         KillArgs {
-            pid,
-            port,
+            selector,
             force: self.force,
             yes: self.yes,
             tree: self.tree,
@@ -320,15 +320,37 @@ fn dedup_in_order<T: Copy + Ord>(values: &mut Vec<T>) {
     values.retain(|value| seen.insert(*value));
 }
 
-/// One kill request: exactly one of `pid` and `port` is set.
+/// The one process selector of a kill request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KillSelector {
+    Pid(u32),
+    Port(u16),
+}
+
+impl KillSelector {
+    pub(crate) const fn pid(self) -> Option<u32> {
+        match self {
+            Self::Pid(pid) => Some(pid),
+            Self::Port(_) => None,
+        }
+    }
+
+    pub(crate) const fn port(self) -> Option<u16> {
+        match self {
+            Self::Pid(_) => None,
+            Self::Port(port) => Some(port),
+        }
+    }
+}
+
+/// One kill request for one selector.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "mirrors the independent CLI flags; `allow`, not `expect`, because Windows has no `group`"
 )]
 #[derive(Debug, Clone)]
 pub(crate) struct KillArgs {
-    pid: Option<u32>,
-    port: Option<u16>,
+    selector: KillSelector,
     force: bool,
     yes: bool,
     tree: bool,
@@ -394,8 +416,8 @@ pub(crate) fn run(
             // Descriptors resolve protection during construction, so this is the
             // whole projection: no owned legacy rows, no second marking pass.
             let descriptors = match snapshot.port_entry_descriptors_matching(
-                args.pid,
-                args.port,
+                args.selector.pid(),
+                args.selector.port(),
                 &config.protected_processes,
             ) {
                 Ok(descriptors) => descriptors,
@@ -408,7 +430,7 @@ pub(crate) fn run(
                 .iter()
                 .map(|descriptor| snapshot.port_entry_view(descriptor))
                 .collect::<Vec<_>>();
-            if let Some(port) = args.port
+            if let Some(port) = args.selector.port()
                 && let Some(reason) = refuse_unprovable_port_kill(args, port, &snapshot, &entries)
             {
                 return reason;
@@ -802,7 +824,7 @@ mod tests {
     use super::kill::KillTargetError;
     use super::test_support::entry;
     use super::test_support::entry_with_pid;
-    use super::{Cli, Command, ExitReason, diagnostic_port_without_confirmed_socket};
+    use super::{Cli, Command, ExitReason, KillSelector, diagnostic_port_without_confirmed_socket};
     use crate::model::Protocol;
     use crate::model::SortMode;
 
@@ -943,24 +965,30 @@ mod tests {
             .targets()
             .expect("three distinct PIDs");
 
-        let pids = targets.iter().map(|target| target.pid).collect::<Vec<_>>();
+        let selectors = targets
+            .iter()
+            .map(|target| target.selector)
+            .collect::<Vec<_>>();
         assert_eq!(
-            pids,
-            [Some(30), Some(10), Some(20)],
+            selectors,
+            [
+                KillSelector::Pid(30),
+                KillSelector::Pid(10),
+                KillSelector::Pid(20)
+            ],
             "first occurrence wins"
         );
-        assert!(
-            targets
-                .iter()
-                .all(|target| target.port.is_none() && target.yes)
-        );
+        assert!(targets.iter().all(|target| target.yes));
 
         let ports = kill_command(&["--port", "3000,3001"])
             .targets()
             .expect("two ports");
         assert_eq!(
-            ports.iter().map(|target| target.port).collect::<Vec<_>>(),
-            [Some(3000), Some(3001)]
+            ports
+                .iter()
+                .map(|target| target.selector)
+                .collect::<Vec<_>>(),
+            [KillSelector::Port(3000), KillSelector::Port(3001)]
         );
         // PIDs and ports still cannot be mixed.
         assert!(Cli::try_parse_from(["kick", "kill", "--pid", "1", "--port", "2"]).is_err());
@@ -1209,7 +1237,7 @@ mod tests {
 
     #[test]
     fn port_kill_is_refused_before_the_prompt_without_complete_authority() {
-        use super::{KillArgs, pid_kill_suggestion, refuse_unprovable_port_kill};
+        use super::{KillArgs, KillSelector, pid_kill_suggestion, refuse_unprovable_port_kill};
 
         let snapshot = crate::test_support::permission_denied_owner_snapshot();
         let descriptors = snapshot
@@ -1220,8 +1248,7 @@ mod tests {
             .map(|descriptor| snapshot.port_entry_view(descriptor))
             .collect::<Vec<_>>();
         let args = KillArgs {
-            pid: None,
-            port: Some(3000),
+            selector: KillSelector::Port(3000),
             force: true,
             yes: true,
             tree: true,
@@ -1242,7 +1269,7 @@ mod tests {
 
     #[test]
     fn earlier_port_kill_refusals_keep_their_own_exit_codes() {
-        use super::{KillArgs, refuse_unprovable_port_kill};
+        use super::{KillArgs, KillSelector, refuse_unprovable_port_kill};
 
         let mut snapshot = crate::test_support::permission_denied_owner_snapshot();
         let descriptors = snapshot
@@ -1259,8 +1286,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let args = KillArgs {
-            pid: None,
-            port: Some(3000),
+            selector: KillSelector::Port(3000),
             force: false,
             yes: true,
             tree: false,
@@ -1297,7 +1323,7 @@ mod tests {
 
     #[test]
     fn port_kill_with_complete_authority_reaches_the_normal_flow() {
-        use super::{KillArgs, refuse_unprovable_port_kill};
+        use super::{KillArgs, KillSelector, refuse_unprovable_port_kill};
 
         let rows = vec![entry(3000)];
         let snapshot = crate::observation::snapshot_from_test_rows(rows);
@@ -1309,8 +1335,7 @@ mod tests {
             .map(|descriptor| snapshot.port_entry_view(descriptor))
             .collect::<Vec<_>>();
         let args = KillArgs {
-            pid: None,
-            port: Some(3000),
+            selector: KillSelector::Port(3000),
             force: false,
             yes: true,
             tree: false,

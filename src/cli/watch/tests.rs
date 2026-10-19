@@ -122,7 +122,9 @@ use crate::observation::{
     ProcessObservation, ProcessStartMarker, SnapshotCompleteness, UnverifiedOwnerReason,
 };
 use crate::query::QueryCapabilities;
-use crate::watch::{Certainty, EventKind, WatchEvent, baseline_events, diff_snapshots};
+use crate::watch::{
+    Certainty, EventKind, EventSide, EventSides, WatchEvent, baseline_events, diff_snapshots,
+};
 
 #[test]
 fn duration_parser_accepts_boundaries_and_rejects_noncanonical_tokens() {
@@ -444,25 +446,42 @@ fn owned_snapshot(pid: u32, name: Option<&str>, metadata: MetadataCompleteness) 
     observed
 }
 
+/// Socket 0 of `snapshot` as one event side.
+fn first_side(snapshot: &NetworkSnapshot) -> EventSide<'_> {
+    EventSide {
+        snapshot,
+        socket: &snapshot.sockets[0],
+    }
+}
+
+/// The sides an event of `kind` carries, taken from `previous` and `current`.
+fn sides_for<'a>(
+    kind: EventKind,
+    previous: EventSide<'a>,
+    current: EventSide<'a>,
+) -> EventSides<'a> {
+    match kind {
+        EventKind::Baseline => EventSides::Baseline(current),
+        EventKind::Bind => EventSides::Bind(current),
+        EventKind::Release => EventSides::Release(previous),
+        EventKind::Replacement => EventSides::Replacement { previous, current },
+    }
+}
+
+fn proven_event(sides: EventSides<'_>) -> WatchEvent<'_> {
+    WatchEvent {
+        sides,
+        multiplicity: 1,
+        certainty: Certainty::Proven,
+    }
+}
+
 #[test]
 fn event_filter_uses_the_documented_side_and_three_valued_matrix() {
     let previous = owned_snapshot(10, Some("alpha"), MetadataCompleteness::Complete);
     let current = owned_snapshot(20, Some("beta"), MetadataCompleteness::Complete);
     let config = Config::default();
-    let event = |kind| WatchEvent {
-        kind,
-        previous_snapshot: (kind != EventKind::Baseline).then_some(&previous),
-        current_snapshot: (kind != EventKind::Release).then_some(&current),
-        previous_socket: matches!(kind, EventKind::Release | EventKind::Replacement)
-            .then_some(&previous.sockets[0]),
-        current_socket: matches!(
-            kind,
-            EventKind::Baseline | EventKind::Bind | EventKind::Replacement
-        )
-        .then_some(&current.sockets[0]),
-        multiplicity: 1,
-        certainty: Certainty::Proven,
-    };
+    let event = |kind| proven_event(sides_for(kind, first_side(&previous), first_side(&current)));
 
     for kind in [EventKind::Baseline, EventKind::Bind] {
         assert_eq!(
@@ -502,11 +521,7 @@ fn event_filter_uses_the_documented_side_and_three_valued_matrix() {
     }
 
     let unknown = owned_snapshot(20, None, MetadataCompleteness::Partial);
-    let unknown_event = WatchEvent {
-        current_snapshot: Some(&unknown),
-        current_socket: Some(&unknown.sockets[0]),
-        ..event(EventKind::Bind)
-    };
+    let unknown_event = proven_event(EventSides::Bind(first_side(&unknown)));
     assert_eq!(
         evaluate_event(
             unknown_event,
@@ -1495,15 +1510,7 @@ fn pid_scoped_ownership_gap_is_indeterminate_and_emitted_for_hidden_owner() {
         "permission denied before the PID's socket ownership could be attributed",
     ));
     let filter = filtered_options("pid:4242");
-    let event = WatchEvent {
-        kind: EventKind::Baseline,
-        previous_snapshot: None,
-        current_snapshot: Some(&snapshot),
-        previous_socket: None,
-        current_socket: Some(&snapshot.sockets[0]),
-        multiplicity: 1,
-        certainty: Certainty::Proven,
-    };
+    let event = proven_event(EventSides::Baseline(first_side(&snapshot)));
 
     assert_eq!(
         evaluate_event(
@@ -1574,15 +1581,7 @@ fn omitted_ownership_gap_keeps_pid_filter_indeterminate_and_counts_the_gap() {
     ));
     snapshot.omitted_evidence_gap_count = 1;
     let filter = filtered_options("pid:4242");
-    let event = WatchEvent {
-        kind: EventKind::Baseline,
-        previous_snapshot: None,
-        current_snapshot: Some(&snapshot),
-        previous_socket: None,
-        current_socket: Some(&snapshot.sockets[0]),
-        multiplicity: 1,
-        certainty: Certainty::Proven,
-    };
+    let event = proven_event(EventSides::Baseline(first_side(&snapshot)));
 
     assert_eq!(
         evaluate_event(
@@ -1912,15 +1911,7 @@ fn human_output_bounds_owner_and_label_display() {
         .unwrap(),
         ..Config::default()
     };
-    let event = WatchEvent {
-        kind: EventKind::Baseline,
-        previous_snapshot: None,
-        current_snapshot: Some(&snapshot),
-        previous_socket: None,
-        current_socket: Some(&snapshot.sockets[0]),
-        multiplicity: 1,
-        certainty: Certainty::Proven,
-    };
+    let event = proven_event(EventSides::Baseline(first_side(&snapshot)));
     let mut output = Vec::new();
 
     write_human_event(
@@ -1995,8 +1986,6 @@ fn endpoint_event_shapes_pin_previous_and_current_sides() {
     let cases = [
         (
             EventKind::Baseline,
-            None,
-            Some(&current.sockets[0]),
             serde_json::Value::Null,
             current_owner.clone(),
             serde_json::Value::Null,
@@ -2004,8 +1993,6 @@ fn endpoint_event_shapes_pin_previous_and_current_sides() {
         ),
         (
             EventKind::Bind,
-            None,
-            Some(&current.sockets[0]),
             serde_json::Value::Null,
             current_owner.clone(),
             serde_json::Value::Null,
@@ -2013,8 +2000,6 @@ fn endpoint_event_shapes_pin_previous_and_current_sides() {
         ),
         (
             EventKind::Release,
-            Some(&previous.sockets[0]),
-            None,
             previous_owner.clone(),
             serde_json::Value::Null,
             serde_json::json!({"kind": "linux_inode", "value": 11}),
@@ -2022,8 +2007,6 @@ fn endpoint_event_shapes_pin_previous_and_current_sides() {
         ),
         (
             EventKind::Replacement,
-            Some(&previous.sockets[0]),
-            Some(&current.sockets[0]),
             previous_owner.clone(),
             current_owner.clone(),
             serde_json::json!({"kind": "linux_inode", "value": 11}),
@@ -2033,8 +2016,6 @@ fn endpoint_event_shapes_pin_previous_and_current_sides() {
 
     for (
         kind,
-        previous_socket,
-        current_socket,
         expected_previous_owners,
         expected_current_owners,
         expected_previous_token,
@@ -2047,17 +2028,12 @@ fn endpoint_event_shapes_pin_previous_and_current_sides() {
             attempt_completed_unix_ms: 3,
         };
         let event = WatchEvent {
-            kind,
-            previous_snapshot: (kind != EventKind::Baseline).then_some(&previous),
-            current_snapshot: Some(&current),
-            previous_socket,
-            current_socket,
-            multiplicity: 1,
             certainty: if kind == EventKind::Replacement {
                 Certainty::Heuristic
             } else {
                 Certainty::Proven
             },
+            ..proven_event(sides_for(kind, first_side(&previous), first_side(&current)))
         };
         let mut output = Vec::new();
         super::write_endpoint_event(
@@ -2425,15 +2401,7 @@ fn matched_only_drops_possible_matches_but_keeps_definite_ones() {
         Some(4_242),
         "permission denied before the PID's socket ownership could be attributed",
     ));
-    let hidden_event = WatchEvent {
-        kind: EventKind::Bind,
-        previous_snapshot: None,
-        current_snapshot: Some(&hidden),
-        previous_socket: None,
-        current_socket: Some(&hidden.sockets[0]),
-        multiplicity: 1,
-        certainty: Certainty::Proven,
-    };
+    let hidden_event = proven_event(EventSides::Bind(first_side(&hidden)));
     assert_eq!(
         evaluate_event(
             hidden_event,
@@ -2458,15 +2426,7 @@ fn matched_only_drops_possible_matches_but_keeps_definite_ones() {
 
     // A definite match is unaffected.
     let owned = owned_snapshot(4_242, Some("node"), MetadataCompleteness::Complete);
-    let owned_event = WatchEvent {
-        kind: EventKind::Bind,
-        previous_snapshot: None,
-        current_snapshot: Some(&owned),
-        previous_socket: None,
-        current_socket: Some(&owned.sockets[0]),
-        multiplicity: 1,
-        certainty: Certainty::Proven,
-    };
+    let owned_event = proven_event(EventSides::Bind(first_side(&owned)));
     assert_eq!(
         evaluate_event(
             owned_event,

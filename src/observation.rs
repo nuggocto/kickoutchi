@@ -257,6 +257,15 @@ impl SocketState {
         }
     }
 
+    /// The port row state, for the only states that become port rows.
+    const fn port_row_state(self) -> Option<LegacySocketState> {
+        match self {
+            Self::Listen => Some(LegacySocketState::Listen),
+            Self::Bound => Some(LegacySocketState::Bound),
+            _ => None,
+        }
+    }
+
     pub(crate) const fn order_key(self) -> (u8, u32) {
         match self {
             Self::Closed => (0, 0),
@@ -816,7 +825,7 @@ impl NetworkSnapshot {
             if target_port.is_some_and(|port| socket.local_endpoint.port.get() != port) {
                 continue;
             }
-            if !matches!(socket.state, SocketState::Listen | SocketState::Bound) {
+            if socket.state.port_row_state().is_none() {
                 continue;
             }
             let emitted = if let Some(pid) = target_pid {
@@ -883,10 +892,15 @@ impl NetworkSnapshot {
         &self.sockets[descriptor.socket_index as usize]
     }
 
-    pub(crate) fn port_entry_view(&self, descriptor: &PortEntryDescriptor) -> PortEntryView<'_> {
-        let socket = &self.sockets[descriptor.socket_index as usize];
-        let owner = (descriptor.owner_index != u32::MAX)
-            .then(|| &socket.owners[descriptor.owner_index as usize]);
+    /// Resolve one socket owner into a port row's source, or `None` when the
+    /// socket's state never becomes a port row. `owner` is `None` for a
+    /// socket with no attributed owner.
+    fn port_row_source<'a>(
+        &'a self,
+        socket: &'a SocketObservation,
+        owner: Option<&OwnerObservation>,
+    ) -> Option<PortRowSource<'a>> {
+        let state = socket.state.port_row_state()?;
         let (pid, process_identity, process) = match owner {
             Some(OwnerObservation::Verified(identity)) => (
                 Some(identity.pid),
@@ -896,17 +910,32 @@ impl NetworkSnapshot {
             Some(OwnerObservation::UnverifiedPid { pid, .. }) => (Some(*pid), None, None),
             None => (None, None, None),
         };
-        let state = match socket.state {
-            SocketState::Listen => LegacySocketState::Listen,
-            SocketState::Bound => LegacySocketState::Bound,
-            _ => unreachable!("descriptors contain only open socket states"),
-        };
-        PortEntryView {
-            protocol: socket.local_endpoint.protocol,
-            local_addr: socket.local_endpoint.address,
-            local_port: socket.local_endpoint.port.get(),
+        Some(PortRowSource {
+            socket,
             state,
             pid,
+            process_identity,
+            process,
+        })
+    }
+
+    fn descriptor_row_source(&self, descriptor: &PortEntryDescriptor) -> PortRowSource<'_> {
+        let socket = &self.sockets[descriptor.socket_index as usize];
+        let owner = (descriptor.owner_index != u32::MAX)
+            .then(|| &socket.owners[descriptor.owner_index as usize]);
+        self.port_row_source(socket, owner)
+            .expect("descriptors contain only open socket states")
+    }
+
+    pub(crate) fn port_entry_view(&self, descriptor: &PortEntryDescriptor) -> PortEntryView<'_> {
+        let row = self.descriptor_row_source(descriptor);
+        let process = row.process;
+        PortEntryView {
+            protocol: row.socket.local_endpoint.protocol,
+            local_addr: row.socket.local_endpoint.address,
+            local_port: row.socket.local_endpoint.port.get(),
+            state: row.state,
+            pid: row.pid,
             process_name: process.and_then(|process| process.name.as_deref()),
             executable_path: process.and_then(|process| process.executable_path.as_deref()),
             command_line: process.and_then(|process| process.command_line.as_deref()),
@@ -914,17 +943,36 @@ impl NetworkSnapshot {
             parent_process_name: process.and_then(|process| process.parent_process_name.as_deref()),
             protected: descriptor.protected,
             platform: snapshot_platform(self),
-            permission: if process.is_some_and(|process| {
-                process.metadata_completeness == MetadataCompleteness::Complete
-            }) && socket.owner_completeness.is_complete()
-            {
-                PermissionStatus::Full
-            } else {
-                PermissionStatus::Partial
-            },
-            process_identity,
-            ipv6_scope: socket.local_endpoint.ipv6_scope,
+            permission: row.permission(),
+            process_identity: row.process_identity,
+            ipv6_scope: row.socket.local_endpoint.ipv6_scope,
             label: None,
+        }
+    }
+}
+
+/// One port row's socket, owner, and process, resolved once so the borrowed
+/// view and the owned legacy row cannot disagree on what a row holds.
+struct PortRowSource<'a> {
+    socket: &'a SocketObservation,
+    state: LegacySocketState,
+    pid: Option<u32>,
+    process_identity: Option<ProcessIdentity>,
+    process: Option<&'a ProcessObservation>,
+}
+
+impl PortRowSource<'_> {
+    /// Full only when both the process metadata and the socket's owner set
+    /// are complete.
+    fn permission(&self) -> PermissionStatus {
+        if self
+            .process
+            .is_some_and(|process| process.metadata_completeness == MetadataCompleteness::Complete)
+            && self.socket.owner_completeness.is_complete()
+        {
+            PermissionStatus::Full
+        } else {
+            PermissionStatus::Partial
         }
     }
 }
@@ -1704,8 +1752,6 @@ fn materialize_processes(
 mod legacy;
 
 use legacy::owner_pid;
-#[cfg(test)]
-pub(crate) use legacy::project_legacy_pids;
 #[cfg(test)]
 use legacy::project_legacy_with_limit;
 pub(crate) use legacy::{project_legacy, project_legacy_identities, project_legacy_target};

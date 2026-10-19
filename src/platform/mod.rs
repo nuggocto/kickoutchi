@@ -1,7 +1,6 @@
 //! Home of the platform-specific collectors.
 
-use crate::model::{ProcessContext, RelatedProcessHint};
-use crate::observation::{ProcessIdentity, ProcessStartMarker};
+use crate::observation::ProcessIdentity;
 
 /// Display and traversal bounds for optional process context. These hints
 /// never participate in termination authority, so every platform degrades by
@@ -17,39 +16,16 @@ pub(crate) mod macos;
 #[cfg(windows)]
 pub(crate) mod windows;
 
-pub(crate) fn collect_process_context(pid: u32) -> ProcessContext {
-    #[cfg(target_os = "linux")]
-    {
-        linux::collect_process_context(pid)
-    }
+#[cfg(target_os = "linux")]
+use self::linux as native;
+#[cfg(target_os = "macos")]
+use self::macos as native;
+#[cfg(windows)]
+use self::windows as native;
 
-    #[cfg(windows)]
-    {
-        windows::collect_process_context(pid)
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        macos::collect_process_context(pid)
-    }
-}
-
-pub(crate) fn process_start_time_marker(pid: u32) -> Option<ProcessStartMarker> {
-    #[cfg(target_os = "linux")]
-    {
-        linux::process_start_time_marker(pid)
-    }
-
-    #[cfg(windows)]
-    {
-        windows::process_start_time_marker(pid)
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        macos::process_start_time_marker(pid)
-    }
-}
+pub(crate) use native::{
+    collect_process_context, collect_related_process_hints, process_start_time_marker,
+};
 
 /// The original path of a process's executable when the file was deleted or
 /// replaced after the process started. Only Linux can tell; other platforms
@@ -64,23 +40,6 @@ pub(crate) fn deleted_executable(identity: ProcessIdentity) -> Option<std::path:
     {
         let _ = identity;
         None
-    }
-}
-
-pub(crate) fn collect_related_process_hints(port: u16) -> Vec<RelatedProcessHint> {
-    #[cfg(target_os = "linux")]
-    {
-        linux::collect_related_process_hints(port)
-    }
-
-    #[cfg(windows)]
-    {
-        windows::collect_related_process_hints(port)
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        macos::collect_related_process_hints(port)
     }
 }
 
@@ -121,7 +80,7 @@ pub(crate) fn inspect_command_line_reader(
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn marker_checked_command_line_reader(
     identities: &[ProcessIdentity],
-    start_time_marker: fn(u32) -> Option<ProcessStartMarker>,
+    start_time_marker: fn(u32) -> Option<crate::observation::ProcessStartMarker>,
     command_line: fn(u32) -> Option<String>,
 ) -> impl FnMut(u32) -> Option<String> {
     let expected = identities

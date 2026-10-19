@@ -14,10 +14,10 @@ use super::{
     tree_confirmation,
 };
 use crate::cli::ExitReason;
-use crate::cli::KillArgs;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::cli::test_support::entry_with_pid;
 use crate::cli::test_support::{entry, no_context};
+use crate::cli::{KillArgs, KillSelector};
 use crate::config::Config;
 use crate::model::{PermissionStatus, Platform, Protocol};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -125,8 +125,7 @@ fn windows_tree_authority_refusal_precedes_job_assignment() {
 
     let reason = super::run_windows_tree_kill_with(
         &KillArgs {
-            pid: Some(18_422),
-            port: None,
+            selector: KillSelector::Pid(18_422),
             force: false,
             yes: false,
             tree: true,
@@ -170,8 +169,7 @@ fn windows_port_tree_root_exit_during_preparation_is_no_match() {
 
     let reason = super::run_windows_tree_kill_with(
         &KillArgs {
-            pid: None,
-            port: Some(3000),
+            selector: KillSelector::Port(3000),
             force: false,
             yes: true,
             tree: true,
@@ -233,8 +231,7 @@ fn windows_port_owner_move_after_root_prepare_never_commits_job() {
 
     let reason = super::run_windows_tree_kill_with(
         &KillArgs {
-            pid: None,
-            port: Some(3000),
+            selector: KillSelector::Port(3000),
             force: false,
             yes: true,
             tree: true,
@@ -622,8 +619,7 @@ impl TreeProcessOps for RecordingTreeOps {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn kill_pid_tree(pid: u32) -> KillArgs {
     KillArgs {
-        pid: Some(pid),
-        port: None,
+        selector: KillSelector::Pid(pid),
         force: false,
         yes: false,
         tree: true,
@@ -634,8 +630,7 @@ fn kill_pid_tree(pid: u32) -> KillArgs {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn kill_pid_tree_yes(pid: u32) -> KillArgs {
     KillArgs {
-        pid: Some(pid),
-        port: None,
+        selector: KillSelector::Pid(pid),
         force: false,
         yes: true,
         tree: true,
@@ -853,8 +848,7 @@ fn port_selected_tree_pins_old_root_before_endpoint_move_and_sends_no_signal() {
 
     let reason = run_tree_kill_with(
         &KillArgs {
-            pid: None,
-            port: Some(3000),
+            selector: KillSelector::Port(3000),
             force: false,
             yes: false,
             tree: true,
@@ -901,8 +895,7 @@ fn tree_losing_readable_owner_during_revalidation_exits_permission_denied() {
 
     let reason = run_tree_kill_with(
         &KillArgs {
-            pid: Some(18_422),
-            port: None,
+            selector: KillSelector::Pid(18_422),
             force: false,
             yes: false,
             tree: true,
@@ -1030,8 +1023,7 @@ fn protected_tree_descendant_refuses_before_prompt_or_stop_even_with_yes() {
 
     let reason = run_tree_kill_with(
         &KillArgs {
-            pid: Some(18_422),
-            port: None,
+            selector: KillSelector::Pid(18_422),
             force: false,
             yes: true,
             tree: true,
@@ -1110,8 +1102,7 @@ fn root_turning_protected_between_confirmation_and_freeze_refuses_with_exit_6() 
 
     let reason = run_tree_kill_with(
         &KillArgs {
-            pid: Some(18_422),
-            port: None,
+            selector: KillSelector::Pid(18_422),
             force: false,
             yes: false,
             tree: true,
@@ -1173,8 +1164,7 @@ fn completed_protected_confirmation_passes_the_root_protection_gate() {
 
     let reason = run_tree_kill_with(
         &KillArgs {
-            pid: Some(18_422),
-            port: None,
+            selector: KillSelector::Pid(18_422),
             force: false,
             yes: false,
             tree: true,
@@ -1233,8 +1223,7 @@ fn group_target(
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn kill_pid_group(pid: u32, yes: bool) -> KillArgs {
     KillArgs {
-        pid: Some(pid),
-        port: None,
+        selector: KillSelector::Pid(pid),
         force: false,
         yes,
         tree: false,
@@ -1245,8 +1234,7 @@ fn kill_pid_group(pid: u32, yes: bool) -> KillArgs {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn kill_port_group(port: u16) -> KillArgs {
     KillArgs {
-        pid: None,
-        port: Some(port),
+        selector: KillSelector::Port(port),
         force: false,
         yes: false,
         tree: false,
@@ -1381,8 +1369,7 @@ fn group_losing_readable_owner_during_revalidation_exits_permission_denied() {
 
     let reason = run_group_kill_with(
         &KillArgs {
-            pid: Some(18_422),
-            port: None,
+            selector: KillSelector::Pid(18_422),
             force: false,
             yes: false,
             tree: false,

@@ -887,7 +887,7 @@ fn write_endpoint_event(
     } else {
         (Vec::new(), 0)
     };
-    let evidence = if event.kind == EventKind::Replacement {
+    let evidence = if event.kind() == EventKind::Replacement {
         vec![EvidenceDto::literal(
             "process_identity_changed",
             "analysis",
@@ -898,22 +898,20 @@ fn write_endpoint_event(
         Vec::new()
     };
     let (evidence, omitted_evidence_count) = retain_event_evidence(evidence);
+    let previous = event.previous().map(|side| side.socket);
+    let current = event.current().map(|side| side.socket);
     let data = EndpointEventData {
         endpoint: EndpointDto::from(&socket.local_endpoint),
         state: SocketStateDto::from(socket.state),
-        previous_owners: event
-            .previous_socket
+        previous_owners: previous
             .map(|socket| OwnerSetDto::new(&socket.owners, &socket.owner_completeness))
             .transpose()?,
-        current_owners: event
-            .current_socket
+        current_owners: current
             .map(|socket| OwnerSetDto::new(&socket.owners, &socket.owner_completeness))
             .transpose()?,
-        previous_socket_token: event
-            .previous_socket
+        previous_socket_token: previous
             .and_then(|socket| socket.socket_token.map(SocketTokenDto::from)),
-        current_socket_token: event
-            .current_socket
+        current_socket_token: current
             .and_then(|socket| socket.socket_token.map(SocketTokenDto::from)),
         multiplicity: event.multiplicity,
         label: config.labels.resolve(&socket.local_endpoint),
@@ -930,7 +928,7 @@ fn write_endpoint_event(
             schema: "kickoutchi.watch_event",
             version: 1,
             sequence,
-            event: event.kind.name(),
+            event: event.kind().name(),
             observation,
             data,
         },
@@ -1077,25 +1075,19 @@ fn event_gap_dtos<'a>(
     let mut gaps = Vec::with_capacity(WATCH_EVENT_GAPS_MAX);
     let mut total = 0u64;
     let owner_pid_constraint = owner_pid_constraint(filter_terms);
-    if let (Some(snapshot), Some(socket), Some(index)) = (
-        event.previous_snapshot,
-        event.previous_socket,
-        previous_index,
-    ) {
+    if let (Some(side), Some(index)) = (event.previous(), previous_index) {
         index.append(
-            snapshot,
-            socket,
+            side.snapshot,
+            side.socket,
             owner_pid_constraint,
             &mut gaps,
             &mut total,
         );
     }
-    if let (Some(snapshot), Some(socket), Some(index)) =
-        (event.current_snapshot, event.current_socket, current_index)
-    {
+    if let (Some(side), Some(index)) = (event.current(), current_index) {
         index.append(
-            snapshot,
-            socket,
+            side.snapshot,
+            side.socket,
             owner_pid_constraint,
             &mut gaps,
             &mut total,
@@ -1140,7 +1132,7 @@ fn write_human_event(
     writeln!(
         writer,
         "{} {} {} {} owners={}{} filter={} certainty={} observed={}..{} previous_completed={}",
-        event.kind.name().to_ascii_uppercase(),
+        event.kind().name().to_ascii_uppercase(),
         endpoint.protocol.label(),
         endpoint_text,
         socket_state_name(socket.state),

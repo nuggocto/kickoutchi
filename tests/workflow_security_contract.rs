@@ -412,9 +412,9 @@ fn cargo_dist_and_linux_release_inputs_are_exact_and_immutable() {
     let release = parsed_workflow(RELEASE_WORKFLOW);
     assert_eq!(
         yaml_mapping(workflow_root(&release), "env")
-            .into_iter()
-            .find_map(|(name, value)| (name == "DIST_VERSION").then_some(value)),
-        Some(configured_version.to_owned())
+            .get("DIST_VERSION")
+            .map(String::as_str),
+        Some(configured_version)
     );
     for job_name in ["plan", "build-local-artifacts"] {
         let scripts = job_steps(workflow_job(&release, job_name))

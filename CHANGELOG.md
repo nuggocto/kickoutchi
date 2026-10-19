@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Borrowed and owned port rows share owner, identity, socket-state, and
+  permission resolution. Watch events carry the observation sides required by
+  their kind, and internal kill requests use one PID or port selector. CLI
+  behavior, structured output, configuration, and termination safeguards are
+  unchanged.
+- Replaced platform forwarding functions with native re-exports and removed an
+  unused test-only projection helper. Workflow permission checks no longer
+  depend on YAML mapping order.
+
 ## [1.5.2] - 2026-10-03
 
 ### Added

@@ -13,7 +13,7 @@ use crate::observation::{
 use crate::protection::is_protected_process;
 use crate::public_output::socket_state_name;
 use crate::query::{AddressFamily, FilterTerm, StateFilter};
-use crate::watch::{EventKind, WatchEvent};
+use crate::watch::{EventSide, EventSides, WatchEvent};
 
 use super::{WatchOptions, owner_pid};
 
@@ -96,52 +96,23 @@ pub(super) fn evaluate_event(
     if !options.filter_active {
         return Some(FilterResult::NotApplied);
     }
-    let result = match event.kind {
-        EventKind::Baseline | EventKind::Bind => evaluate_side(
-            event
-                .current_snapshot
-                .expect("current event side has a snapshot"),
-            event
-                .current_socket
-                .expect("current event side has a socket"),
+    let evaluate = |side: EventSide<'_>, cache: Option<&mut FilterCache>| {
+        evaluate_side(
+            side.snapshot,
+            side.socket,
             options,
             config,
-            current_cache.expect("current event side has a filter cache"),
-        ),
-        EventKind::Release => evaluate_side(
-            event
-                .previous_snapshot
-                .expect("release has a previous snapshot"),
-            event
-                .previous_socket
-                .expect("release has a previous socket"),
-            options,
-            config,
-            previous_cache.expect("previous event side has a filter cache"),
-        ),
-        EventKind::Replacement => {
-            let previous = evaluate_side(
-                event
-                    .previous_snapshot
-                    .expect("replacement has previous snapshot"),
-                event
-                    .previous_socket
-                    .expect("replacement has previous socket"),
-                options,
-                config,
-                previous_cache.expect("replacement previous side has a filter cache"),
-            );
-            let current = evaluate_side(
-                event
-                    .current_snapshot
-                    .expect("replacement has current snapshot"),
-                event
-                    .current_socket
-                    .expect("replacement has current socket"),
-                options,
-                config,
-                current_cache.expect("replacement current side has a filter cache"),
-            );
+            cache.expect("every event side has a filter cache"),
+        )
+    };
+    let result = match event.sides {
+        EventSides::Baseline(current) | EventSides::Bind(current) => {
+            evaluate(current, current_cache)
+        }
+        EventSides::Release(previous) => evaluate(previous, previous_cache),
+        EventSides::Replacement { previous, current } => {
+            let previous = evaluate(previous, previous_cache);
+            let current = evaluate(current, current_cache);
             match (previous, current) {
                 (Truth::True, _) | (_, Truth::True) => Truth::True,
                 (Truth::False, Truth::False) => Truth::False,

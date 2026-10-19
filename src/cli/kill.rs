@@ -21,7 +21,7 @@ use crate::protection::mark_protected;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::scoped::run_group_kill;
 use super::scoped::run_tree_kill;
-use super::{ExitReason, KillArgs, settle};
+use super::{ExitReason, KillArgs, KillSelector, settle};
 
 pub(super) fn run_kill(
     args: &KillArgs,
@@ -45,7 +45,9 @@ pub(super) fn run_kill(
         entries,
         KillCollectors {
             context: &mut platform::collect_process_context,
-            kill_ports: &mut || collector::collect_kill_ports(args.pid, args.port),
+            kill_ports: &mut || {
+                collector::collect_kill_ports(args.selector.pid(), args.selector.port())
+            },
             visibility_ports: &mut || {
                 collector::collect_ports_with_profile(POST_KILL_VISIBILITY_PROFILE)
             },
@@ -321,10 +323,9 @@ pub(super) fn resolve_kill_target<CollectContext>(
 where
     CollectContext: FnMut(u32) -> ProcessContext,
 {
-    match (args.pid, args.port) {
-        (Some(pid), None) => resolve_pid_target(pid, entries, collect_context),
-        (None, Some(port)) => resolve_port_target(port, entries, collect_context),
-        (None, None) | (Some(_), Some(_)) => unreachable!("clap requires exactly one kill target"),
+    match args.selector {
+        KillSelector::Pid(pid) => resolve_pid_target(pid, entries, collect_context),
+        KillSelector::Port(port) => resolve_port_target(port, entries, collect_context),
     }
 }
 
@@ -444,7 +445,7 @@ where
     CollectContext: FnMut(u32) -> ProcessContext,
 {
     if error == KillTargetError::NoMatch
-        && let Some(pid) = args.pid
+        && let Some(pid) = args.selector.pid()
         && process::unsafe_pid_reason(pid).is_none()
         && collect_context(pid).process_start_time_marker.is_some()
     {

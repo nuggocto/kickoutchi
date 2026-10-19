@@ -6,7 +6,7 @@ use super::{
     run_kill_with, target_refusal_lines,
 };
 use crate::cli::test_support::{entry, entry_with_pid, no_context};
-use crate::cli::{ExitReason, KillArgs};
+use crate::cli::{ExitReason, KillArgs, KillSelector};
 use crate::collector::{CollectorError, kill_ports_from_snapshot};
 use crate::config::Config;
 use crate::model::Protocol;
@@ -19,8 +19,7 @@ use crate::test_support::permission_denied_owner_snapshot;
 
 fn kill_pid(pid: u32, force: bool, yes: bool) -> KillArgs {
     KillArgs {
-        pid: Some(pid),
-        port: None,
+        selector: KillSelector::Pid(pid),
         force,
         yes,
         tree: false,
@@ -31,8 +30,7 @@ fn kill_pid(pid: u32, force: bool, yes: bool) -> KillArgs {
 
 fn kill_port(port: u16, force: bool, yes: bool) -> KillArgs {
     KillArgs {
-        pid: None,
-        port: Some(port),
+        selector: KillSelector::Port(port),
         force,
         yes,
         tree: false,

@@ -4,7 +4,7 @@ use crate::model::SocketState;
 use crate::observation::{
     EvidenceGap, EvidenceGapCode, EvidenceImpact, MetadataProfile, NetworkSnapshot,
     ObservationError, OwnerCompleteness, OwnerObservation, ProcessIdentity, SnapshotCompleteness,
-    UnverifiedOwnerReason, project_legacy, project_legacy_identities, project_legacy_pids,
+    UnverifiedOwnerReason, project_legacy, project_legacy_identities,
 };
 use crate::observation::{NativeObservationPass, ObservationSource};
 use crate::test_support::permission_denied_owner_snapshot;
@@ -200,15 +200,9 @@ fn destructive_authority_ignores_non_legacy_socket_states() {
     );
     assert!(
         project_legacy(&snapshot)
-            .expect("legacy projection")
+            .expect("non-legacy states are skipped, not projected")
             .iter()
-            .all(|row| matches!(row.state, SocketState::Listen | SocketState::Bound))
-    );
-    let pids = std::collections::BTreeSet::from([29_999]);
-    assert!(
-        project_legacy_pids(&snapshot, &pids)
-            .expect("PID projection")
-            .is_empty()
+            .all(|row| row.pid != Some(29_999))
     );
 }
 
