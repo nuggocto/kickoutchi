@@ -70,7 +70,7 @@ serde_yaml_ng = { version = "=0.10.0", default-features = false }
 sha2 = { version = "=0.10.9", default-features = false }
 tar = { version = "=0.4.46", default-features = false }
 xz4rust = { version = "=0.2.2", default-features = false, features = ["bcj", "crc64", "delta", "no_unsafe", "sha256", "std"] }
-zip = { version = "=8.1.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "=9.0.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(unix)'.dependencies]
 # Unix termination uses the OS signal API through the process module.
