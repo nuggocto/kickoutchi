@@ -72,17 +72,17 @@ from this repository's flake.
 Linux and macOS:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/nuggocto/kickoutchi/releases/latest/download/kickoutchi-installer.sh \
-  | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://kickoutchi.com/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -NoProfile -Command "irm https://github.com/nuggocto/kickoutchi/releases/latest/download/kickoutchi-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -NoProfile -Command "irm https://kickoutchi.com/install.ps1 | iex"
 ```
 
+These short URLs redirect to `kickoutchi-installer.sh` and `kickoutchi-installer.ps1`
+on the latest GitHub Release.
 Installer-based installs include `kickoutchi-update` for later upgrades.
 Release pages also provide direct archives, per-archive `.sha256` files, and a
 release-wide `sha256.sum`. Same-release checksums detect corruption; they are not
