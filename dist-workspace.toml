@@ -32,6 +32,12 @@ install-path = "CARGO_HOME"
 
 # The namespace capability journey hangs on the older Ubuntu 22.04 runner
 # kernels. Keep archive execution native while matching the passing CI kernel.
+#
+# The Linux container only supplies Debian 11's glibc 2.31 and rustup; the
+# release job installs RUST_VERSION from release.yml with rustup inside it.
+# Bump the toolchain there, not here. rust:1.98.0-bullseye is the last official
+# Rust image on Debian 11, and its pinned digest stays pullable, so keep it
+# unless the glibc floor in min-glibc-version changes.
 [dist.github-custom-runners]
 x86_64-unknown-linux-gnu = { runner = "ubuntu-22.04", host = "x86_64-unknown-linux-gnu", container = { image = "rust:1.98.0-bullseye@sha256:4730e387a220a08a365c77da3096544dde214f9d796c16284d4be45438cad4a9", host = "x86_64-unknown-linux-gnu", package-manager = "apt" } }
 aarch64-unknown-linux-gnu = { runner = "ubuntu-24.04-arm", host = "aarch64-unknown-linux-gnu", container = { image = "rust:1.98.0-bullseye@sha256:4730e387a220a08a365c77da3096544dde214f9d796c16284d4be45438cad4a9", host = "aarch64-unknown-linux-gnu", package-manager = "apt" } }

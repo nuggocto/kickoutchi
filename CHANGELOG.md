@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The Nix flake locks nixpkgs `nixos-unstable` from 2026-11-07 (was
+  2026-06-29).
+
 ## [1.6.0] - 2026-11-10
 
 ### Changed
