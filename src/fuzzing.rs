@@ -13,15 +13,3 @@ pub fn config(bytes: &[u8]) {
 pub fn linux_proc(bytes: &[u8]) {
     crate::platform::linux::exercise_proc_parser(bytes);
 }
-
-/// Exercise release-archive member-path canonicalization.
-pub fn archive_member_path(bytes: &[u8]) {
-    const INPUT_BYTES_MAX: usize = 4 * 1024;
-    let Some((&kind, raw)) = bytes.split_first() else {
-        return;
-    };
-    if raw.len() > INPUT_BYTES_MAX {
-        return;
-    }
-    let _ = crate::release_archive_path::safe_member_name(raw, kind == b'd');
-}

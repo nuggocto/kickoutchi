@@ -237,7 +237,7 @@ fn status_wrap_fits_rows_to_terminal_columns() {
         ["x".repeat(10), "x".repeat(10), "x".repeat(5)]
     );
     assert_eq!(wrap_to_rows("数据库数据库", 6), ["数据库", "数据库"]);
-    assert!(wrap_to_rows("", 10).is_empty());
+    assert_eq!(wrap_to_rows("", 10), [] as [String; 0]);
 }
 
 fn rendered_rows_containing<'a>(text: &'a str, needle: &str) -> Vec<&'a str> {

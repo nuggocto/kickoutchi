@@ -1170,7 +1170,6 @@ pub(crate) fn collect_process_context(pid: u32) -> ProcessContext {
         owner_uid: None,
         process_start_time_marker: process_start_time_marker(pid),
         children: processes.children(pid),
-        docker: None,
     }
 }
 

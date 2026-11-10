@@ -605,6 +605,9 @@ mod tests {
         assert_eq!(lines[1], "  PID 1 (app1): /srv/app");
         assert_eq!(lines.len(), 1 + super::DELETED_EXECUTABLE_NOTES_MAX + 1);
         assert_eq!(lines.last().map(String::as_str), Some("  ... and 2 more"));
-        assert!(super::deleted_executable_notes(&std::collections::BTreeMap::new()).is_empty());
+        assert_eq!(
+            super::deleted_executable_notes(&std::collections::BTreeMap::new()),
+            [] as [String; 0]
+        );
     }
 }

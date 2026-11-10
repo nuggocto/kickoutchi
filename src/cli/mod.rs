@@ -84,7 +84,7 @@ pub(crate) struct Cli {
     )]
     pub(crate) refresh_interval: Option<u64>,
 
-    /// Emit internal diagnostics to stderr without changing command stdout.
+    /// Show every probe, evidence item, and gap in `why` output.
     #[arg(short, long, global = true)]
     pub(crate) verbose: bool,
 
@@ -112,6 +112,10 @@ pub(crate) enum Command {
     List(ListArgs),
     /// Terminate a verified port owner, process tree, or process group.
     ///
+    /// When other users' processes cannot be read, `--port` targets the port's
+    /// verified owner by PID and the after-kill report shows whether the port
+    /// closed.
+    ///
     /// After delivery, kill waits up to two seconds and reports, on separate
     /// stderr lines, whether each signalled process exited and whether its
     /// confirmed ports are still visible. Exit code 0 means the signal was
@@ -130,8 +134,8 @@ pub(crate) enum Command {
     /// Watch compares full-state native snapshots. Polling can miss sockets that
     /// appear and disappear between snapshots; observation times bracket a
     /// collection attempt, not the exact event time. Neither protocol flag means
-    /// both TCP and UDP, and `--tcp --udp` also selects both. Docker and other
-    /// external network tools are never run by the polling loop.
+    /// both TCP and UDP, and `--tcp --udp` also selects both. The polling loop
+    /// never runs external tools.
     ///
     /// Filters use AND semantics and support plain text plus `pid:`, `port:`,
     /// `proto:`, `scope:`, `protected:`, `parent:`, `label:`, `address:`,
@@ -165,7 +169,8 @@ pub(crate) enum Command {
     /// Each exact endpoint is temporarily bound and immediately closed in
     /// sequence. A successful bind proves availability only at probe completion:
     /// it does not reserve the endpoint, and another process may bind afterward.
-    /// Why does not run Docker and never includes full process command lines.
+    /// Why never includes full process command lines. Without `--json`, it
+    /// prints one line per endpoint; add `--verbose` for the full evidence.
     ///
     /// `--json` emits one `kickoutchi.why/1` document. Exit codes are 0 for all
     /// bindable, 1 for operational or indeterminate results, 2 for invalid
@@ -410,6 +415,17 @@ pub(crate) fn run(
                     return ExitReason::InvalidArguments;
                 }
             };
+            let mut targets = targets
+                .into_iter()
+                .map(|args| redirect_port_to_verified_owner(args, &snapshot, config))
+                .collect::<Vec<_>>();
+            // Two ports with the same verified owner now name the same PID.
+            let mut seen = Vec::with_capacity(targets.len());
+            targets.retain(|args| {
+                let first = !seen.contains(&args.selector);
+                seen.push(args.selector);
+                first
+            });
             let [args] = targets.as_slice() else {
                 return kill::batch::run_batch_kill(&targets, config, &snapshot);
             };
@@ -471,13 +487,102 @@ fn hidden_port_owner_message(
     Some(OwnerVisibility::of(snapshot).hidden_port_owner_message(port, socket))
 }
 
-/// Refuse a port-selected kill before any prompt when the snapshot cannot
-/// prove the visible owner is the port's only holder.
+/// How a port-selected kill proceeds once the snapshot has been read.
+enum PortKillPlan {
+    /// Leave the request as it is; the normal flow resolves or refuses it.
+    AsRequested,
+    /// The port has one verified owner, and only unreadable processes elsewhere
+    /// on the host stop kick from proving nobody else shares the socket.
+    ViaVerifiedOwner { pid: u32, name: String },
+    /// Refuse before any prompt, with this message.
+    Refuse(String),
+}
+
+fn port_kill_plan(
+    args: &KillArgs,
+    port: u16,
+    snapshot: &crate::observation::NetworkSnapshot,
+    entries: &[PortEntryView<'_>],
+) -> PortKillPlan {
+    if let Some(message) = hidden_port_owner_message(snapshot, port) {
+        return PortKillPlan::Refuse(message);
+    }
+    // Other resolution failures keep their existing messages.
+    let Ok((pid, rows)) = resolve_single_port_owner(port, entries) else {
+        return PortKillPlan::AsRequested;
+    };
+    // These refusals come first in the normal flow and keep their own
+    // wording and exit codes: an unsafe PID has no `--pid` alternative, and
+    // `--yes` on a protected owner exits 6.
+    if crate::process::unsafe_pid_reason(pid).is_some()
+        || (args.yes && rows.iter().any(|row| row.protected))
+    {
+        return PortKillPlan::AsRequested;
+    }
+    match collector::kill_ports_from_snapshot(snapshot, None, Some(port)) {
+        Err(error) if error.is_ownership_permission_denied() => {}
+        _ => return PortKillPlan::AsRequested,
+    }
+    let name = rows
+        .iter()
+        .find_map(|row| row.process_name)
+        .map_or_else(|| "<unknown>".to_owned(), crate::display::sanitize);
+    // The PID rules are the ones `kick kill --pid` uses: they ignore
+    // permission gaps that name neither this PID nor its sockets. If even
+    // those fail, the owner itself is unreadable and nothing can be sent.
+    if collector::kill_ports_from_snapshot(snapshot, Some(pid), None).is_ok() {
+        return PortKillPlan::ViaVerifiedOwner { pid, name };
+    }
+    PortKillPlan::Refuse(format!(
+        "kick cannot verify PID {pid} ({name}), the owner of port {port}: {}. Rerun with higher privileges",
+        OwnerVisibility::of(snapshot).unreadable_clause(),
+    ))
+}
+
+/// Turn a port selector into a PID selector when the port's verified owner
+/// is known and only unreadable processes elsewhere block a port-level proof.
+///
+/// On a normal desktop, root and service processes cannot be read, so a
+/// port-level proof that nobody else shares the socket is never available.
+/// Killing the verified owner is still what the user asked for. If a hidden
+/// process does share the socket, the settle step reports that the port is
+/// still visible after the kill.
+fn redirect_port_to_verified_owner(
+    args: KillArgs,
+    snapshot: &crate::observation::NetworkSnapshot,
+    config: &Config,
+) -> KillArgs {
+    let Some(port) = args.selector.port() else {
+        return args;
+    };
+    let Ok(descriptors) =
+        snapshot.port_entry_descriptors_matching(None, Some(port), &config.protected_processes)
+    else {
+        return args;
+    };
+    let entries = descriptors
+        .iter()
+        .map(|descriptor| snapshot.port_entry_view(descriptor))
+        .collect::<Vec<_>>();
+    let PortKillPlan::ViaVerifiedOwner { pid, name } =
+        port_kill_plan(&args, port, snapshot, &entries)
+    else {
+        return args;
+    };
+    eprintln!(
+        "note: {}; targeting the verified owner of port {port}, PID {pid} ({name}), and checking afterwards that the port closed",
+        OwnerVisibility::of(snapshot).unreadable_clause(),
+    );
+    KillArgs {
+        selector: KillSelector::Pid(pid),
+        ..args
+    }
+}
+
+/// Refuse a port-selected kill before any prompt when it cannot succeed.
 ///
 /// The same authority check runs again before delivery; refusing here only
-/// avoids asking for a confirmation that cannot succeed, and says why. An
-/// unreadable process anywhere on the host could share the socket, so the
-/// refusal names the verified owner and suggests targeting it by PID.
+/// avoids asking for a confirmation that cannot succeed, and says why.
 fn refuse_unprovable_port_kill(
     args: &KillArgs,
     port: u16,
@@ -497,48 +602,10 @@ fn unprovable_port_kill_message(
     snapshot: &crate::observation::NetworkSnapshot,
     entries: &[PortEntryView<'_>],
 ) -> Option<String> {
-    if let Some(message) = hidden_port_owner_message(snapshot, port) {
-        return Some(message);
+    match port_kill_plan(args, port, snapshot, entries) {
+        PortKillPlan::Refuse(message) => Some(message),
+        PortKillPlan::AsRequested | PortKillPlan::ViaVerifiedOwner { .. } => None,
     }
-    // Other resolution failures keep their existing messages.
-    let (pid, rows) = resolve_single_port_owner(port, entries).ok()?;
-    // These refusals come first in the normal flow and keep their own
-    // wording and exit codes: an unsafe PID has no `--pid` alternative, and
-    // `--yes` on a protected owner exits 6.
-    if crate::process::unsafe_pid_reason(pid).is_some()
-        || (args.yes && rows.iter().any(|row| row.protected))
-    {
-        return None;
-    }
-    match collector::kill_ports_from_snapshot(snapshot, None, Some(port)) {
-        Err(error) if error.is_ownership_permission_denied() => {}
-        _ => return None,
-    }
-    let name = rows
-        .iter()
-        .find_map(|row| row.process_name)
-        .map_or_else(|| "<unknown>".to_owned(), crate::display::sanitize);
-    Some(format!(
-        "kick cannot prove that PID {pid} ({name}) is the only holder of port {port}: {}; an unreadable process could share the socket, so kick will not signal by port. Run `{}` to target the verified owner, or rerun with higher privileges",
-        OwnerVisibility::of(snapshot).unreadable_clause(),
-        pid_kill_suggestion(args, pid),
-    ))
-}
-
-/// The `--pid` form of a port-selected kill, keeping its scope and mode.
-fn pid_kill_suggestion(args: &KillArgs, pid: u32) -> String {
-    let mut command = format!("kick kill --pid {pid}");
-    if args.tree {
-        command.push_str(" --tree");
-    }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if args.group {
-        command.push_str(" --group");
-    }
-    if args.force {
-        command.push_str(" --force");
-    }
-    command
 }
 
 fn write_stdout(text: &str) -> Option<ExitReason> {
@@ -1237,7 +1304,7 @@ mod tests {
 
     #[test]
     fn port_kill_is_refused_before_the_prompt_without_complete_authority() {
-        use super::{KillArgs, KillSelector, pid_kill_suggestion, refuse_unprovable_port_kill};
+        use super::{KillArgs, KillSelector, refuse_unprovable_port_kill};
 
         let snapshot = crate::test_support::permission_denied_owner_snapshot();
         let descriptors = snapshot
@@ -1259,11 +1326,6 @@ mod tests {
         assert_eq!(
             refuse_unprovable_port_kill(&args, 3000, &snapshot, &entries),
             Some(ExitReason::PermissionDenied)
-        );
-        // The suggestion keeps scope and mode but never adds --yes.
-        assert_eq!(
-            pid_kill_suggestion(&args, 18_422),
-            "kick kill --pid 18422 --tree --force"
         );
     }
 
@@ -1319,6 +1381,49 @@ mod tests {
             refuse_unprovable_port_kill(&args, 3000, &snapshot, &entries),
             None
         );
+    }
+
+    #[test]
+    fn port_kill_targets_the_verified_owner_when_only_other_processes_are_unreadable() {
+        use super::{KillArgs, KillSelector, redirect_port_to_verified_owner};
+        use crate::observation::{EvidenceGap, EvidenceGapCode, EvidenceImpact, OwnerCompleteness};
+
+        // A normal desktop: the port's socket has one verified owner, but
+        // hundreds of root and service processes could not be read.
+        let mut snapshot = crate::observation::snapshot_from_test_rows(vec![entry(3000)]);
+        snapshot.evidence_gaps.push(EvidenceGap::aggregate_for_pids(
+            EvidenceImpact::Ownership,
+            EvidenceGapCode::OwnerPermissionDenied,
+            None,
+            std::num::NonZeroU64::new(517).expect("nonzero"),
+            "permission denied",
+        ));
+        snapshot.owner_completeness =
+            OwnerCompleteness::partial([EvidenceGapCode::OwnerPermissionDenied])
+                .expect("one reason fits");
+        let args = KillArgs {
+            selector: KillSelector::Port(3000),
+            force: false,
+            yes: true,
+            tree: false,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            group: false,
+        };
+
+        let redirected = redirect_port_to_verified_owner(
+            args.clone(),
+            &snapshot,
+            &crate::config::Config::default(),
+        );
+        assert_eq!(redirected.selector, KillSelector::Pid(18_422));
+        assert!(redirected.yes && !redirected.force && !redirected.tree);
+
+        // When the owner itself is the unreadable process, nothing changes and
+        // the up-front refusal still applies.
+        let unreadable = crate::test_support::permission_denied_owner_snapshot();
+        let unchanged =
+            redirect_port_to_verified_owner(args, &unreadable, &crate::config::Config::default());
+        assert_eq!(unchanged.selector, KillSelector::Port(3000));
     }
 
     #[test]

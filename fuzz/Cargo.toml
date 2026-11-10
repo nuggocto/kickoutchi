@@ -11,7 +11,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "=0.4.13"
-kickoutchi = { path = "..", version = "=1.5.2" }
+kickoutchi = { path = "..", version = "=1.6.0" }
 
 [[bin]]
 name = "config"
@@ -23,13 +23,6 @@ bench = false
 [[bin]]
 name = "linux_proc"
 path = "fuzz_targets/linux_proc.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "archive_member_path"
-path = "fuzz_targets/archive_member_path.rs"
 test = false
 doc = false
 bench = false

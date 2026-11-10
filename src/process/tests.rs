@@ -139,7 +139,6 @@ fn context(start_time_ticks: u64) -> ProcessContext {
         process_start_time_marker: crate::observation::ProcessStartMarker::linux(start_time_ticks)
             .ok(),
         children: ChildProcessSnapshot::default(),
-        docker: None,
     }
 }
 
@@ -574,7 +573,6 @@ fn kill_target_names_every_visible_port_once() {
             }],
             truncated: false,
         },
-        docker: None,
     };
 
     let target =

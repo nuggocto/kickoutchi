@@ -237,7 +237,7 @@ fn every_probe_outcome_is_total_across_snapshot_completeness() {
                 "outcome {outcome:?}, completeness {completeness:?}"
             );
             assert_eq!(result.certainty, expected.certainty());
-            assert!(!result.evidence.is_empty());
+            assert_ne!(result.evidence, []);
         }
     }
 }
@@ -759,5 +759,30 @@ fn unrelated_endpoint_gaps_are_excluded() {
         None,
     );
 
-    assert!(result.evidence_gaps.is_empty());
+    assert_eq!(result.evidence_gaps, []);
+}
+
+#[test]
+fn dual_stack_blockers_name_ipv4_owners_unless_ipv6_only() {
+    let ipv4 = endpoint(Protocol::Tcp, IpAddr::V4(Ipv4Addr::LOCALHOST));
+    let wildcard = endpoint(Protocol::Tcp, IpAddr::V6(Ipv6Addr::UNSPECIFIED));
+    let identity = ProcessIdentity {
+        pid: 42,
+        start_marker: ProcessStartMarker::linux(7).expect("marker is valid"),
+    };
+    let snapshot = snapshot(vec![socket(
+        ipv4,
+        SocketState::Listen,
+        vec![OwnerObservation::Verified(identity)],
+        OwnerCompleteness::Complete,
+    )]);
+
+    assert_eq!(
+        dual_stack_blockers(&wildcard, Ipv6Mode::SystemDefault, &snapshot),
+        ["PID 42 on 127.0.0.1:3000"]
+    );
+    assert_eq!(
+        dual_stack_blockers(&wildcard, Ipv6Mode::V6Only, &snapshot),
+        [] as [String; 0]
+    );
 }

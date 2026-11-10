@@ -199,27 +199,9 @@ fn windows_cleanup_issue_text(issue: &crate::tree::windows::WindowsTreeCleanupIs
     use crate::tree::windows::WindowsTreeCleanupIssue;
 
     match issue {
-        WindowsTreeCleanupIssue::WithheldJobThawFailed(error) => format!(
-            "thawing the withheld Windows Job Object failed: {}",
-            sanitize(error)
-        ),
-        WindowsTreeCleanupIssue::FailedTerminationThawFailed(error) => format!(
-            "thawing the Windows Job Object after TerminateJobObject failed: {}",
-            sanitize(error)
-        ),
-        WindowsTreeCleanupIssue::PostTerminationSurvivorsThawed { pids, wait_errors } => format!(
-            "TerminateJobObject returned success but PID(s) {} were not confirmed exited; the job was thawed{}",
+        WindowsTreeCleanupIssue::PostTerminationSurvivors { pids, wait_errors } => format!(
+            "TerminateJobObject returned success but PID(s) {} were not confirmed exited{}",
             tree::format_pid_list(pids),
-            windows_wait_error_suffix(wait_errors),
-        ),
-        WindowsTreeCleanupIssue::PostTerminationSurvivorThawFailed {
-            pids,
-            wait_errors,
-            error,
-        } => format!(
-            "TerminateJobObject returned success but PID(s) {} were not confirmed exited, and thawing the job failed: {}{}",
-            tree::format_pid_list(pids),
-            sanitize(error),
             windows_wait_error_suffix(wait_errors),
         ),
     }
@@ -331,7 +313,6 @@ where
             map_windows_tree_refusal(root, refusal, collect_ports)
         }
         WindowsTreeKillOutcome::CommitFailed { .. }
-        | WindowsTreeKillOutcome::FreezeCapabilityUnavailable { .. }
         | WindowsTreeKillOutcome::JobTerminateFailed { .. } => {
             let mut stderr = io::stderr().lock();
             map_windows_tree_system_failure(root, outcome, collect_ports, &mut stderr)
@@ -406,14 +387,6 @@ pub(super) fn map_windows_tree_system_failure(
             let _ = writeln!(
                 stderr,
                 "error: assigning root PID {pid} to the Windows Job Object failed before commit: {}; no termination was sent",
-                sanitize(error),
-            );
-            ExitReason::Failure
-        }
-        WindowsTreeKillOutcome::FreezeCapabilityUnavailable { error } => {
-            let _ = writeln!(
-                stderr,
-                "error: Windows Job Object freeze/thaw capability is unavailable: {}; no containment was committed and no termination was sent",
                 sanitize(error),
             );
             ExitReason::Failure

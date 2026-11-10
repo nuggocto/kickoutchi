@@ -1,6 +1,6 @@
 [package]
 name = "kickoutchi"
-version = "1.5.2"
+version = "1.6.0"
 edition = "2024"
 rust-version = "1.95.0"
 description = "A clean TUI and CLI port janitor: see which process owns each open local port and kick it out safely"
@@ -41,15 +41,8 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 toml = "1.1.2"
 
-# Error handling and diagnostics. Typed errors keep module boundaries explicit;
-# tracing logs diagnostics to stderr only, never into TUI output.
+# Typed errors keep module boundaries explicit.
 thiserror = "2.0.18"
-tracing = "0.1.44"
-tracing-subscriber = "0.3.23"
-
-# Platform config-directory resolution (XDG on Linux), for config-file loading
-# in the shared model/config/CLI foundation.
-dirs = "6.0.0"
 
 # Terminal column widths for table padding and bounded endpoint labels. Byte
 # length misaligns accented and CJK text. Ratatui already depends on this crate.
@@ -64,13 +57,6 @@ socket2 = "=0.6.5"
 # Security-sensitive workflow key discovery uses a full YAML parser so quoted,
 # sequence-shorthand, and flow-mapping keys cannot bypass the contract tests.
 serde_yaml_ng = { version = "=0.10.0", default-features = false }
-
-# Release-only archive verification. These stay out of the shipped binaries and
-# replace the former Python validator with bounded native Rust parsers.
-sha2 = { version = "=0.10.9", default-features = false }
-tar = { version = "=0.4.46", default-features = false }
-xz4rust = { version = "=0.2.2", default-features = false, features = ["bcj", "crc64", "delta", "no_unsafe", "sha256", "std"] }
-zip = { version = "=9.0.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(unix)'.dependencies]
 # Unix termination uses the OS signal API through the process module.
@@ -95,9 +81,17 @@ allow_attributes_without_reason = "warn"
 # it keeps ordinary builds strict without exposing a production Cargo feature.
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 
+# Size over peak speed: collection is I/O-bound, and on Linux `kick list`
+# measured the same (about 10 ms) at opt-level 3 and "s". Together these
+# settings cut the stripped binary from 3.6 MB to 2.4 MB. `cargo install` and
+# the Nix package use this profile directly.
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = "s"
+
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
-lto = "thin"
 panic = "unwind"
 strip = "symbols"

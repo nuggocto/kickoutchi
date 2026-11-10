@@ -18,7 +18,6 @@ allow = [
   "Apache-2.0",
   "Apache-2.0 WITH LLVM-exception",
   "MIT",
-  "MPL-2.0",
   # Required by fuzz/libfuzzer-sys; the main workspace check permits this one
   # allowance to be unencountered, while the fuzz workspace must encounter it.
   "NCSA",

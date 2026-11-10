@@ -466,7 +466,7 @@ fn process_name_path_and_command_boundaries_use_actual_limits() {
             process.command_line.as_ref().map(|value| value.len()),
             Some(command_bytes)
         );
-        assert!(gaps.is_empty());
+        assert_eq!(gaps, []);
     }
 
     // Each over-limit case pins exactly which field the budget must drop,
@@ -896,8 +896,8 @@ fn complete_owner_scan_can_return_an_empty_owner_set() {
         snapshot.sockets[0].owner_completeness,
         OwnerCompleteness::Complete
     );
-    assert!(snapshot.sockets[0].owners.is_empty());
-    assert!(snapshot.evidence_gaps.is_empty());
+    assert_eq!(snapshot.sockets[0].owners, []);
+    assert_eq!(snapshot.evidence_gaps, []);
 }
 
 #[test]
@@ -1281,7 +1281,7 @@ fn orchestrator_treats_one_pass_only_pids_as_races() {
         collect_consistent_with_limits(&mut source, scope(), MetadataProfile::Display, limits(8))
             .expect("bounded raced snapshot");
 
-    assert!(snapshot.sockets[0].owners.is_empty());
+    assert_eq!(snapshot.sockets[0].owners, []);
     assert_eq!(
         snapshot.sockets[0].owner_completeness,
         OwnerCompleteness::Raced
@@ -1550,7 +1550,7 @@ fn injectable_limits_cover_zero_max_and_max_plus_one() {
     let snapshot =
         collect_consistent_with_limits(&mut empty, scope(), MetadataProfile::Display, limits(2))
             .expect("zero rows are valid");
-    assert!(snapshot.sockets.is_empty());
+    assert_eq!(snapshot.sockets, []);
 
     let rows = vec![socket(80), socket(81)];
     let mut maximum = FakeSource::new(stable_steps(rows, &[&[], &[]]));
@@ -1583,10 +1583,9 @@ fn legacy_projection_preserves_owner_metadata_and_checks_projection_bounds() {
         limits(4),
     )
     .expect("empty snapshot is valid");
-    assert!(
-        project_legacy_with_limit(&empty, 0, None, None)
-            .expect("zero rows fit a zero limit")
-            .is_empty()
+    assert_eq!(
+        project_legacy_with_limit(&empty, 0, None, None).expect("zero rows fit a zero limit"),
+        []
     );
 
     let mut source = FakeSource::new(stable_steps(vec![socket(80)], &[&[1, 1]]));
@@ -1800,7 +1799,7 @@ fn omitted_metadata_truncation_gaps_are_counted() {
         collect_consistent_with_limits(&mut source, scope(), MetadataProfile::Display, small)
             .expect("metadata truncation retains the snapshot");
 
-    assert!(snapshot.evidence_gaps.is_empty());
+    assert_eq!(snapshot.evidence_gaps, []);
     assert_eq!(snapshot.omitted_evidence_gap_count, 1);
     assert_eq!(snapshot.completeness, SnapshotCompleteness::Partial);
 }

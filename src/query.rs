@@ -5,8 +5,8 @@
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::fmt::{self, Write as _};
-use std::hash::{Hash, Hasher};
+use std::fmt;
+use std::marker::PhantomData;
 use std::net::IpAddr;
 use std::num::{NonZeroU16, NonZeroU32};
 
@@ -60,6 +60,11 @@ pub(crate) enum QueryError {
     },
     #[error("filter field {field:?} is not supported by this command")]
     UnsupportedField { field: &'static str },
+    #[error("unknown filter field {field:?}; did you mean {suggestion:?}?")]
+    MisspelledField {
+        field: String,
+        suggestion: &'static str,
+    },
     #[error("scope_id filter cannot be combined with an IPv4 address or family")]
     ScopeRequiresIpv6,
     #[error("these filter capabilities require full socket-state entries")]
@@ -198,10 +203,8 @@ pub(crate) fn filter_preordered_view_indices_by<'a>(
         Vec::new()
     };
     let mut hidden_system_process_count = 0;
-    let mut metadata = MetadataMatchCache::new(
-        metadata_match_cache_limit(preordered_indices.len()),
-        filter_plan.metadata_needle_mode,
-    );
+    let mut metadata =
+        MetadataMatchCache::new(metadata_match_cache_limit(preordered_indices.len()));
     for &source_index in preordered_indices {
         let entry = view_at(source_index);
         if filter_plan.hide_system_processes && entry.is_system_process() {
@@ -279,47 +282,6 @@ impl PreparedFilterTerm {
     const fn is_cheap(&self) -> bool {
         self.cost() <= 1
     }
-
-    fn metadata_needle(&self) -> Option<&str> {
-        match &self.term {
-            FilterTerm::Plain(needle) | FilterTerm::Parent(needle) | FilterTerm::Label(needle) => {
-                Some(needle)
-            }
-            FilterTerm::Pid(_)
-            | FilterTerm::Port(_)
-            | FilterTerm::Protocol(_)
-            | FilterTerm::Scope(_)
-            | FilterTerm::Protected(_)
-            | FilterTerm::Address(_)
-            | FilterTerm::ScopeId(_)
-            | FilterTerm::Family(_)
-            | FilterTerm::State(_) => None,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum MetadataNeedleMode<'a> {
-    None,
-    Single(&'a str),
-    Multiple,
-}
-
-impl PreparedQuery {
-    fn metadata_needle_mode(&self) -> MetadataNeedleMode<'_> {
-        let mut needle = self.process_needle.as_deref();
-        for term_needle in self
-            .terms
-            .iter()
-            .filter_map(PreparedFilterTerm::metadata_needle)
-        {
-            if needle.is_some() {
-                return MetadataNeedleMode::Multiple;
-            }
-            needle = Some(term_needle);
-        }
-        needle.map_or(MetadataNeedleMode::None, MetadataNeedleMode::Single)
-    }
 }
 
 fn prepare_query(options: QueryOptions<'_>) -> Result<PreparedQuery, QueryError> {
@@ -393,7 +355,6 @@ struct QueryFilterPlan<'a> {
     process_needle: Option<&'a str>,
     cheap_terms: &'a [PreparedFilterTerm],
     metadata_terms: &'a [PreparedFilterTerm],
-    metadata_needle_mode: MetadataNeedleMode<'a>,
     hide_system_processes: bool,
 }
 
@@ -405,7 +366,6 @@ impl<'a> QueryFilterPlan<'a> {
             process_needle: prepared.process_needle.as_deref(),
             cheap_terms,
             metadata_terms,
-            metadata_needle_mode: prepared.metadata_needle_mode(),
             hide_system_processes: options.hide_system_processes,
         }
     }
@@ -463,10 +423,7 @@ fn collect_sorted_indices<'value, 'needle, K>(
         Vec::new()
     };
     let mut hidden_system_process_count = 0;
-    let mut metadata = MetadataMatchCache::new(
-        metadata_match_cache_limit(entry_count),
-        filter_plan.metadata_needle_mode,
-    );
+    let mut metadata = MetadataMatchCache::new(metadata_match_cache_limit(entry_count));
     for index in 0..entry_count {
         let entry = view_at(index);
         if filter_plan.hide_system_processes && entry.is_system_process() {
@@ -551,8 +508,66 @@ fn parse_token(token: &str, capabilities: QueryCapabilities) -> Result<FilterTer
         "family" => parse_family(value),
         "state" if capabilities.state => parse_state(value),
         "state" => Err(QueryError::UnsupportedField { field: "state" }),
-        _ => Ok(FilterTerm::Plain(normalized(token))),
+        _ => match misspelled_field(field, capabilities) {
+            Some(suggestion) => Err(QueryError::MisspelledField {
+                field: field.to_owned(),
+                suggestion,
+            }),
+            None => Ok(FilterTerm::Plain(normalized(token))),
+        },
     }
+}
+
+/// The structured field an unknown `field:` prefix most likely meant.
+///
+/// Text with a colon is a plain search unless it looks like a field name a
+/// couple of keystrokes away from a real one, so `localhost:3000`, `::1`, and
+/// `node:18` still search, while `prot:tcp` reports the typo.
+fn misspelled_field(field: &str, capabilities: QueryCapabilities) -> Option<&'static str> {
+    const FIELDS: [&str; 11] = [
+        "pid",
+        "port",
+        "proto",
+        "scope",
+        "protected",
+        "parent",
+        "label",
+        "address",
+        "scope_id",
+        "family",
+        "state",
+    ];
+    if field.len() < 3
+        || !field
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+    {
+        return None;
+    }
+    FIELDS
+        .into_iter()
+        .filter(|candidate| capabilities.state || *candidate != "state")
+        .map(|candidate| (edit_distance(field, candidate), candidate))
+        .filter(|(distance, _)| *distance <= 2)
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, candidate)| candidate)
+}
+
+/// Levenshtein distance between two short ASCII strings.
+fn edit_distance(left: &str, right: &str) -> usize {
+    let right = right.as_bytes();
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    for (row, left_byte) in left.bytes().enumerate() {
+        let mut current = vec![row + 1; right.len() + 1];
+        for (column, right_byte) in right.iter().enumerate() {
+            let substitution = previous[column] + usize::from(left_byte != *right_byte);
+            current[column + 1] = substitution
+                .min(previous[column + 1] + 1)
+                .min(current[column] + 1);
+        }
+        previous = current;
+    }
+    previous[right.len()]
 }
 
 fn parse_pid(value: &str) -> Result<FilterTerm, QueryError> {
@@ -777,31 +792,26 @@ fn plain_matches<'value, 'needle>(
 fn socket_text_matches(entry: &PortEntryView<'_>, needle_lower: &str) -> bool {
     debug_assert!(needle_lower.contains(':'));
 
-    let mut plain = StackText::new();
-    let _ = write!(plain, "{}:{}", entry.local_addr, entry.local_port);
-    if contains_ascii(plain.as_str(), needle_lower) {
+    let plain = format!("{}:{}", entry.local_addr, entry.local_port);
+    if contains_ascii(&plain, needle_lower) {
         return true;
     }
-    let mut bracketed = StackText::new();
-    let _ = write!(bracketed, "[{}]:{}", entry.local_addr, entry.local_port);
-    if contains_ascii(bracketed.as_str(), needle_lower) {
+    if contains_ascii(
+        &format!("[{}]:{}", entry.local_addr, entry.local_port),
+        needle_lower,
+    ) {
         return true;
     }
 
-    let IpAddr::V6(address) = entry.local_addr else {
+    let (IpAddr::V6(address), Some(Ipv6Scope::InterfaceIndex(index))) =
+        (entry.local_addr, entry.ipv6_scope)
+    else {
         return false;
     };
-    let mut scoped = StackText::new();
-    match entry.ipv6_scope {
-        Some(Ipv6Scope::InterfaceIndex(index)) => {
-            let _ = write!(scoped, "[{address}%{index}]:{}", entry.local_port);
-        }
-        Some(Ipv6Scope::Unavailable) | None => {
-            let _ = write!(scoped, "[{address}%unavailable]:{}", entry.local_port);
-        }
-        Some(Ipv6Scope::Unscoped) => return false,
-    }
-    contains_ascii(scoped.as_str(), needle_lower)
+    contains_ascii(
+        &format!("[{address}%{index}]:{}", entry.local_port),
+        needle_lower,
+    )
 }
 
 fn parent_matches<'value, 'needle>(
@@ -818,9 +828,7 @@ fn parent_matches<'value, 'needle>(
 }
 
 fn display_matches(value: impl fmt::Display, needle: &str) -> bool {
-    let mut text = StackText::new();
-    let _ = write!(text, "{value}");
-    contains_ascii(text.as_str(), needle)
+    contains_ascii(&value.to_string(), needle)
 }
 
 fn contains_ascii(haystack: &str, needle: &str) -> bool {
@@ -857,65 +865,28 @@ fn metadata_match_cache_limit(entry_count: usize) -> usize {
         .min(METADATA_MATCH_CACHE_MAX_ENTRIES)
 }
 
-#[derive(Clone, Copy)]
-struct NeedleKey<'a> {
-    value: &'a str,
-}
-
-impl<'a> From<&'a str> for NeedleKey<'a> {
-    fn from(needle: &'a str) -> Self {
-        debug_assert!(!needle.is_empty(), "validated query needles are nonempty");
-        Self { value: needle }
-    }
-}
-
-impl PartialEq for NeedleKey<'_> {
-    fn eq(&self, other: &Self) -> bool {
-        self.value.len() == other.value.len()
-            && std::ptr::eq(self.value.as_ptr(), other.value.as_ptr())
-    }
-}
-
-impl Eq for NeedleKey<'_> {}
-
-impl Hash for NeedleKey<'_> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.value.as_ptr().hash(state);
-        self.value.len().hash(state);
-    }
-}
-
+/// Substring results per (lowercased value, needle).
+///
+/// A process's command line can be a megabyte and shared by hundreds of
+/// socket rows, so each pair is scanned once. Needles are keyed by address:
+/// they stay borrowed for `'needle`, so no other needle can reuse an address
+/// while the cache exists.
 struct MetadataMatchCache<'value, 'needle> {
     normalization: NormalizationCache<'value>,
-    matches: MetadataMatchResults<'needle>,
+    matches: HashMap<(usize, usize, usize), bool>,
     matches_max: usize,
+    needles: PhantomData<&'needle str>,
     #[cfg(test)]
     scan_count: usize,
 }
 
-enum MetadataMatchResults<'needle> {
-    None,
-    Single {
-        needle: NeedleKey<'needle>,
-        matches: HashMap<usize, bool>,
-    },
-    Multiple(HashMap<(usize, NeedleKey<'needle>), bool>),
-}
-
 impl<'value, 'needle> MetadataMatchCache<'value, 'needle> {
-    fn new(matches_max: usize, needle_mode: MetadataNeedleMode<'needle>) -> Self {
-        let matches = match needle_mode {
-            MetadataNeedleMode::None => MetadataMatchResults::None,
-            MetadataNeedleMode::Single(needle) => MetadataMatchResults::Single {
-                needle: NeedleKey::from(needle),
-                matches: HashMap::new(),
-            },
-            MetadataNeedleMode::Multiple => MetadataMatchResults::Multiple(HashMap::new()),
-        };
+    fn new(matches_max: usize) -> Self {
         Self {
             normalization: NormalizationCache::default(),
-            matches,
+            matches: HashMap::new(),
             matches_max,
+            needles: PhantomData,
             #[cfg(test)]
             scan_count: 0,
         }
@@ -923,19 +894,8 @@ impl<'value, 'needle> MetadataMatchCache<'value, 'needle> {
 
     fn contains(&mut self, value: &'value str, needle: &'needle str) -> bool {
         let value_key = self.normalization.key(value);
-        // NeedleKey retains the immutable borrow for the cache lifetime. Pointer
-        // identity therefore avoids hashing up to 256 bytes on every lookup
-        // without allowing an allocator-reused address to alias another needle.
-        let needle_key = NeedleKey::from(needle);
-        let cached = match &self.matches {
-            MetadataMatchResults::Single {
-                needle: expected,
-                matches,
-            } if *expected == needle_key => matches.get(&value_key),
-            MetadataMatchResults::Multiple(matches) => matches.get(&(value_key, needle_key)),
-            MetadataMatchResults::None | MetadataMatchResults::Single { .. } => None,
-        };
-        if let Some(result) = cached {
+        let key = (value_key, needle.as_ptr() as usize, needle.len());
+        if let Some(result) = self.matches.get(&key) {
             return *result;
         }
         #[cfg(test)]
@@ -943,30 +903,10 @@ impl<'value, 'needle> MetadataMatchCache<'value, 'needle> {
             self.scan_count += 1;
         }
         let result = self.normalization.values[value_key].contains(needle);
-        match &mut self.matches {
-            MetadataMatchResults::Single {
-                needle: expected,
-                matches,
-            } if *expected == needle_key && matches.len() < self.matches_max => {
-                matches.insert(value_key, result);
-            }
-            MetadataMatchResults::Multiple(matches) if matches.len() < self.matches_max => {
-                matches.insert((value_key, needle_key), result);
-            }
-            MetadataMatchResults::None
-            | MetadataMatchResults::Single { .. }
-            | MetadataMatchResults::Multiple(_) => {}
+        if self.matches.len() < self.matches_max {
+            self.matches.insert(key, result);
         }
         result
-    }
-
-    #[cfg(test)]
-    fn matches_len(&self) -> usize {
-        match &self.matches {
-            MetadataMatchResults::None => 0,
-            MetadataMatchResults::Single { matches, .. } => matches.len(),
-            MetadataMatchResults::Multiple(matches) => matches.len(),
-        }
     }
 }
 
@@ -989,34 +929,6 @@ impl<'a> NormalizationCache<'a> {
 
     fn value(&self, key: usize) -> &str {
         &self.values[key]
-    }
-}
-
-struct StackText {
-    bytes: [u8; 128],
-    len: usize,
-}
-
-impl StackText {
-    const fn new() -> Self {
-        Self {
-            bytes: [0; 128],
-            len: 0,
-        }
-    }
-
-    fn as_str(&self) -> &str {
-        std::str::from_utf8(&self.bytes[..self.len]).expect("formatted scalars are UTF-8")
-    }
-}
-
-impl fmt::Write for StackText {
-    fn write_str(&mut self, value: &str) -> fmt::Result {
-        let end = self.len.checked_add(value.len()).ok_or(fmt::Error)?;
-        let destination = self.bytes.get_mut(self.len..end).ok_or(fmt::Error)?;
-        destination.copy_from_slice(value.as_bytes());
-        self.len = end;
-        Ok(())
     }
 }
 
@@ -1205,8 +1117,8 @@ mod tests {
         assert_eq!(matching("family:ipv4"), [3000]);
         assert_eq!(matching("family:ipv6 scope_id:7"), [5353]);
         assert_eq!(matching("[::1%7]:5353"), [5353]);
-        assert!(matching("[::1%8]:5353").is_empty());
-        assert!(matching("scope_id:8").is_empty());
+        assert_eq!(matching("[::1%8]:5353"), [] as [u16; 0]);
+        assert_eq!(matching("scope_id:8"), [] as [u16; 0]);
     }
 
     #[test]
@@ -1221,6 +1133,41 @@ mod tests {
     }
 
     #[test]
+    fn misspelled_fields_are_reported_but_colon_text_still_searches() {
+        let error = super::parse_filter_text("prot:tcp", QueryCapabilities::LIST)
+            .expect_err("a near-miss field name is a typo");
+        assert_eq!(
+            error,
+            QueryError::MisspelledField {
+                field: "prot".to_owned(),
+                suggestion: "proto",
+            }
+        );
+        assert!(matches!(
+            super::parse_filter_text("lable:web", QueryCapabilities::LIST),
+            Err(QueryError::MisspelledField {
+                suggestion: "label",
+                ..
+            })
+        ));
+        // `state` is only suggested where it is supported.
+        assert!(super::parse_filter_text("stat:listen", QueryCapabilities::LIST).is_ok());
+        assert!(super::parse_filter_text("stat:listen", QueryCapabilities::WATCH).is_err());
+        for plain in [
+            "localhost:3000",
+            "::1",
+            "node:18",
+            "127.0.0.1:5432",
+            "http://x",
+        ] {
+            assert!(
+                super::parse_filter_text(plain, QueryCapabilities::LIST).is_ok(),
+                "{plain} must remain a plain search"
+            );
+        }
+    }
+
+    #[test]
     fn endpoint_search_preserves_every_ipv6_scope_rendering() {
         let mut unavailable = entry(5353, "unavailable");
         unavailable.local_addr = "fe80::1".parse().expect("test address is valid");
@@ -1232,10 +1179,10 @@ mod tests {
         unscoped.ipv6_scope = Some(Ipv6Scope::Unscoped);
         let rows = [unavailable, missing, unscoped];
 
-        assert_eq!(matching_ports(&rows, "[fe80::1%unavailable]:5353"), [5353]);
-        assert_eq!(matching_ports(&rows, "[fe80::2%unavailable]:5354"), [5354]);
+        assert_eq!(matching_ports(&rows, "[fe80::1]:5353"), [5353]);
+        assert_eq!(matching_ports(&rows, "[fe80::2]:5354"), [5354]);
         assert_eq!(matching_ports(&rows, "[fe80::3]:5355"), [5355]);
-        assert!(matching_ports(&rows, "[fe80::3%unavailable]:5355").is_empty());
+        assert_eq!(matching_ports(&rows, "%unavailable"), [] as [u16; 0]);
     }
 
     #[test]
@@ -1269,7 +1216,7 @@ mod tests {
             [3000]
         );
         assert_eq!(matching_ports(&[mapped.clone()], "family:ipv4"), [3000]);
-        assert!(matching_ports(&[mapped], "family:ipv6").is_empty());
+        assert_eq!(matching_ports(&[mapped], "family:ipv6"), [] as [u16; 0]);
 
         let rows = [entry(3000, "node")];
         let views = rows.iter().map(PortEntryView::from).collect::<Vec<_>>();
@@ -1617,10 +1564,7 @@ mod tests {
         let options = query("worker proto:udp");
         let prepared = super::prepare_query(options).expect("query is valid");
         let plan = super::QueryFilterPlan::new(&options, &prepared);
-        let mut metadata = super::MetadataMatchCache::new(
-            super::metadata_match_cache_limit(1),
-            plan.metadata_needle_mode,
-        );
+        let mut metadata = super::MetadataMatchCache::new(super::metadata_match_cache_limit(1));
 
         assert!(!super::entry_matches(
             PortEntryView::from(&row),
@@ -1632,7 +1576,7 @@ mod tests {
 
     #[test]
     fn metadata_match_cache_isolates_and_reuses_multiple_needles() {
-        let mut metadata = super::MetadataMatchCache::new(2, super::MetadataNeedleMode::Multiple);
+        let mut metadata = super::MetadataMatchCache::new(2);
 
         for _ in 0..2 {
             assert!(metadata.contains("alpha", "alp"));
@@ -1640,31 +1584,19 @@ mod tests {
         }
 
         assert_eq!(metadata.scan_count, 2);
-        assert_eq!(metadata.matches_len(), 2);
-    }
-
-    #[test]
-    fn single_needle_reuses_cached_match() {
-        let mut metadata =
-            super::MetadataMatchCache::new(2, super::MetadataNeedleMode::Single("alp"));
-
-        assert!(metadata.contains("alpha", "alp"));
-        assert!(metadata.contains("alpha", "alp"));
-
-        assert_eq!(metadata.scan_count, 1);
-        assert_eq!(metadata.matches_len(), 1);
+        assert_eq!(metadata.matches.len(), 2);
     }
 
     #[test]
     fn metadata_match_cache_stops_growing_at_its_bound() {
-        let mut metadata = super::MetadataMatchCache::new(1, super::MetadataNeedleMode::Multiple);
+        let mut metadata = super::MetadataMatchCache::new(1);
 
         assert!(metadata.contains("alpha", "alp"));
         assert!(metadata.contains("alpha", "alp"));
         assert!(!metadata.contains("alpha", "beta"));
         assert!(!metadata.contains("alpha", "beta"));
 
-        assert_eq!(metadata.matches_len(), 1);
+        assert_eq!(metadata.matches.len(), 1);
         assert_eq!(metadata.scan_count, 3);
     }
 
@@ -1741,6 +1673,6 @@ mod tests {
 
         let result = query_view_indices(&views, options).expect("metadata filter syntax is valid");
 
-        assert!(result.indices.is_empty());
+        assert_eq!(result.indices, [] as [usize; 0]);
     }
 }

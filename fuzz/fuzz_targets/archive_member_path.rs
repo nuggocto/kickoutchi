@@ -1,7 +1,0 @@
-#![no_main]
-
-use libfuzzer_sys::fuzz_target;
-
-fuzz_target!(|bytes: &[u8]| {
-    kickoutchi::fuzzing::archive_member_path(bytes);
-});

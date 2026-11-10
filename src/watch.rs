@@ -872,12 +872,12 @@ mod tests {
         let mut current_socket = socket(3000, Some(owner));
         current_socket.socket_token =
             Some(PlatformSocketToken::LinuxInode(NonZeroU64::new(2).unwrap()));
-        assert!(
+        assert_eq!(
             events(
                 &snapshot(vec![previous_socket]),
                 &snapshot(vec![current_socket])
-            )
-            .is_empty()
+            ),
+            []
         );
     }
 
@@ -905,11 +905,11 @@ mod tests {
             .owners
             .push(OwnerObservation::Verified(second));
         let current = snapshot(vec![current_socket]);
-        assert!(events(&previous, &current).is_empty());
+        assert_eq!(events(&previous, &current), []);
 
         let previous = snapshot(vec![current.sockets[0].clone()]);
         let current = snapshot(vec![socket(3000, Some(first))]);
-        assert!(events(&previous, &current).is_empty());
+        assert_eq!(events(&previous, &current), []);
     }
 
     #[test]
@@ -921,7 +921,7 @@ mod tests {
         ])
         .unwrap();
         let current = snapshot(vec![socket(3000, Some(identity(8, 11)))]);
-        assert!(events(&previous, &current).is_empty());
+        assert_eq!(events(&previous, &current), []);
     }
 
     #[test]
@@ -950,7 +950,7 @@ mod tests {
 
         let mut replacement = snapshot(vec![socket(3_000, Some(identity(8, 11)))]);
         add_aggregate_gap(&mut replacement);
-        assert!(events(&previous, &replacement).is_empty());
+        assert_eq!(events(&previous, &replacement), []);
     }
 
     #[test]
@@ -993,14 +993,17 @@ mod tests {
         let current_socket = socket(3_000, Some(identity(8, 11)));
         let mut previous = snapshot(vec![previous_socket]);
         previous.completeness = SnapshotCompleteness::Partial;
-        assert!(events(&previous, &snapshot(vec![current_socket.clone()])).is_empty());
+        assert_eq!(
+            events(&previous, &snapshot(vec![current_socket.clone()])),
+            []
+        );
 
         let previous = snapshot(vec![
             socket(3_000, Some(identity(7, 10))),
             socket(3_000, Some(identity(7, 10))),
         ]);
         let current = snapshot(vec![current_socket.clone(), current_socket]);
-        assert!(events(&previous, &current).is_empty());
+        assert_eq!(events(&previous, &current), []);
     }
 
     #[test]

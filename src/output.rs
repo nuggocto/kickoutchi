@@ -268,7 +268,8 @@ mod tests {
         assert!(lines[1].contains("node"));
         assert!(lines[1].contains("18422"));
         // Withheld metadata renders as "-" and the row still appears.
-        assert!(lines[2].contains("::%unavailable"));
+        assert!(lines[2].contains("::"));
+        assert!(!lines[2].contains("unavailable"));
         assert!(lines[2].contains('-'));
     }
 

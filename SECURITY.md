@@ -35,17 +35,14 @@ lines. They can still expose endpoints, PIDs, stable process-start markers,
 process and parent names, executable paths where applicable, ownership,
 configured labels, namespace or scope identifiers, evidence, evidence gaps, and
 raw or explanatory OS errors. Labels can reveal project names, service roles,
-and local topology. Optional TUI details can also include bounded local Docker
-metadata; Why does not invoke Docker, and watch does not invoke it in its polling
-loop.
+and local topology.
 
 Terminal sanitization protects human output, and JSON escaping preserves JSON
 syntax. Structured host strings can still contain terminal-significant Unicode,
 so JSON is not safe for direct terminal display. Neither mechanism is redaction.
 Before sharing output, remove or replace command lines,
 PIDs and start markers, names, paths, parent relationships, addresses and ports,
-labels, scope identifiers, evidence and error messages, and Docker container,
-Compose, or publication metadata. Prefer the smallest excerpt needed to report
+labels, scope identifiers, and evidence and error messages. Prefer the smallest excerpt needed to report
 the issue, and preserve stable schema codes only when they are relevant.
 
 ## Observation And Probe Limits
@@ -74,14 +71,7 @@ The optional related-process hint shown after an empty human `list --port`
 result is best-effort evidence. Linux and macOS read at most 64 command lines;
 Windows uses the separately bounded process snapshot. A hint may omit a process,
 never creates an ownership claim, and never changes structured output.
-Optional Docker enrichment retains at most 256 KiB from either child stream and
-closes a stream at the first excess byte. A timed-out Docker child is handed to a
-cleanup worker, which attempts termination and retains ownership through confirmed
-reap. An indeterminate wait retains the child and capacity slot indefinitely
-without retrying. Cleanup workers are reserved before process spawn and capped at
-four, so a stuck kernel wait does not block the enrichment caller or permit
-unbounded child accumulation. Another synchronous OS operation can still exceed
-an application-controlled duration.
+A synchronous OS operation can still exceed an application-controlled duration.
 
 ## Process Authority
 
@@ -97,17 +87,15 @@ fail closed and require manual recovery.
 
 Kickoutchi does not require elevated privileges for ordinary use. Do not run it
 as root or Administrator merely to obtain more metadata unless you understand
-the expanded process visibility and termination authority. PATH-based Docker
-enrichment is disabled while elevated, but structured host data remains
-sensitive.
+the expanded process visibility and termination authority. Structured host data
+remains sensitive.
 
 ## Security Model
 
 The relevant attacker is a local unprivileged user or process able to influence
 configuration, CLI arguments, process metadata, socket churn, child-process
 output, or a downstream output consumer. Kernel and native APIs provide
-authority but are not trusted for stable sizes or timing. Docker output,
-downloaded build tools, GitHub Actions, package registries, release hosting,
+authority but are not trusted for stable sizes or timing. Downloaded build tools, GitHub Actions, package registries, release hosting,
 installer and updater execution, the Homebrew tap, the Scoop bucket, Git and Nix
 source installs, and AUR maintainers cross distinct trust boundaries.
 
@@ -117,20 +105,19 @@ use, terminal and structured-output integrity, process-metadata privacy, and
 reproducible dependency and release inputs. Config and native input are bounded
 before retention; terminal sinks sanitize hostile text; structured output uses
 dedicated serializers; destructive actions revalidate fresh identity and
-protection evidence; retries and retained event state have fixed limits; watch
-and Why never invoke Docker.
+protection evidence; retries and retained event state have fixed limits;
+Kickoutchi never runs external tools to collect socket evidence.
 
 Release workflows pin actions by full commit SHA and install the exact
-`cargo-dist 0.32.0` crate with Cargo's locked dependency resolution. A test-only
-Rust target parses generated native archives with explicit member, compressed,
-expanded, binary, output, and execution-time bounds. It rejects unsafe paths,
-links, special files, encryption, unexpected layouts, mismatched checksums,
-wrong executable permissions, wrong versions, and missing binary entry points,
-then runs the real CLI journeys against the extracted binaries. The same target
+`cargo-dist 0.34.0` crate with Cargo's locked dependency resolution. A test-only
+Rust target verifies each native archive's checksum, extracts it with the
+runner's own `tar`, and rejects unexpected layouts, links, special files, wrong
+executable permissions, wrong versions, and missing binary entry points, then
+runs the real CLI journeys against the extracted binaries. The same target
 executes every native updater and installs same-run artifacts through generated
 shell and PowerShell installers on native Linux, macOS, and Windows runners before
 publication. Linux updater artifacts are rebuilt from the locked
-`axoupdater-cli 0.10.0` crate in the same Debian 11 containers as the application
+`axoupdater-cli 0.10.3` crate in the same Debian 11 containers as the application
 archives, then rejected if either binary requires symbols above glibc 2.31.
 
 Release planning has read-only repository permission; checkout never persists
@@ -202,8 +189,9 @@ package-manager publisher boundary.
 Read-only inspect reports join socket owners, process-table rows, and optional
 command lines only when PID and process start identity agree. A port owner that
 changes between network and process collection is refused rather than attached
-to the replacement process. Human endpoint output retains IPv6 interface scope;
-`%unavailable` means the collector could not establish an interface index.
+to the replacement process. Human endpoint output shows a known IPv6 interface
+index as `%index`; addresses whose index the collector cannot report have no
+suffix.
 
 The canonical contracts and privacy distinctions are documented in the
 [structured output reference](docs/structured-output.md). Configuration labels

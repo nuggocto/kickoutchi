@@ -217,7 +217,6 @@ pub(crate) struct App {
     sort_mode: SortMode,
     hide_system_processes: bool,
     confirm_force_kill: bool,
-    docker_enrichment: bool,
     protected_processes: Vec<String>,
     labels: crate::labels::LabelRegistry,
     network_snapshot: Option<crate::observation::NetworkSnapshot>,
@@ -288,7 +287,6 @@ impl App {
             sort_mode: config.default_sort,
             hide_system_processes: config.hide_system_processes,
             confirm_force_kill: config.confirm_force_kill,
-            docker_enrichment: config.docker_enrichment,
             protected_processes: config.protected_processes.clone(),
             labels: config.labels.clone(),
             network_snapshot: None,
@@ -1625,7 +1623,7 @@ impl App {
                 return;
             }
 
-            // One worker owns the process/Docker scan until its channel drains.
+            // One worker owns the process context read until its channel drains.
             // A single boolean is the bounded latest-request queue: the current
             // selection is read only when the worker finishes, so repeated row
             // changes cannot accumulate entries or background threads.
@@ -1642,32 +1640,11 @@ impl App {
             self.context_requested = false;
             return;
         };
-        let entry = PortEntry {
-            protocol: view.protocol,
-            local_addr: view.local_addr,
-            local_port: view.local_port,
-            state: view.state,
-            pid: view.pid,
-            process_name: view.process_name.map(Into::into),
-            executable_path: view.executable_path.map(Into::into),
-            command_line: view.command_line.map(Into::into),
-            parent_pid: view.parent_pid,
-            parent_process_name: view.parent_process_name.map(Into::into),
-            protected: view.protected,
-            platform: view.platform,
-            permission: view.permission,
-            process_identity: view.process_identity,
-            ipv6_scope: view.ipv6_scope,
-        };
-        let key = RowKey::from(&entry);
-        let docker_enrichment = self.docker_enrichment;
+        let key = RowKey::from(view);
+        let identity = view.process_identity;
         match crate::ui::spawn_worker(
             thread::Builder::new().name("kickoutchi-details".to_owned()),
-            move || {
-                // The worker outlives the snapshot the view borrowed, so the row
-                // is owned across the thread boundary and re-borrowed here.
-                collect_selected_process_context(PortEntryView::from(&entry), docker_enrichment)
-            },
+            move || collect_selected_process_context(identity),
         ) {
             Ok(worker) => {
                 self.context_requested = false;

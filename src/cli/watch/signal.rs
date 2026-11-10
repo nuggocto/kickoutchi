@@ -86,7 +86,7 @@ impl Drop for WatchSignalGuard {
         {
             let error = io::Error::last_os_error();
             self.reservation.keep_reserved();
-            tracing::warn!(%error, "failed to restore watch signal handler");
+            warn_stderr!("failed to restore watch signal handler: {error}");
         }
     }
 }
@@ -132,7 +132,7 @@ impl Drop for WatchSignalGuard {
         if unsafe { SetConsoleCtrlHandler(Some(handle_console_control), 0) } == 0 {
             let error = io::Error::last_os_error();
             self.reservation.keep_reserved();
-            tracing::warn!(%error, "failed to unregister watch signal handler");
+            warn_stderr!("failed to unregister watch signal handler: {error}");
         }
     }
 }

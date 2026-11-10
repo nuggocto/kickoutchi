@@ -103,7 +103,22 @@ fn why_reports_occupied_udp_in_human_output() {
     let udp = UdpSocket::bind(("127.0.0.1", 0)).expect("UDP fixture must bind");
     let udp_port = udp.local_addr().expect("UDP address is known").port();
     let udp_port_text = udp_port.to_string();
-    let occupied = why(&[udp_port_text.as_str(), "--udp", "--address", "127.0.0.1"]);
+    let summary = why(&[udp_port_text.as_str(), "--udp", "--address", "127.0.0.1"]);
+    assert_eq!(summary.status.code(), Some(3), "{}", stderr(&summary));
+    let summary_stdout = stdout(&summary);
+    assert!(
+        summary_stdout.starts_with(&format!("UDP 127.0.0.1:{udp_port}  ")),
+        "{summary_stdout}"
+    );
+    assert_eq!(summary_stdout.lines().count(), 1, "{summary_stdout}");
+
+    let occupied = why(&[
+        udp_port_text.as_str(),
+        "--udp",
+        "--address",
+        "127.0.0.1",
+        "--verbose",
+    ]);
     assert_eq!(occupied.status.code(), Some(3), "{}", stderr(&occupied));
     assert_eq!(stderr(&occupied), "");
     let occupied_stdout = stdout(&occupied);
@@ -133,7 +148,7 @@ fn why_real_binary_preserves_occupied_exit_when_stdout_has_no_reader() {
         "--json",
     ]);
     assert_eq!(occupied.status.code(), Some(3));
-    assert!(occupied.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&occupied.stderr), "");
 }
 
 #[test]
@@ -227,7 +242,9 @@ fn why_human_and_json_agree_for_unavailable_and_unsupported_probes() {
             "--address",
             "127.0.0.1",
         ];
-        let human = why_with_bind_faults(&base, &library, mode);
+        let mut human_args = base.to_vec();
+        human_args.push("--verbose");
+        let human = why_with_bind_faults(&human_args, &library, mode);
         let mut json_args = base.to_vec();
         json_args.push("--json");
         let json = why_with_bind_faults(&json_args, &library, mode);
@@ -294,7 +311,7 @@ fn why_applies_exact_and_wildcard_labels_and_rejects_invalid_scope_before_output
         let output = why(&invalid_args);
         assert_eq!(output.status.code(), Some(2), "{invalid_args:?}");
         assert_eq!(stdout(&output), "");
-        assert!(!stderr(&output).is_empty());
+        assert_ne!(stderr(&output), "");
     }
 }
 

@@ -1,17 +1,12 @@
 //! Windows process-tree termination through Job Object containment.
 //!
 //! This is separate from the Unix freeze-first tree executor. Windows has no
-//! supported SIGSTOP-equivalent mechanism, so the safety boundary is
-//! different: verify process handles first, begin containment by assigning the
-//! root, converge on descendants, freeze, then re-prove final membership before
-//! explicitly terminating the job. Assignment starts side effects; it is not an
-//! atomic tree-termination commit.
-
-mod freeze_probe;
-
-pub(crate) use freeze_probe::{
-    requested as freeze_probe_requested, run_child as run_freeze_probe_child,
-};
+//! supported SIGSTOP equivalent, so the safety boundary is different: verify
+//! process handles first, begin containment by assigning the root, converge on
+//! descendants, re-prove final membership, then terminate the job. Children
+//! that members start after assignment join the job automatically, so
+//! `TerminateJobObject` covers them too. Assignment starts side effects; it is
+//! not an atomic tree-termination commit.
 
 use std::collections::{HashMap, HashSet};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -23,8 +18,7 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JOBOBJECT_BASIC_PROCESS_ID_LIST,
-    JobObjectBasicProcessIdList, JobObjectReserved1Information, QueryInformationJobObject,
-    SetInformationJobObject, TerminateJobObject,
+    JobObjectBasicProcessIdList, QueryInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::Threading::{
     OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_SYNCHRONIZE,
@@ -49,29 +43,7 @@ const WINDOWS_TREE_SWEEP_PASSES: usize = 8;
 const WINDOWS_TREE_TERMINATE_EXIT_CODE: u32 = 1;
 const WINDOWS_TREE_WAIT_MS: u32 = 5_000;
 const WINDOWS_TREE_PROBE_WAIT_MS: u32 = 0;
-const JOB_OBJECT_FREEZE_OPERATION: u32 = 1;
 const JOB_MEMBERSHIP_QUERY_ATTEMPTS: usize = 8;
-
-#[repr(C)]
-struct JobObjectWakeFilter {
-    high_edge_filter: u32,
-    low_edge_filter: u32,
-}
-
-/// Private Windows class-18 payload used by `JobObjectReserved1Information`.
-///
-/// This 16-byte layout is not a stable public SDK contract. Production checks
-/// observable freeze/thaw behavior on a disposable child before assigning the
-/// target, and every later transition failure remains fail-closed with a
-/// best-effort thaw.
-#[repr(C)]
-struct JobObjectFreezeInformation {
-    flags: u32,
-    freeze: u8,
-    swap: u8,
-    reserved: [u8; 2],
-    wake_filter: JobObjectWakeFilter,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WindowsTreeKillReport {
@@ -117,18 +89,14 @@ impl WindowsTreeTerminationState {
     }
 }
 
+/// Something left over after `TerminateJobObject` returned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WindowsTreeCleanupIssue {
-    WithheldJobThawFailed(String),
-    FailedTerminationThawFailed(String),
-    PostTerminationSurvivorsThawed {
+    /// Job termination succeeded, but these members were not confirmed exited
+    /// within the wait budget.
+    PostTerminationSurvivors {
         pids: Vec<u32>,
         wait_errors: Vec<(u32, String)>,
-    },
-    PostTerminationSurvivorThawFailed {
-        pids: Vec<u32>,
-        wait_errors: Vec<(u32, String)>,
-        error: String,
     },
 }
 
@@ -144,9 +112,6 @@ pub(crate) enum WindowsTreeKillOutcome {
     Refused(TreeRefusal),
     CommitFailed {
         pid: u32,
-        error: String,
-    },
-    FreezeCapabilityUnavailable {
         error: String,
     },
     JobTerminateFailed {
@@ -169,7 +134,6 @@ impl WindowsTreeKillOutcome {
             Self::Refused(TreeRefusal::OwnershipUnavailable { .. })
             | Self::Completed(_)
             | Self::CommitFailed { .. }
-            | Self::FreezeCapabilityUnavailable { .. }
             | Self::JobTerminateFailed { .. } => None,
             Self::Refused(refusal) => Some(refusal),
         }
@@ -248,9 +212,6 @@ fn execute_tree_kill_with<Api: WindowsTreeApi>(
     ) {
         return outcome;
     }
-    if let Err(error) = api.preflight_job_freeze_thaw() {
-        return WindowsTreeKillOutcome::FreezeCapabilityUnavailable { error };
-    }
     let job = match api.create_job() {
         Ok(job) => job,
         Err(error) => return WindowsTreeKillOutcome::snapshot_failed(error),
@@ -297,47 +258,7 @@ fn execute_tree_kill_with<Api: WindowsTreeApi>(
         record_post_commit_issue(&mut report, outcome);
     }
 
-    let mut job_frozen = false;
-    if !report.termination_state.is_withheld() {
-        match api.set_job_frozen(&job, true) {
-            Ok(()) => {
-                job_frozen = true;
-                if let Err(outcome) = sweep_committed_tree(
-                    api,
-                    &job,
-                    root.pid,
-                    protected_names,
-                    authorization.prompt_skipped(),
-                    &mut members,
-                    &mut assigned,
-                    &mut report,
-                    &mut sweep_passes_remaining,
-                ) {
-                    record_post_commit_issue(&mut report, outcome);
-                }
-            }
-            Err(error) => {
-                report.termination_state.withhold();
-                record_post_commit_issue(
-                    &mut report,
-                    WindowsTreeKillOutcome::snapshot_failed(format!(
-                        "freezing committed Job Object failed: {error}"
-                    )),
-                );
-                // Class 18 is private: an error does not prove the transition
-                // had no partial effect. Make one bounded best-effort thaw.
-                if let Err(thaw_error) = api.set_job_frozen(&job, false) {
-                    record_cleanup_issue(
-                        &mut report,
-                        WindowsTreeCleanupIssue::WithheldJobThawFailed(thaw_error),
-                    );
-                }
-            }
-        }
-    }
-
-    if job_frozen
-        && !report.termination_state.is_withheld()
+    if !report.termination_state.is_withheld()
         && let Err(outcome) = reconcile_final_containment(
             api,
             &job,
@@ -353,23 +274,11 @@ fn execute_tree_kill_with<Api: WindowsTreeApi>(
     }
 
     if report.termination_state.is_withheld() {
-        if job_frozen && let Err(error) = api.set_job_frozen(&job, false) {
-            record_cleanup_issue(
-                &mut report,
-                WindowsTreeCleanupIssue::WithheldJobThawFailed(error),
-            );
-        }
         finish_failed_job_report(&members, &assigned, &mut report);
         return WindowsTreeKillOutcome::Completed(Box::new(report));
     }
 
     if let Err(error) = api.terminate_job(&job) {
-        if job_frozen && let Err(thaw_error) = api.set_job_frozen(&job, false) {
-            record_cleanup_issue(
-                &mut report,
-                WindowsTreeCleanupIssue::FailedTerminationThawFailed(thaw_error),
-            );
-        }
         finish_failed_job_report(&members, &assigned, &mut report);
         return WindowsTreeKillOutcome::JobTerminateFailed {
             error,
@@ -377,7 +286,7 @@ fn execute_tree_kill_with<Api: WindowsTreeApi>(
         };
     }
 
-    finish_report(api, &job, &members, &mut report);
+    finish_report(api, &members, &mut report);
     WindowsTreeKillOutcome::Completed(Box::new(report))
 }
 
@@ -535,19 +444,19 @@ fn reconcile_final_containment<Api: WindowsTreeApi>(
         }
         if !exact_member_set.contains(&pid) {
             return Err(WindowsTreeKillOutcome::snapshot_failed(format!(
-                "live graph descendant PID {pid} was absent from exact frozen Job membership"
+                "live graph descendant PID {pid} was absent from exact Job membership"
             )));
         }
         match api.process_in_job(job, &process.handle) {
             Ok(true) => {}
             Ok(false) => {
                 return Err(WindowsTreeKillOutcome::snapshot_failed(format!(
-                    "exact frozen Job membership disagreed with the handle query for PID {pid}"
+                    "exact Job membership disagreed with the handle query for PID {pid}"
                 )));
             }
             Err(error) => {
                 return Err(WindowsTreeKillOutcome::snapshot_failed(format!(
-                    "reading frozen Job membership for PID {pid} failed: {}",
+                    "reading Job membership for PID {pid} failed: {}",
                     windows_api_error_text(&error)
                 )));
             }
@@ -577,7 +486,7 @@ fn reconcile_final_containment<Api: WindowsTreeApi>(
             assigned.remove(&pid);
         } else {
             return Err(WindowsTreeKillOutcome::snapshot_failed(format!(
-                "previously contained live PID {pid} was absent from exact frozen Job membership"
+                "previously contained live PID {pid} was absent from exact Job membership"
             )));
         }
     }
@@ -585,7 +494,7 @@ fn reconcile_final_containment<Api: WindowsTreeApi>(
     let stable_members = api.job_process_ids(job).map_err(job_membership_outcome)?;
     if stable_members != exact_members {
         return Err(WindowsTreeKillOutcome::snapshot_failed(
-            "frozen Job Object membership changed during final reconciliation".to_owned(),
+            "Job Object membership changed during final reconciliation".to_owned(),
         ));
     }
 
@@ -1304,7 +1213,6 @@ fn assign_or_withhold<Api: WindowsTreeApi>(
 
 fn finish_report<Api: WindowsTreeApi>(
     api: &mut Api,
-    job: &Api::JobHandle,
     members: &HashMap<u32, PinnedProcess<Api::ProcessHandle>>,
     report: &mut WindowsTreeKillReport,
 ) {
@@ -1339,15 +1247,10 @@ fn finish_report<Api: WindowsTreeApi>(
     }
     if !report.not_terminated.is_empty() {
         let pids = report.not_terminated.clone();
-        let issue = match api.set_job_frozen(job, false) {
-            Ok(()) => WindowsTreeCleanupIssue::PostTerminationSurvivorsThawed { pids, wait_errors },
-            Err(error) => WindowsTreeCleanupIssue::PostTerminationSurvivorThawFailed {
-                pids,
-                wait_errors,
-                error,
-            },
-        };
-        record_cleanup_issue(report, issue);
+        record_cleanup_issue(
+            report,
+            WindowsTreeCleanupIssue::PostTerminationSurvivors { pids, wait_errors },
+        );
     }
     normalize_report_pids(report);
     report.total = observed_process_count(members, report);
@@ -1502,8 +1405,6 @@ trait WindowsTreeApi {
         handle: &Self::ProcessHandle,
     ) -> Result<Option<String>, WindowsApiError>;
 
-    fn preflight_job_freeze_thaw(&mut self) -> Result<(), String>;
-
     fn create_job(&mut self) -> Result<Self::JobHandle, String>;
 
     fn process_in_job(
@@ -1517,8 +1418,6 @@ trait WindowsTreeApi {
         job: &Self::JobHandle,
         process: &Self::ProcessHandle,
     ) -> Result<(), WindowsApiError>;
-
-    fn set_job_frozen(&mut self, job: &Self::JobHandle, frozen: bool) -> Result<(), String>;
 
     fn job_process_ids(&mut self, job: &Self::JobHandle) -> Result<Vec<u32>, JobMembershipError>;
 
@@ -1596,39 +1495,6 @@ impl WindowsTreeApi for RealWindowsTreeApi {
         process_name_from_handle(process)
     }
 
-    fn preflight_job_freeze_thaw(&mut self) -> Result<(), String> {
-        let job = self.create_job()?;
-        let mut probe = freeze_probe::FreezeProbe::spawn()?;
-        probe.wait_until_ready()?;
-        let process = self
-            .open_process(probe.pid())
-            .map_err(freeze_probe_process_error)?;
-        self.assign_process(&job, &process)
-            .map_err(freeze_probe_process_error)?;
-
-        // Prove the helper and its pipes work after job assignment, then prove
-        // class 18 changes actual scheduling behavior rather than merely
-        // accepting the private payload.
-        probe.request_acknowledgement()?;
-        probe.wait_for_acknowledgement()?;
-        self.set_job_frozen(&job, true)?;
-        let frozen_result = probe
-            .request_acknowledgement()
-            .and_then(|()| probe.verify_acknowledgement_is_suspended());
-        let thaw_result = self.set_job_frozen(&job, false);
-        if let Err(error) = frozen_result {
-            return match thaw_result {
-                Ok(()) => Err(error),
-                Err(thaw_error) => Err(format!(
-                    "{error}; best-effort probe thaw also failed: {thaw_error}"
-                )),
-            };
-        }
-        thaw_result?;
-        probe.wait_for_acknowledgement()?;
-        probe.finish()
-    }
-
     fn create_job(&mut self) -> Result<Self::JobHandle, String> {
         let handle = unsafe {
             // SAFETY: null security attributes and name create an unnamed job and
@@ -1686,40 +1552,6 @@ impl WindowsTreeApi for RealWindowsTreeApi {
         Ok(())
     }
 
-    fn set_job_frozen(&mut self, job: &Self::JobHandle, frozen: bool) -> Result<(), String> {
-        let information = JobObjectFreezeInformation {
-            flags: JOB_OBJECT_FREEZE_OPERATION,
-            freeze: u8::from(frozen),
-            swap: 0,
-            reserved: [0; 2],
-            wake_filter: JobObjectWakeFilter {
-                high_edge_filter: 0,
-                low_edge_filter: 0,
-            },
-        };
-        let size = u32::try_from(std::mem::size_of_val(&information))
-            .expect("Job Object freeze information size fits u32");
-        let result = unsafe {
-            // SAFETY: class 18 is a private Windows ABI. The two u32 wake-filter
-            // fields and flags/u8/u8/padding prefix reproduce its 16-byte
-            // JOBOBJECT_FREEZE_INFORMATION layout. The live job handle and stack
-            // value remain valid for the duration of this bounded call.
-            SetInformationJobObject(
-                job.handle.as_raw_handle(),
-                JobObjectReserved1Information,
-                (&raw const information).cast(),
-                size,
-            )
-        };
-        if result == 0 {
-            return Err(format!(
-                "SetInformationJobObject(JobObjectFreezeInformation) failed: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        Ok(())
-    }
-
     fn job_process_ids(&mut self, job: &Self::JobHandle) -> Result<Vec<u32>, JobMembershipError> {
         query_job_process_ids(job)
     }
@@ -1766,18 +1598,6 @@ impl WindowsTreeApi for RealWindowsTreeApi {
                 process.pid,
             )),
         }
-    }
-}
-
-fn freeze_probe_process_error(error: WindowsApiError) -> String {
-    match error {
-        WindowsApiError::NotFound => {
-            "Job Object freeze behavior probe exited before assignment".to_owned()
-        }
-        WindowsApiError::PermissionDenied => {
-            "permission denied while assigning the Job Object freeze behavior probe".to_owned()
-        }
-        WindowsApiError::Other(error) => error,
     }
 }
 

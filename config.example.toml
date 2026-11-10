@@ -5,9 +5,6 @@ refresh_interval_seconds = 3
 default_sort = "port"
 hide_system_processes = false
 confirm_force_kill = true
-# Set this to true to opt in to bounded, local-only Docker details in
-# qualifying TUI views.
-docker_enrichment = false
 
 # These names extend Kickoutchi's built-in protected-process list.
 protected_processes = ["redis-server"]

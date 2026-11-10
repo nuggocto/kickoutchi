@@ -30,7 +30,7 @@ fn json(output: &Output) -> serde_json::Value {
 
 fn assert_native_occupancy(output: &Output) {
     assert_eq!(output.status.code(), Some(3));
-    assert!(output.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
     let value = json(output);
     assert_eq!(value["results"][0]["probe"]["outcome"], "address_in_use");
     #[cfg(windows)]
@@ -78,7 +78,7 @@ fn why_keeps_ipv6_as_an_explicit_native_result() {
     let value = json(&output);
 
     assert_eq!(output.status.code(), Some(3));
-    assert!(output.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
     assert_eq!(value["results"].as_array().map(Vec::len), Some(1));
     assert_eq!(value["results"][0]["endpoint"]["address"], "::1");
     assert_eq!(value["results"][0]["probe"]["outcome"], "address_in_use");

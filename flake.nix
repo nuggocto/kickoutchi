@@ -31,6 +31,11 @@
             cargoBuildFlags = [ "--all-features" ];
             cargoTestFlags = [ "--all-features" "--lib" ];
 
+            # `kick` is the same program; a symlink avoids a second copy.
+            postInstall = ''
+              ln -sf kickoutchi "$out/bin/kick"
+            '';
+
             meta = with pkgs.lib; {
               description = "A clean TUI and CLI port janitor";
               homepage = "https://kickoutchi.com";

@@ -126,7 +126,7 @@ the package manager commands above when you choose to check for an update.
 
 An unqualified Git or Linux Nix GitHub source follows the repository's default branch,
 which can contain changes newer than the latest stable release. For a
-reproducible stable source install, select an explicit tag such as `v1.5.2` and
+reproducible stable source install, select an explicit tag such as `v1.6.0` and
 replace that tag deliberately when upgrading. Direct-archive installs must be
 replaced manually after verifying the new archive.
 
@@ -160,13 +160,13 @@ can resolve a live root from a fresh process-table snapshot. A plain kill of a
 PID that still exists but owns no port says so and names the `--tree` command,
 instead of reporting that nothing matched.
 
-On Linux, `kill --port` also needs proof that the visible owner is the only
-holder of the socket. When other processes on the host cannot be read, one of
-them could share it, so an unprivileged port kill is refused before any prompt.
-The error names the verified owner and the equivalent `kick kill --pid PID`
-command; run that, or rerun with higher privileges. A port whose owner is
-hidden entirely is refused with the reason, for example that the socket belongs
-to another user.
+On a normal desktop, many root and service processes cannot be read, so Kickoutchi
+cannot prove that nobody else shares a port's socket. When the port has one
+verified owner, `kill --port` prints a note and targets that owner by PID, with
+the same checks as `kick kill --pid PID`. If a hidden process does share the
+socket, the after-kill report says the port is still visible. A port whose owner
+is itself unreadable is refused with the reason, for example that the socket
+belongs to another user.
 
 Treat `--yes` as authorization for exactly the resolved target or scope. It
 skips the prompt, but it does not broaden target resolution or bypass safety
@@ -239,7 +239,15 @@ emitted.
 ## Explain Availability
 
 `kick why PORT` combines one native snapshot with immediate, sequential bind
-probes. It never terminates a process and does not invoke Docker.
+probes and prints one line per endpoint. It never terminates a process.
+
+```text
+TCP 127.0.0.1:3000  in use by PID 4242 (node)
+TCP [::1]:3000      free
+```
+
+Add `--verbose` for every probe result, evidence item, and collection gap, or
+`--json` for the `kickoutchi.why/1` document.
 
 ```sh
 kick why 3000
@@ -265,7 +273,6 @@ refresh_interval_seconds = 3
 default_sort = "port"
 hide_system_processes = false
 confirm_force_kill = true
-docker_enrichment = false
 protected_processes = ["redis-server"]
 
 [[ports]]
@@ -281,13 +288,7 @@ port = 8080
 label = "local web services"
 ```
 
-Docker enrichment is disabled by default. Set `docker_enrichment = true` to opt
-in to optional, bounded, local-only Docker details in qualifying TUI views;
-native socket collection remains authoritative.
-
-Pass global `--verbose`/`-v` to emit internal diagnostics to stderr. Command
-stdout, including JSON and NDJSON, is unchanged. Diagnostics can still contain
-local process or operating-system details, so review them before sharing.
+The `docker_enrichment` key from older versions is still accepted and ignored.
 
 Configured protected names extend the built-in safety list. Exact endpoint labels
 take precedence over wildcard labels. See [`docs/configuration.md`](docs/configuration.md)
@@ -296,6 +297,8 @@ for paths, precedence, validation, and the complete filter reference.
 List, TUI search, and watch support plain search plus structured `pid:`, `port:`,
 `proto:`, `scope:`, `protected:`, `parent:`, `label:`, `address:`, `scope_id:`, and
 `family:` terms. Watch also supports `state:`. Terms compose with AND semantics.
+A near-miss field name such as `prot:tcp` is an error that suggests `proto:`;
+other text with a colon, such as `localhost:3000`, is still a plain search.
 
 ## Structured Output
 
@@ -351,10 +354,9 @@ Published archives target:
   does not prove Internet reachability; firewall and network policy still apply.
 - `fe80::/10` addresses are IPv6 link-local and stay on their local network
   link.
-- An IPv6 suffix such as `%3` is an interface index. `%unavailable` means the
-  native collector could not report that index, which is expected for IPv6
-  observations on Linux and macOS. It is not part of the literal IP address or
-  an error.
+- An IPv6 suffix such as `%3` is an interface index. Linux and macOS cannot
+  report the index, so their IPv6 addresses show without a suffix; JSON output
+  records the scope as `unavailable`.
 - `-` in the PID or process columns means ownership metadata was unavailable;
   it does not mean the socket has no owner. `kick list` explains these rows on
   stderr: sockets created by other users whose processes you cannot read

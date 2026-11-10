@@ -833,7 +833,10 @@ fn parse_socket_table(
             Ok(Some(record)) => records.push(record),
             Ok(None) => {}
             Err(error) => {
-                tracing::warn!(line = line_index + 2, %error, "malformed /proc/net row");
+                warn_stderr!(
+                    "skipped malformed /proc/net row {}: {error}",
+                    line_index + 2
+                );
                 return Err(error);
             }
         }
@@ -1520,7 +1523,6 @@ fn collect_process_context_from(proc_root: &Path, pid: u32) -> ProcessContext {
         owner_uid,
         process_start_time_marker,
         children: collect_child_processes_from(proc_root, pid),
-        docker: None,
     }
 }
 

@@ -131,7 +131,7 @@ fn watch_emits_versioned_baseline_ndjson_and_exits_after_duration() {
     let owners = records[0]["data"]["current_owners"]["owners"]
         .as_array()
         .expect("current owner set is an array");
-    assert!(!owners.is_empty());
+    assert_ne!(owners.as_slice(), [] as [serde_json::Value; 0]);
     for owner in owners {
         match owner["kind"].as_str() {
             Some("verified") => {

@@ -1,7 +1,7 @@
 use super::{
-    JobMembershipError, RealWindowsTreeApi, WindowsApiError, WindowsTreeApi,
-    WindowsTreeCleanupIssue, WindowsTreeKillOutcome, WindowsTreePostCommitIssue,
-    WindowsTreeTerminationState, WindowsWaitResult, execute_tree_kill_with,
+    JobMembershipError, WindowsApiError, WindowsTreeApi, WindowsTreeCleanupIssue,
+    WindowsTreeKillOutcome, WindowsTreePostCommitIssue, WindowsTreeTerminationState,
+    WindowsWaitResult, execute_tree_kill_with,
 };
 use crate::model::{PermissionStatus, Platform};
 use crate::process::KillTarget;
@@ -14,10 +14,8 @@ const fn auth() -> ScopeAuthorization {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Event {
-    PreflightFreezeCapability,
     CreateJob,
     Assign(u32),
-    FreezeJob(bool),
     TerminateJob,
     Wait(u32, u32),
     SpawnedDescendant { parent_pid: u32, child_pid: u32 },
@@ -30,10 +28,6 @@ struct FakeProcessHandle {
 }
 
 #[derive(Default)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each bool scripts one independent fake-API failure mode"
-)]
 struct FakeApi {
     snapshots: Vec<Vec<TreeProcessInfo>>,
     snapshot_errors: HashMap<usize, String>,
@@ -46,10 +40,7 @@ struct FakeApi {
     events: Vec<Event>,
     deny_assign: HashSet<u32>,
     fail_root_assign: bool,
-    preflight_error: Option<String>,
     fail_terminate_job: bool,
-    fail_freeze_job: bool,
-    fail_thaw_job: bool,
     already_in_job: HashSet<FakeProcessHandle>,
     membership_results: VecDeque<Result<Vec<u32>, JobMembershipError>>,
     force_not_in_job: HashSet<u32>,
@@ -156,14 +147,6 @@ impl WindowsTreeApi for FakeApi {
         Ok(self.names.get(handle).cloned())
     }
 
-    fn preflight_job_freeze_thaw(&mut self) -> Result<(), String> {
-        self.events.push(Event::PreflightFreezeCapability);
-        match &self.preflight_error {
-            Some(error) => Err(error.clone()),
-            None => Ok(()),
-        }
-    }
-
     fn create_job(&mut self) -> Result<Self::JobHandle, String> {
         self.events.push(Event::CreateJob);
         Ok(())
@@ -221,14 +204,6 @@ impl WindowsTreeApi for FakeApi {
             return Err("job termination failed".to_owned());
         }
         self.job_terminated = true;
-        Ok(())
-    }
-
-    fn set_job_frozen(&mut self, _job: &Self::JobHandle, frozen: bool) -> Result<(), String> {
-        self.events.push(Event::FreezeJob(frozen));
-        if (frozen && self.fail_freeze_job) || (!frozen && self.fail_thaw_job) {
-            return Err("job freeze transition failed".to_owned());
-        }
         Ok(())
     }
 
@@ -313,44 +288,7 @@ fn root_assignment_is_the_commit_boundary() {
         outcome,
         WindowsTreeKillOutcome::CommitFailed { .. }
     ));
-    assert_eq!(
-        api.events,
-        vec![
-            Event::PreflightFreezeCapability,
-            Event::CreateJob,
-            Event::Assign(100)
-        ]
-    );
-}
-
-#[test]
-fn native_private_job_freeze_calls_are_accepted_on_an_empty_job() {
-    let mut api = RealWindowsTreeApi::new();
-    let job = api
-        .create_job()
-        .expect("this Windows host must create a disposable Job Object");
-
-    api.set_job_frozen(&job, true)
-        .expect("this Windows host must accept the private freeze call");
-    api.set_job_frozen(&job, false)
-        .expect("this Windows host must accept the private thaw call");
-}
-
-#[test]
-fn freeze_capability_preflight_failure_refuses_before_root_assignment() {
-    let mut api = FakeApi::new(vec![vec![info(100, None, 100), info(101, Some(100), 101)]]);
-    api.preflight_error = Some("class 18 is unavailable".to_owned());
-
-    let outcome = execute_tree_kill_with(&root(), &[], auth(), &mut api);
-
-    assert_eq!(
-        outcome,
-        WindowsTreeKillOutcome::FreezeCapabilityUnavailable {
-            error: "class 18 is unavailable".to_owned(),
-        }
-    );
-    assert_eq!(api.events, vec![Event::PreflightFreezeCapability]);
-    assert!(!api.job_terminated);
+    assert_eq!(api.events, vec![Event::CreateJob, Event::Assign(100)]);
 }
 
 #[test]
@@ -363,7 +301,7 @@ fn root_snapshot_identity_drift_refuses_before_job_creation() {
         outcome,
         WindowsTreeKillOutcome::Refused(TreeRefusal::TargetChanged { pid: 100 })
     );
-    assert!(api.events.is_empty());
+    assert_eq!(api.events, []);
 }
 
 #[test]
@@ -380,7 +318,7 @@ fn root_handle_identity_drift_refuses_before_job_creation() {
         outcome,
         WindowsTreeKillOutcome::Refused(TreeRefusal::TargetChanged { pid: 100 })
     );
-    assert!(api.events.is_empty());
+    assert_eq!(api.events, []);
 }
 
 #[test]
@@ -394,7 +332,7 @@ fn missing_fresh_name_refuses_with_zero_delivery_or_job_termination() {
         outcome,
         WindowsTreeKillOutcome::Refused(TreeRefusal::PartialMetadata { pid: 101 })
     );
-    assert!(api.events.is_empty());
+    assert_eq!(api.events, []);
     assert!(!api.job_terminated);
 }
 
@@ -409,7 +347,7 @@ fn denied_fresh_name_refuses_distinctly_with_zero_delivery_or_job_termination() 
         outcome,
         WindowsTreeKillOutcome::Refused(TreeRefusal::PermissionDenied { pid: 101 })
     );
-    assert!(api.events.is_empty());
+    assert_eq!(api.events, []);
     assert!(!api.job_terminated);
 }
 
@@ -428,7 +366,7 @@ fn oversized_fresh_name_refuses_with_zero_delivery_or_job_termination() {
         outcome,
         WindowsTreeKillOutcome::Refused(TreeRefusal::PartialMetadata { pid: 101 })
     );
-    assert!(api.events.is_empty());
+    assert_eq!(api.events, []);
     assert!(!api.job_terminated);
 }
 
@@ -456,7 +394,6 @@ fn live_assignment_failure_prevents_descendant_spawning_during_fallback() {
     );
     assert_eq!(report.not_terminated, vec![100, 101]);
     assert!(!api.events.contains(&Event::TerminateJob));
-    assert!(!api.events.contains(&Event::FreezeJob(true)));
     assert!(!api.events.contains(&Event::SpawnedDescendant {
         parent_pid: 101,
         child_pid: 102,
@@ -465,7 +402,7 @@ fn live_assignment_failure_prevents_descendant_spawning_during_fallback() {
 }
 
 #[test]
-fn frozen_final_window_refuses_late_protected_child() {
+fn final_reconciliation_refuses_late_protected_child() {
     let initial = vec![info(100, None, 100), info(101, Some(100), 101)];
     let late = vec![
         info(100, None, 100),
@@ -485,17 +422,6 @@ fn frozen_final_window_refuses_late_protected_child() {
     assert!(report.not_terminated.contains(&101));
     assert!(report.not_terminated.contains(&102));
     assert!(!api.events.contains(&Event::TerminateJob));
-    let freeze = api
-        .events
-        .iter()
-        .position(|event| *event == Event::FreezeJob(true))
-        .expect("job is frozen before the final window");
-    let thaw = api
-        .events
-        .iter()
-        .position(|event| *event == Event::FreezeJob(false))
-        .expect("withheld job is thawed");
-    assert!(freeze < thaw);
 }
 
 #[test]
@@ -527,70 +453,7 @@ fn yes_skip_withholds_all_termination_when_a_late_child_adds_a_warning() {
 }
 
 #[test]
-fn real_job_freeze_failure_withholds_job_termination() {
-    let mut api = FakeApi::new(vec![vec![info(100, None, 100), info(101, Some(100), 101)]]);
-    api.fail_freeze_job = true;
-    api.fail_thaw_job = true;
-
-    let outcome = execute_tree_kill_with(&root(), &[], auth(), &mut api);
-
-    let WindowsTreeKillOutcome::Completed(report) = outcome else {
-        panic!("post-commit freeze failure returns a report");
-    };
-    assert!(report.termination_state.is_withheld());
-    assert_eq!(report.not_terminated, vec![100, 101]);
-    assert!(!api.events.contains(&Event::TerminateJob));
-    assert!(matches!(
-        report.post_commit_issue,
-        Some(WindowsTreePostCommitIssue::SnapshotFailed(ref error))
-            if error.contains("freezing committed Job Object failed")
-    ));
-    assert_eq!(report.secondary_post_commit_issue, None);
-    assert!(matches!(
-        report.cleanup_issue,
-        Some(WindowsTreeCleanupIssue::WithheldJobThawFailed(ref error))
-            if error == "job freeze transition failed"
-    ));
-    assert_eq!(
-        api.events
-            .iter()
-            .filter(|event| **event == Event::FreezeJob(false))
-            .count(),
-        1,
-        "a failed private freeze transition must trigger exactly one best-effort thaw"
-    );
-}
-
-#[test]
-fn freeze_failure_after_primary_issue_is_retained_as_secondary() {
-    let first = vec![info(100, None, 100)];
-    let with_protected = vec![info(100, None, 100), info(101, Some(100), 101)];
-    let mut api = FakeApi::new(vec![first, with_protected]);
-    api.fail_freeze_job = true;
-
-    let outcome = execute_tree_kill_with(&root(), &["p101".to_owned()], auth(), &mut api);
-
-    let WindowsTreeKillOutcome::Completed(report) = outcome else {
-        panic!("post-commit issues return a report");
-    };
-    assert_eq!(
-        report.post_commit_issue,
-        Some(WindowsTreePostCommitIssue::ProtectedDescendant {
-            pid: 101,
-            name: Some("p101".to_owned()),
-        })
-    );
-    assert!(matches!(
-        report.secondary_post_commit_issue,
-        Some(WindowsTreePostCommitIssue::SnapshotFailed(ref error))
-            if error.contains("freezing committed Job Object failed")
-    ));
-    assert!(api.events.contains(&Event::FreezeJob(false)));
-    assert!(!api.events.contains(&Event::TerminateJob));
-}
-
-#[test]
-fn frozen_sweep_failure_after_primary_issue_is_retained_as_secondary() {
+fn reconciliation_failure_after_primary_issue_is_retained_as_secondary() {
     let first = vec![info(100, None, 100)];
     let with_protected = vec![info(100, None, 100), info(101, Some(100), 101)];
     let with_unknown = vec![info(100, None, 100), info(102, Some(100), 102)];
@@ -610,67 +473,7 @@ fn frozen_sweep_failure_after_primary_issue_is_retained_as_secondary() {
         report.secondary_post_commit_issue,
         Some(WindowsTreePostCommitIssue::PartialMetadata { pid: 102 })
     );
-    assert!(api.events.contains(&Event::FreezeJob(true)));
-    assert!(api.events.contains(&Event::FreezeJob(false)));
     assert!(!api.events.contains(&Event::TerminateJob));
-}
-
-#[test]
-fn withheld_thaw_failure_preserves_primary_issue_and_avoids_job_termination() {
-    let first = vec![info(100, None, 100)];
-    let late = vec![info(100, None, 100), info(101, Some(100), 101)];
-    let mut api = FakeApi::new(vec![first.clone(), first.clone(), first, late]);
-    api.contain(101, 101);
-    api.fail_thaw_job = true;
-
-    let outcome = execute_tree_kill_with(&root(), &["p101".to_owned()], auth(), &mut api);
-
-    let WindowsTreeKillOutcome::Completed(report) = outcome else {
-        panic!("withheld termination returns a report");
-    };
-    assert_eq!(
-        report.post_commit_issue,
-        Some(WindowsTreePostCommitIssue::ProtectedDescendant {
-            pid: 101,
-            name: Some("p101".to_owned()),
-        })
-    );
-    assert!(matches!(
-        report.cleanup_issue,
-        Some(WindowsTreeCleanupIssue::WithheldJobThawFailed(ref error))
-            if error == "job freeze transition failed"
-    ));
-    assert!(api.events.contains(&Event::FreezeJob(true)));
-    assert!(api.events.contains(&Event::FreezeJob(false)));
-    assert!(!api.events.contains(&Event::TerminateJob));
-}
-
-#[test]
-fn failed_job_termination_thaw_failure_is_reported_separately() {
-    let mut api = FakeApi::new(vec![vec![info(100, None, 100)]]);
-    api.fail_terminate_job = true;
-    api.fail_thaw_job = true;
-
-    let outcome = execute_tree_kill_with(&root(), &[], auth(), &mut api);
-
-    let WindowsTreeKillOutcome::JobTerminateFailed { error, report } = outcome else {
-        panic!("expected failed job termination");
-    };
-    assert_eq!(error, "job termination failed");
-    assert_eq!(report.post_commit_issue, None);
-    assert!(matches!(
-        report.cleanup_issue,
-        Some(WindowsTreeCleanupIssue::FailedTerminationThawFailed(ref thaw_error))
-            if thaw_error == "job freeze transition failed"
-    ));
-    assert_eq!(
-        api.events
-            .iter()
-            .filter(|event| **event == Event::TerminateJob)
-            .count(),
-        1
-    );
-    assert!(!api.job_terminated);
 }
 
 #[test]
@@ -694,7 +497,7 @@ fn failed_job_termination_preserves_assigned_and_already_exited_members() {
     };
     assert_eq!(error, "job termination failed");
     assert_eq!(report.total, 3);
-    assert!(report.job_terminated_pids.is_empty());
+    assert_eq!(report.job_terminated_pids, [] as [u32; 0]);
     assert_eq!(report.already_exited_pids, vec![102]);
     assert_eq!(report.not_terminated, vec![100, 101]);
     assert!(!report.termination_state.is_complete());
@@ -747,7 +550,7 @@ fn exited_member_after_assign_failure_is_not_reported_alive() {
         panic!("expected completed report");
     };
     assert_eq!(report.already_exited_pids, vec![101]);
-    assert!(report.not_terminated.is_empty());
+    assert_eq!(report.not_terminated, [] as [u32; 0]);
     assert!(report.termination_state.is_complete());
     assert!(api.events.contains(&Event::Wait(101, 0)));
 }
@@ -766,7 +569,7 @@ fn live_uncontained_member_is_not_retried_even_if_it_would_exit_later() {
     let WindowsTreeKillOutcome::Completed(report) = outcome else {
         panic!("expected completed report");
     };
-    assert!(report.already_exited_pids.is_empty());
+    assert_eq!(report.already_exited_pids, [] as [u32; 0]);
     assert_eq!(report.not_terminated, vec![100, 101]);
     assert_eq!(
         report.termination_state,
@@ -832,7 +635,7 @@ fn protected_late_child_already_in_job_is_not_reported_alive() {
     };
     assert!(!report.termination_state.is_complete());
     assert_eq!(report.not_terminated, vec![100, 101]);
-    assert!(report.job_terminated_pids.is_empty());
+    assert_eq!(report.job_terminated_pids, [] as [u32; 0]);
     assert!(report.termination_state.is_withheld());
     assert_eq!(
         report.post_commit_issue,
@@ -970,40 +773,6 @@ fn sweep_pass_exhaustion_withholds_job_termination() {
         1 + super::WINDOWS_TREE_SWEEP_PASSES,
         "the pre-commit snapshot plus exactly eight sweep snapshots are allowed"
     );
-    assert!(!api.events.contains(&Event::FreezeJob(true)));
-    assert!(!api.events.contains(&Event::TerminateJob));
-}
-
-#[test]
-fn pre_freeze_and_frozen_sweeps_share_exact_total_pass_budget() {
-    let root_only = vec![info(100, None, 100)];
-    let mut snapshots = vec![root_only.clone(), root_only.clone(), root_only];
-    let mut grown = snapshots[2].clone();
-    for offset in 0..(super::WINDOWS_TREE_SWEEP_PASSES - 2) {
-        let pid = 101 + u32::try_from(offset).expect("test offset fits u32");
-        grown.push(info(pid, Some(100), u64::from(pid)));
-        snapshots.push(grown.clone());
-    }
-    let mut api = FakeApi::new(snapshots);
-
-    let outcome = execute_tree_kill_with(&root(), &[], auth(), &mut api);
-
-    let WindowsTreeKillOutcome::Completed(report) = outcome else {
-        panic!("budget exhaustion returns a post-commit report");
-    };
-    assert_eq!(
-        report.post_commit_issue,
-        Some(WindowsTreePostCommitIssue::SweepPassLimit {
-            limit: super::WINDOWS_TREE_SWEEP_PASSES,
-        })
-    );
-    assert_eq!(
-        api.next_snapshot,
-        1 + super::WINDOWS_TREE_SWEEP_PASSES,
-        "the invocation must never start sweep snapshot nine"
-    );
-    assert!(api.events.contains(&Event::FreezeJob(true)));
-    assert!(api.events.contains(&Event::FreezeJob(false)));
     assert!(!api.events.contains(&Event::TerminateJob));
 }
 
@@ -1032,14 +801,7 @@ fn final_reconciliation_keeps_a_descendant_whose_intermediate_parent_exited() {
         info(102, Some(101), 102),
     ];
     let reparented = vec![info(100, None, 100), info(102, Some(1), 102)];
-    let mut api = FakeApi::new(vec![
-        initial.clone(),
-        initial.clone(),
-        initial.clone(),
-        initial.clone(),
-        initial,
-        reparented,
-    ]);
+    let mut api = FakeApi::new(vec![initial.clone(), initial.clone(), initial, reparented]);
     api.wait_results
         .insert(101, VecDeque::from([WindowsWaitResult::Exited]));
     api.membership_results = VecDeque::from([Ok(vec![100, 102]), Ok(vec![100, 102])]);
@@ -1059,8 +821,6 @@ fn exact_membership_finds_unseen_inherited_protected_child() {
     let root_only = vec![info(100, None, 100)];
     let final_snapshot = vec![info(100, None, 100), info(102, Some(101), 102)];
     let mut api = FakeApi::new(vec![
-        root_only.clone(),
-        root_only.clone(),
         root_only.clone(),
         root_only.clone(),
         root_only,
@@ -1093,8 +853,6 @@ fn final_graph_never_traverses_a_reused_root_pid() {
     let mut api = FakeApi::new(vec![
         original.clone(),
         original.clone(),
-        original.clone(),
-        original.clone(),
         original,
         replacement,
     ]);
@@ -1121,8 +879,6 @@ fn final_graph_never_traverses_a_reused_intermediate_pid() {
         info(102, Some(101), 102),
     ];
     let mut api = FakeApi::new(vec![
-        original.clone(),
-        original.clone(),
         original.clone(),
         original.clone(),
         original,
@@ -1157,7 +913,7 @@ fn exact_membership_mismatch_withholds_termination() {
     assert!(matches!(
         report.post_commit_issue,
         Some(WindowsTreePostCommitIssue::SnapshotFailed(ref error))
-            if error.contains("PID 101 was absent from exact frozen Job membership")
+            if error.contains("PID 101 was absent from exact Job membership")
     ));
     assert!(!api.events.contains(&Event::TerminateJob));
 }
@@ -1202,7 +958,7 @@ fn changing_exact_membership_during_validation_withholds_termination() {
 }
 
 #[test]
-fn survivor_after_successful_job_termination_is_thawed_and_reported() {
+fn survivor_after_successful_job_termination_is_reported() {
     let mut api = FakeApi::new(vec![vec![info(100, None, 100)]]);
     api.wait_results
         .insert(100, VecDeque::from([WindowsWaitResult::StillRunning]));
@@ -1214,37 +970,12 @@ fn survivor_after_successful_job_termination_is_thawed_and_reported() {
     };
     assert_eq!(
         report.cleanup_issue,
-        Some(WindowsTreeCleanupIssue::PostTerminationSurvivorsThawed {
+        Some(WindowsTreeCleanupIssue::PostTerminationSurvivors {
             pids: vec![100],
             wait_errors: Vec::new(),
         })
     );
     assert!(api.events.contains(&Event::TerminateJob));
-    assert!(api.events.contains(&Event::FreezeJob(false)));
-}
-
-#[test]
-fn survivor_thaw_failure_after_successful_job_termination_is_distinct() {
-    let mut api = FakeApi::new(vec![vec![info(100, None, 100)]]);
-    api.wait_results.insert(
-        100,
-        VecDeque::from([WindowsWaitResult::Failed("wait failed".to_owned())]),
-    );
-    api.fail_thaw_job = true;
-
-    let outcome = execute_tree_kill_with(&root(), &[], auth(), &mut api);
-
-    let WindowsTreeKillOutcome::Completed(report) = outcome else {
-        panic!("successful job termination returns a report");
-    };
-    assert_eq!(
-        report.cleanup_issue,
-        Some(WindowsTreeCleanupIssue::PostTerminationSurvivorThawFailed {
-            pids: vec![100],
-            wait_errors: vec![(100, "wait failed".to_owned())],
-            error: "job freeze transition failed".to_owned(),
-        })
-    );
 }
 
 #[test]
@@ -1275,7 +1006,7 @@ fn protected_root_change_after_commit_keeps_typed_confirmation_result() {
 }
 
 #[test]
-fn final_reconciliation_refuses_unproven_live_membership_and_thaws() {
+fn final_reconciliation_refuses_unproven_live_membership() {
     let snapshot = vec![info(100, None, 100), info(101, Some(100), 101)];
     let mut api = FakeApi::new(vec![snapshot]);
     api.force_not_in_job.insert(101);
@@ -1287,30 +1018,19 @@ fn final_reconciliation_refuses_unproven_live_membership_and_thaws() {
     };
     assert!(report.termination_state.is_withheld());
     assert!(!api.events.contains(&Event::TerminateJob));
-    let freeze = api
-        .events
-        .iter()
-        .position(|event| *event == Event::FreezeJob(true))
-        .expect("job was frozen");
-    let thaw = api
-        .events
-        .iter()
-        .position(|event| *event == Event::FreezeJob(false))
-        .expect("refusal thawed the job");
-    assert!(freeze < thaw);
 }
 
 #[test]
-fn final_reconciliation_snapshot_error_always_thaws_the_job() {
+fn final_reconciliation_snapshot_error_withholds_termination() {
     let snapshot = vec![info(100, None, 100)];
     let mut api = FakeApi::new(vec![snapshot]);
     api.snapshot_errors
-        .insert(5, "final reconciliation failed".to_owned());
+        .insert(3, "final reconciliation failed".to_owned());
 
     let outcome = execute_tree_kill_with(&root(), &[], auth(), &mut api);
 
     let WindowsTreeKillOutcome::Completed(report) = outcome else {
-        panic!("post-freeze error returns a report");
+        panic!("reconciliation error returns a report");
     };
     assert!(report.termination_state.is_withheld());
     assert!(matches!(
@@ -1318,8 +1038,6 @@ fn final_reconciliation_snapshot_error_always_thaws_the_job() {
         Some(WindowsTreePostCommitIssue::SnapshotFailed(ref error))
             if error == "final reconciliation failed"
     ));
-    assert!(api.events.contains(&Event::FreezeJob(true)));
-    assert!(api.events.contains(&Event::FreezeJob(false)));
     assert!(!api.events.contains(&Event::TerminateJob));
 }
 
@@ -1335,7 +1053,7 @@ fn partial_metadata_refuses_before_job_creation() {
         outcome,
         WindowsTreeKillOutcome::Refused(TreeRefusal::PartialMetadata { pid: 101 })
     );
-    assert!(api.events.is_empty());
+    assert_eq!(api.events, []);
 }
 
 #[test]
@@ -1351,5 +1069,5 @@ fn unverified_parent_edge_into_preview_refuses_before_job_creation() {
         outcome,
         WindowsTreeKillOutcome::Refused(TreeRefusal::PartialMetadata { pid: 101 })
     );
-    assert!(api.events.is_empty());
+    assert_eq!(api.events, []);
 }

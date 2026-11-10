@@ -191,12 +191,12 @@ fn destructive_authority_ignores_non_legacy_socket_states() {
 
     let rows = kill_ports_from_snapshot(&snapshot, None, Some(3000))
         .expect("non-legacy states cannot invalidate listener authority");
-    assert!(!rows.is_empty());
+    assert_ne!(rows, []);
     assert!(rows.iter().all(|row| row.state == SocketState::Listen));
-    assert!(
+    assert_eq!(
         kill_ports_from_snapshot(&snapshot, Some(29_999), None)
-            .expect("non-legacy states cannot become PID kill targets")
-            .is_empty()
+            .expect("non-legacy states cannot become PID kill targets"),
+        []
     );
     assert!(
         project_legacy(&snapshot)
@@ -344,7 +344,7 @@ fn destructive_projection_contains_only_rows_matching_the_target_mode() {
 
     let by_pid = kill_ports_from_snapshot(&snapshot, Some(18_422), None)
         .expect("verified PID remains the selected identity");
-    assert!(!by_pid.is_empty());
+    assert_ne!(by_pid, []);
     assert!(by_pid.iter().all(|row| row.pid == Some(18_422)));
 
     let by_port = kill_ports_from_snapshot(&snapshot, None, Some(3000))

@@ -313,7 +313,7 @@ fn labels_and_watch_run_through_the_native_binary() {
         "{}",
         String::from_utf8_lossy(&list.stderr)
     );
-    assert!(list.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&list.stderr), "");
     let rows: serde_json::Value =
         serde_json::from_slice(&list.stdout).expect("list stdout must be JSON");
     assert_eq!(rows.as_array().map(Vec::len), Some(1));
@@ -333,7 +333,7 @@ fn labels_and_watch_run_through_the_native_binary() {
         ],
     );
     assert_eq!(alias.status.code(), Some(0));
-    assert!(alias.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&alias.stderr), "");
     let alias_rows: serde_json::Value =
         serde_json::from_slice(&alias.stdout).expect("short binary list must be JSON");
     assert_eq!(alias_rows[0]["label"], "native artifact fixture");
@@ -355,7 +355,7 @@ fn labels_and_watch_run_through_the_native_binary() {
         "{}",
         String::from_utf8_lossy(&why.stderr)
     );
-    assert!(why.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&why.stderr), "");
     let why_value: serde_json::Value =
         serde_json::from_slice(&why.stdout).expect("why stdout must be JSON");
     assert_eq!(why_value["results"][0]["label"], "native artifact fixture");

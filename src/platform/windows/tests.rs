@@ -313,7 +313,7 @@ fn iphelper_zero_row_tables_are_legal() {
     append_tcp6_table(&mut records, &table).unwrap();
     append_udp4_table(&mut records, &table).unwrap();
     append_udp6_table(&mut records, &table).unwrap();
-    assert!(records.is_empty());
+    assert_eq!(records, []);
 }
 
 #[test]
@@ -443,7 +443,7 @@ fn raw_udp4_table_retains_row_when_owner_is_unavailable() {
     assert_eq!(pass.rows[0].socket.endpoint.port.get(), 53);
     assert_eq!(pass.rows[0].socket.endpoint.ipv6_scope, None);
     assert_eq!(pass.rows[0].socket.state, SocketState::Bound);
-    assert!(pass.rows[0].owner_pids.is_empty());
+    assert_eq!(pass.rows[0].owner_pids, [] as [u32; 0]);
     assert!(matches!(
         &pass.rows[0].owner_completeness,
         OwnerCompleteness::Partial { reasons }
@@ -494,7 +494,7 @@ fn raw_udp6_table_retains_row_when_owner_is_unavailable() {
         ))
     );
     assert_eq!(pass.rows[0].socket.state, SocketState::Bound);
-    assert!(pass.rows[0].owner_pids.is_empty());
+    assert_eq!(pass.rows[0].owner_pids, [] as [u32; 0]);
     assert_eq!(pass.evidence_gaps.len(), 1);
     assert_eq!(
         pass.evidence_gaps[0].code,
@@ -842,7 +842,7 @@ fn parent_name_reads_are_capped_by_each_low_aggregate_remainder() {
     )
     .expect("low-budget metadata collection remains bounded");
 
-    assert!(!api.path_budgets.is_empty());
+    assert_ne!(api.path_budgets, [] as [usize; 0]);
     assert!(api.path_budgets.iter().all(|budget| *budget <= 7));
 }
 

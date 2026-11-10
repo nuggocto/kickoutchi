@@ -653,7 +653,7 @@ fn production_orchestration_maps_pid_scan_failures_to_socket_set_gaps() {
         )
         .expect("per-PID scan loss remains a partial pass");
 
-        assert!(pass.rows.is_empty());
+        assert_eq!(pass.rows, []);
         assert_eq!(pass.evidence_gaps.len(), 1);
         assert_eq!(pass.evidence_gaps[0].pid, Some(42));
         assert_eq!(pass.evidence_gaps[0].impact, EvidenceImpact::SocketSet);
@@ -1112,10 +1112,9 @@ fn all_pid_zero_error_cannot_become_an_empty_complete_list() {
             ..
         }
     ));
-    assert!(
-        process_ids_with_reader(|_, _| Ok(0))
-            .expect("genuine zero is not a native failure")
-            .is_empty()
+    assert_eq!(
+        process_ids_with_reader(|_, _| Ok(0)).expect("genuine zero is not a native failure"),
+        [] as [u32; 0]
     );
 }
 
@@ -1127,7 +1126,7 @@ fn child_pid_reader_preserves_genuine_zero_children_and_zero_error() {
         super::count_result(0, 0)
     })
     .expect("zero children is a valid result");
-    assert!(children.is_empty());
+    assert_eq!(children, [] as [u32; 0]);
 
     let mut buffer = vec![0; 4];
     let error = super::child_process_ids_with_reader(&mut buffer, buffer_bytes, |_, _| {

@@ -288,7 +288,7 @@ impl TuiSignalGuard {
 impl Drop for TuiSignalGuard {
     fn drop(&mut self) {
         if let Err(error) = self.restore_previous() {
-            tracing::warn!(%error, "failed to restore TUI signal handlers");
+            warn_stderr!("failed to restore TUI signal handlers: {error}");
         }
     }
 }
@@ -357,7 +357,10 @@ impl Drop for BlockedTerminationSignals {
             )
         };
         if result != 0 {
-            tracing::warn!(error = %io::Error::from_raw_os_error(result), "failed to restore signal mask");
+            warn_stderr!(
+                "failed to restore signal mask: {}",
+                io::Error::from_raw_os_error(result)
+            );
         }
     }
 }
@@ -410,10 +413,10 @@ impl Drop for TerminalGuard {
 /// attempted even if the first fails.
 fn best_effort_restore() {
     if let Err(error) = execute!(io::stdout(), LeaveAlternateScreen) {
-        tracing::warn!(%error, "failed to leave alternate screen");
+        warn_stderr!("failed to leave alternate screen: {error}");
     }
     if let Err(error) = disable_raw_mode() {
-        tracing::warn!(%error, "failed to disable raw mode");
+        warn_stderr!("failed to disable raw mode: {error}");
     }
 }
 

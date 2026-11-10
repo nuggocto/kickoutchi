@@ -294,7 +294,7 @@ fn refusal_prepares_verified_identity_before_each_thaw() {
     }];
     let mut ops = FakeOps::new(Vec::new());
 
-    assert!(super::thaw_all(&frozen, &mut ops).is_empty());
+    assert_eq!(super::thaw_all(&frozen, &mut ops), [] as [u32; 0]);
     assert_eq!(ops.prepared_thaws.get(&42), Some(&marker));
     assert_eq!(ops.events, [Event::Cont(42)]);
 }
@@ -439,7 +439,7 @@ fn failed_stopped_state_observation_still_rolls_back_submitted_stop() {
         TreeKillOutcome::SnapshotFailed("stopped-state observation failed".to_owned())
     );
     assert_eq!(ops.events, [Event::Stop(100), Event::Cont(100)]);
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
 }
 
 #[test]
@@ -604,7 +604,7 @@ fn stopped_replacement_uses_immediate_identity_when_later_member_refuses() {
             Event::Cont(100),
         ]
     );
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
 }
 
 fn info(pid: u32, parent: Option<u32>, name: &str, marker: u64) -> TreeProcessInfo {
@@ -916,7 +916,7 @@ fn stopped_root_replacement_is_refused_but_prepared_for_rollback() {
         ops.prepared_thaws.get(&100),
         Some(&crate::observation::ProcessStartMarker::linux(999).ok())
     );
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
 }
 
 #[test]
@@ -954,7 +954,7 @@ fn all_stopped_descendant_replacements_are_prepared_before_first_refusal() {
     );
 
     assert_eq!(outcome, TreeKillOutcome::TargetChanged { pid: 101 });
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
     assert_eq!(
         ops.prepared_thaws,
         HashMap::from([
@@ -1006,7 +1006,7 @@ fn protected_descendant_thaws_and_refuses() {
             name: Some("postgres".to_owned()),
         },
     );
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
     assert_eq!(
         ops.events,
         vec![
@@ -1059,7 +1059,7 @@ fn macos_executable_basename_protects_descendants_in_preview_and_final_policy() 
     );
 
     assert_eq!(outcome, refusal);
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
 }
 
 #[test]
@@ -1087,7 +1087,7 @@ fn macos_executable_basename_protects_a_portless_root_until_confirmed() {
         refused,
         TreeKillOutcome::ProtectedRoot { pid: 100, .. }
     ));
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
 
     let mut ops = FakeOps::new(vec![snapshot.clone(), snapshot.clone(), snapshot]);
     let confirmed = execute_tree_kill(
@@ -1132,7 +1132,7 @@ fn tree_thaw_failure_attempts_every_member_and_reports_survivors() {
     ));
     assert!(ops.events.contains(&Event::Cont(100)));
     assert!(ops.events.contains(&Event::Cont(101)));
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
 }
 
 #[test]
@@ -1198,7 +1198,7 @@ fn cap_exceeded_during_freeze_thaws_and_refuses() {
             limit: MAX_TREE_PROCESSES,
         },
     );
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
     // Everything stopped so far was thawed. Check the same PIDs, not just the
     // same number of signals.
     let mut stopped: Vec<u32> = ops
@@ -1272,7 +1272,7 @@ fn missing_descendant_start_marker_thaws_and_refuses() {
     );
 
     assert_eq!(outcome, TreeKillOutcome::PartialMetadata { pid: 101 });
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
     assert_eq!(ops.events, [Event::Stop(100), Event::Cont(100)]);
 }
 
@@ -1364,7 +1364,7 @@ fn post_delivery_thaw_failure_is_retained_in_the_completion_report() {
         panic!("delivery completed and cleanup failure must remain reportable");
     };
     assert_eq!(report.delivered, 1);
-    assert!(report.denied.is_empty());
+    assert_eq!(report.denied, [] as [u32; 0]);
     assert_eq!(report.thaw_failed, vec![100]);
     assert_eq!(
         ops.events,
@@ -1401,7 +1401,7 @@ fn final_delivery_not_found_is_reported_separately_from_sent_signals() {
     assert_eq!(report.total, 2);
     assert_eq!(report.delivered, 1);
     assert_eq!(report.already_exited, 1);
-    assert!(report.denied.is_empty());
+    assert_eq!(report.denied, [] as [u32; 0]);
 }
 
 #[test]
@@ -1443,7 +1443,7 @@ fn denied_descendant_stop_thaws_root_and_refuses() {
     );
 
     assert_eq!(outcome, TreeKillOutcome::PermissionDenied { pid: 101 });
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
     assert!(ops.events.contains(&Event::Cont(100)));
 }
 
@@ -1697,7 +1697,7 @@ fn group_member_leaving_the_group_post_stop_thaws_everything() {
     );
 
     assert_eq!(outcome, TreeKillOutcome::TargetChanged { pid: 150 });
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
     assert!(ops.events.ends_with(&[Event::Cont(150), Event::Cont(100)]));
 }
 
@@ -1753,7 +1753,7 @@ fn group_cap_exceeded_during_freeze_thaws_and_refuses() {
             limit: MAX_GROUP_PROCESSES,
         },
     );
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
     // Everything stopped so far was thawed. Check the same PIDs, not just the
     // same number of signals.
     let mut stopped: Vec<u32> = ops
@@ -1807,7 +1807,7 @@ fn protected_group_member_thaws_and_refuses() {
             name: Some("postgres".to_owned()),
         },
     );
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
     assert!(ops.events.ends_with(&[Event::Cont(150), Event::Cont(100)]));
 }
 
@@ -1905,7 +1905,7 @@ fn sweep_pass_limit_refuses_a_set_that_grows_every_snapshot_and_thaws_all() {
     );
 
     assert_eq!(outcome, TreeKillOutcome::SweepPassLimit { limit: 8 });
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
     let mut stopped: Vec<u32> = ops
         .events
         .iter()
@@ -1962,7 +1962,7 @@ fn frozen_tree_member_reparenting_thaws_everything_and_refuses() {
     );
 
     assert_eq!(outcome, TreeKillOutcome::TargetChanged { pid: 101 });
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
     assert!(ops.events.ends_with(&[Event::Cont(101), Event::Cont(100)]));
 }
 
@@ -2021,7 +2021,7 @@ fn root_exec_into_protected_name_refuses_without_protected_confirmation() {
             name: Some("postgres".to_owned()),
         },
     );
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
     assert!(ops.events.ends_with(&[Event::Cont(100)]));
 
     // The same tree proceeds once the protected-root confirmation is real.
@@ -2061,7 +2061,7 @@ fn yes_skip_refuses_when_a_system_member_appears_mid_freeze() {
     );
 
     assert_eq!(outcome, TreeKillOutcome::FreshConfirmationRequired);
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
     assert!(ops.events.ends_with(&[Event::Cont(101), Event::Cont(100)]));
 }
 
@@ -2092,7 +2092,7 @@ fn yes_skip_refuses_when_an_owner_mismatch_appears_mid_freeze() {
     );
 
     assert_eq!(outcome, TreeKillOutcome::FreshConfirmationRequired);
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
     assert!(ops.events.ends_with(&[Event::Cont(101), Event::Cont(100)]));
 }
 
@@ -2127,7 +2127,7 @@ fn yes_skip_refuses_when_the_group_outgrows_the_skip_cap_mid_freeze() {
     );
 
     assert_eq!(outcome, TreeKillOutcome::FreshConfirmationRequired);
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
     let stops = ops
         .events
         .iter()
@@ -2181,7 +2181,7 @@ fn final_evidence_missing_denied_oversized_and_identity_changed_deliver_nothing(
         );
 
         assert_eq!(outcome, expected_outcome);
-        assert!(ops.delivered_pids().is_empty());
+        assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
         assert_eq!(
             ops.events
                 .iter()
@@ -2230,7 +2230,7 @@ fn newly_protected_final_evidence_refuses_before_any_delivery() {
             name: Some("postgres".to_owned()),
         }
     );
-    assert!(ops.delivered_pids().is_empty());
+    assert_eq!(ops.delivered_pids(), [] as [u32; 0]);
     assert!(
         !ops.events
             .iter()

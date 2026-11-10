@@ -446,7 +446,7 @@ fn invalid_timer_fails_before_writing() {
         write_snapshot_json(&mut output, &snapshot, &LabelRegistry::default()),
         Err(PublicOutputError::InvalidTimer),
     ));
-    assert!(output.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output), "");
 }
 
 #[test]
@@ -471,7 +471,7 @@ fn owner_reason_limit_fails_before_writing() {
         write_snapshot_json(&mut output, &snapshot, &LabelRegistry::default()),
         Err(PublicOutputError::OwnerReasonLimitExceeded),
     ));
-    assert!(output.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output), "");
 }
 
 #[test]
@@ -499,7 +499,7 @@ fn invalid_capture_fails_before_writing() {
         write_snapshot_json(&mut output, &reversed, &LabelRegistry::default()),
         Err(PublicOutputError::InvalidWallClockInterval),
     ));
-    assert!(output.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output), "");
 
     let mut pre_epoch = snapshot(Vec::new());
     pre_epoch.capture_started_at = UNIX_EPOCH - Duration::from_millis(1);
@@ -508,7 +508,7 @@ fn invalid_capture_fails_before_writing() {
         write_snapshot_json(&mut output, &pre_epoch, &LabelRegistry::default()),
         Err(PublicOutputError::ClockUnavailable),
     ));
-    assert!(output.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output), "");
 }
 
 #[cfg(unix)]
@@ -527,7 +527,7 @@ fn non_utf8_process_path_fails_before_writing() {
         write_snapshot_json(&mut output, &snapshot, &LabelRegistry::default()),
         Err(PublicOutputError::Serialization(_)),
     ));
-    assert!(output.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output), "");
 }
 
 #[test]

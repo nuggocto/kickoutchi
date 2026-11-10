@@ -25,6 +25,7 @@ fn args() -> WhyArgs {
         dual_stack: false,
         reuse_address: false,
         json: false,
+        detailed: false,
     }
 }
 
@@ -314,9 +315,9 @@ fn invalid_queries_are_rejected_before_collection_or_probing() {
         );
 
         assert_eq!(reason, ExitReason::InvalidArguments);
-        assert!(output.is_empty());
-        assert!(!diagnostics.is_empty());
-        assert!(runtime.collect_profiles.is_empty());
+        assert_eq!(String::from_utf8_lossy(&output), "");
+        assert_ne!(diagnostics, [] as [u8; 0]);
+        assert_eq!(runtime.collect_profiles, []);
         assert_eq!(runtime.probes, 0);
     }
 }
@@ -340,7 +341,7 @@ fn collection_failure_happens_before_probes_or_output() {
     assert_eq!(runtime.collect_profiles, [MetadataProfile::Display]);
     assert_eq!(runtime.probes, 0);
     assert_eq!(runtime.clock_calls, 0);
-    assert!(output.bytes.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output.bytes), "");
     assert!(
         String::from_utf8(diagnostics)
             .unwrap()
@@ -355,7 +356,10 @@ fn orchestration_collects_display_once_and_probes_each_endpoint_sequentially() {
     let mut diagnostics = Vec::new();
 
     let reason = run_why_with(
-        &args(),
+        &WhyArgs {
+            detailed: true,
+            ..args()
+        },
         &Config::default(),
         &mut runtime,
         &mut output,
@@ -366,7 +370,7 @@ fn orchestration_collects_display_once_and_probes_each_endpoint_sequentially() {
     assert_eq!(runtime.collect_profiles, vec![MetadataProfile::Display]);
     assert_eq!(runtime.probes, 2);
     assert_eq!(runtime.clock_calls, 4);
-    assert!(diagnostics.is_empty());
+    assert_eq!(String::from_utf8_lossy(&diagnostics), "");
     assert!(
         String::from_utf8(output)
             .expect("human output is UTF-8")
@@ -431,7 +435,7 @@ fn broken_stdout_preserves_each_computed_aggregate_exit() {
         );
 
         assert_eq!(reason, expected, "outcome {outcome:?}");
-        assert!(diagnostics.is_empty());
+        assert_eq!(String::from_utf8_lossy(&diagnostics), "");
         assert_eq!(runtime.probes, 1);
     }
 }
@@ -458,7 +462,7 @@ fn every_endpoint_is_evaluated_before_broken_output_is_observed() {
         runtime.clock_calls,
         u64::try_from(WHY_ENDPOINTS_MAX * 2).unwrap()
     );
-    assert!(diagnostics.is_empty());
+    assert_eq!(String::from_utf8_lossy(&diagnostics), "");
 }
 
 #[test]
@@ -477,7 +481,7 @@ fn broken_flush_preserves_the_aggregate_but_other_writer_failures_do_not() {
         &mut diagnostics,
     );
     assert_eq!(reason, ExitReason::NoMatch);
-    assert!(diagnostics.is_empty());
+    assert_eq!(String::from_utf8_lossy(&diagnostics), "");
 
     let mut runtime = FakeRuntime::new(vec![ProbeOutcome::BindableNow]);
     let mut diagnostics = Vec::new();
@@ -518,8 +522,8 @@ fn human_and_pretty_json_are_written_and_flushed() {
 
         assert_eq!(reason, ExitReason::Success, "json={json}");
         assert_eq!(output.flushes, 1, "json={json}");
-        assert!(!output.bytes.is_empty());
-        assert!(diagnostics.is_empty());
+        assert_ne!(output.bytes, [] as [u8; 0]);
+        assert_eq!(String::from_utf8_lossy(&diagnostics), "");
     }
 }
 
@@ -533,6 +537,7 @@ fn midstream_writer_errors_preserve_only_broken_pipe_aggregate() {
             let mut input = args();
             input.address = Some("127.0.0.1".to_owned());
             input.json = json;
+            input.detailed = true;
             let mut runtime = FakeRuntime::new(vec![ProbeOutcome::Unsupported]);
             let mut output = MidstreamErrorWriter {
                 successful_writes: 3,
@@ -551,7 +556,7 @@ fn midstream_writer_errors_preserve_only_broken_pipe_aggregate() {
 
             assert_eq!(reason, expected, "json={json}, kind={kind:?}");
             if kind == ErrorKind::BrokenPipe {
-                assert!(diagnostics.is_empty());
+                assert_eq!(String::from_utf8_lossy(&diagnostics), "");
             } else {
                 assert!(
                     String::from_utf8(diagnostics)
@@ -682,7 +687,7 @@ fn json_contract_has_exact_envelope_and_omits_command_lines() {
     let reason = run_why_with(&input, &config, &mut runtime, &mut output, &mut diagnostics);
 
     assert_eq!(reason, ExitReason::Success);
-    assert!(diagnostics.is_empty());
+    assert_eq!(String::from_utf8_lossy(&diagnostics), "");
     let value: serde_json::Value =
         serde_json::from_slice(&output).expect("why output is valid JSON");
     let mut keys = value
@@ -846,7 +851,7 @@ fn privileged_ownerless_ipv4_result_reports_one_aggregate_gap_without_omission()
     assert!(gaps[0]["pid"].is_null());
     assert_eq!(gaps[0]["affected_pid_count"], 4_097);
     assert_eq!(value["results"][0]["omitted_evidence_gap_count"], 0);
-    assert!(diagnostics.is_empty());
+    assert_eq!(String::from_utf8_lossy(&diagnostics), "");
 }
 
 #[test]
@@ -921,6 +926,7 @@ fn human_and_json_renderers_carry_the_same_result_facts() {
     let mut human_input = args();
     human_input.address = Some("fe80::1".to_owned());
     human_input.scope_id = Some(3);
+    human_input.detailed = true;
     let mut human_runtime = FakeRuntime::new(vec![ProbeOutcome::Unsupported]);
     human_runtime.raw_os_error = Some(99);
     human_runtime.os_error_message = Some("unsupported fixture".into());
@@ -1013,7 +1019,7 @@ fn public_probe_messages_are_sanitized_and_clipped_on_utf8_boundaries() {
         assert_eq!(rendered.len(), PUBLIC_MESSAGE_MAX_BYTES);
         assert!(!rendered.contains('\x1b'));
         assert!(std::str::from_utf8(rendered.as_bytes()).is_ok());
-        assert!(diagnostics.is_empty());
+        assert_eq!(String::from_utf8_lossy(&diagnostics), "");
     }
 }
 
@@ -1081,6 +1087,7 @@ fn evidence_and_gap_messages_share_the_public_utf8_bound_in_both_formats() {
     assert_eq!(probe.len(), PUBLIC_MESSAGE_MAX_BYTES);
 
     options.json = false;
+    options.detailed = true;
     let mut human = Vec::new();
     render_document(&mut human, &options, &snapshot(), &completed, aggregate)
         .expect("human output renders");
@@ -1099,4 +1106,44 @@ fn assert_object_keys(value: &serde_json::Value, expected: &[&str]) {
         .collect::<std::collections::BTreeSet<_>>();
     let expected = expected.iter().copied().collect();
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn default_human_output_is_one_line_per_endpoint() {
+    let mut runtime = FakeRuntime::new(vec![ProbeOutcome::BindableNow, ProbeOutcome::BindableNow]);
+    let mut output = Vec::new();
+    let mut diagnostics = Vec::new();
+
+    let reason = run_why_with(
+        &args(),
+        &Config::default(),
+        &mut runtime,
+        &mut output,
+        &mut diagnostics,
+    );
+
+    assert_eq!(reason, ExitReason::Success);
+    assert_eq!(
+        String::from_utf8(output).expect("summary is UTF-8"),
+        "TCP 127.0.0.1:3000  free\nTCP [::1]:3000      free\n"
+    );
+}
+
+#[test]
+fn owner_label_reads_only_visible_owner_evidence() {
+    use crate::diagnostic::verdict::{Evidence, EvidenceCode, EvidenceSource};
+    use crate::watch::Certainty;
+
+    let owner = Evidence {
+        code: EvidenceCode::VisibleVerifiedOwner,
+        source: EvidenceSource::LinuxProcfs,
+        certainty: Certainty::Proven,
+        message: "PID 42 (node) owned the endpoint at snapshot capture".to_owned(),
+    };
+    assert_eq!(owner.owner_label(), Some("PID 42 (node)"));
+    let probe = Evidence {
+        code: EvidenceCode::ExactBindAddressInUse,
+        ..owner
+    };
+    assert_eq!(probe.owner_label(), None);
 }

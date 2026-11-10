@@ -127,7 +127,7 @@ fn a_declined_prompt_prepares_nothing() {
     );
 
     assert_eq!(reason, ExitReason::KillCancelled);
-    assert!(record.prepared.is_empty());
+    assert_eq!(record.prepared, [] as [u32; 0]);
 }
 
 #[test]
@@ -144,8 +144,8 @@ fn one_unresolvable_target_stops_the_whole_batch() {
     );
 
     assert_eq!(reason, ExitReason::NoMatch);
-    assert!(record.prompts.is_empty());
-    assert!(record.prepared.is_empty());
+    assert_eq!(record.prompts, [] as [String; 0]);
+    assert_eq!(record.prepared, [] as [u32; 0]);
 }
 
 #[test]
@@ -166,8 +166,8 @@ fn a_protected_target_must_be_killed_on_its_own() {
     );
 
     assert_eq!(reason, ExitReason::ProtectedNeedsConfirmation);
-    assert!(record.prompts.is_empty());
-    assert!(record.prepared.is_empty());
+    assert_eq!(record.prompts, [] as [String; 0]);
+    assert_eq!(record.prepared, [] as [u32; 0]);
 }
 
 #[test]

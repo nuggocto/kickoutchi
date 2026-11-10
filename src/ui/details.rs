@@ -10,10 +10,7 @@ use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 
 use crate::app::App;
 use crate::display::{human_address_text, human_endpoint_text, sanitize};
-use crate::model::{
-    ChildProcessSnapshot, DockerContainerPort, DockerPortContext, PermissionStatus, PortEntryView,
-    ProcessContext, Protocol,
-};
+use crate::model::{ChildProcessSnapshot, PermissionStatus, PortEntryView, ProcessContext};
 
 use super::{field, rendered_rows, theme::Theme, wrapped_rows};
 
@@ -219,7 +216,7 @@ fn panel_lines<'a>(
     text: &'a TextCache,
 ) -> Vec<Line<'a>> {
     // Evaluate only visible fields. A hidden command can be a full MiB.
-    let mut lines = (0..max_rows.min(7))
+    (0..max_rows.min(7))
         .map(|index| match index {
             0 => field(
                 "PID",
@@ -241,7 +238,7 @@ fn panel_lines<'a>(
                 ),
                 theme,
             ),
-            2 => field("Permission", permission_text(entry.permission), theme),
+            2 => field("Permission", permission_text(entry), theme),
             3 => field("Parent", parent_text(entry), theme),
             4 => field(
                 "Children",
@@ -252,13 +249,7 @@ fn panel_lines<'a>(
             6 => field("Command", text.command(), theme),
             _ => unreachable!("the panel has seven fields"),
         })
-        .collect::<Vec<_>>();
-    if lines.len() < max_rows
-        && let Some(text) = docker_panel_text(context)
-    {
-        lines.insert(2, field("Docker", text, theme));
-    }
-    lines
+        .collect()
 }
 
 fn modal_lines<'a>(
@@ -290,17 +281,11 @@ fn modal_lines<'a>(
             theme,
         ),
         field("User", user_text(context), theme),
-        field("Permission", permission_text(entry.permission), theme),
+        field("Permission", permission_text(entry), theme),
     ]);
 
     lines.push(field("Path", text.path(), theme));
     lines.push(field("Command", text.command(), theme));
-
-    if let Some(docker) = context.and_then(|context| context.docker.as_ref()) {
-        let docker_rows = docker_modal_lines(docker, theme);
-        lines.splice(7..7, docker_rows);
-    }
-
     lines
 }
 
@@ -331,7 +316,7 @@ fn children_text(
     context_loading: bool,
 ) -> String {
     if entry.pid.is_none() {
-        return "unavailable (missing PID)".to_owned();
+        return MISSING.to_owned();
     }
 
     if context_loading {
@@ -344,7 +329,7 @@ fn children_text(
     // Children are attached only after the row's process generation was
     // re-verified; without that proof the PID may now name another process.
     if context.process_start_time_marker.is_none() {
-        return "unavailable (process identity not verified)".to_owned();
+        return "not shown (the process may have exited or been replaced)".to_owned();
     }
     children_snapshot_text(&context.children)
 }
@@ -378,94 +363,19 @@ fn children_snapshot_text(snapshot: &ChildProcessSnapshot) -> String {
     format!("{} ({visible}){suffix}", snapshot.children.len())
 }
 
-fn docker_panel_text(context: Option<&ProcessContext>) -> Option<String> {
-    context
-        .and_then(|context| context.docker.as_ref())
-        .map(docker_summary_text)
-}
-
-fn docker_modal_lines(docker: &DockerPortContext, theme: Theme) -> Vec<Line<'static>> {
-    let mut lines = vec![field("Docker", docker_summary_text(docker), theme)];
-    if let Some(container) = docker.single_container() {
-        if let Some(compose) = docker_compose_text(container) {
-            lines.push(field("Compose", compose, theme));
-        }
-        lines.push(field(
-            "Docker stop",
-            sanitize(&container.stop_command()),
-            theme,
-        ));
-    } else {
-        lines.push(field(
-            "Docker stop",
-            "ambiguous; inspect with docker ps".to_owned(),
-            theme,
-        ));
-    }
-    lines
-}
-
-fn docker_summary_text(docker: &DockerPortContext) -> String {
-    if let Some(container) = docker.single_container() {
-        return docker_container_summary(container);
-    }
-
-    let suffix = if docker.truncated { " or more" } else { "" };
-    format!("{}{} matching containers", docker.containers.len(), suffix)
-}
-
-fn docker_container_summary(container: &DockerContainerPort) -> String {
-    format!(
-        "{} {}->{}{}",
-        sanitize(&docker_container_label(container)),
-        container.host_port,
-        container.container_port,
-        protocol_suffix(container.protocol),
-    )
-}
-
-fn docker_container_label(container: &DockerContainerPort) -> String {
-    match (
-        container.compose_project.as_deref(),
-        container.compose_service.as_deref(),
-    ) {
-        (Some(project), Some(service)) => format!("{project}/{service} ({})", container.name),
-        (Some(project), None) => format!("{project} ({})", container.name),
-        (None, Some(service)) => format!("{service} ({})", container.name),
-        (None, None) => container.name.clone(),
-    }
-}
-
-fn docker_compose_text(container: &DockerContainerPort) -> Option<String> {
-    match (
-        container.compose_project.as_deref(),
-        container.compose_service.as_deref(),
-    ) {
-        (Some(project), Some(service)) => Some(format!("{project}/{service}")),
-        (Some(project), None) => Some(project.to_owned()),
-        (None, Some(service)) => Some(service.to_owned()),
-        (None, None) => None,
-    }
-    .map(|text| sanitize(&text))
-}
-
-fn protocol_suffix(protocol: Protocol) -> &'static str {
-    match protocol {
-        Protocol::Tcp => "/tcp",
-        Protocol::Udp => "/udp",
-    }
-}
-
 fn user_text(context: Option<&ProcessContext>) -> String {
     context
         .and_then(|context| context.owner_uid)
         .map_or_else(|| MISSING.to_owned(), |uid| format!("uid {uid}"))
 }
 
-fn permission_text(permission: PermissionStatus) -> String {
-    match permission {
-        PermissionStatus::Full => "full".to_owned(),
-        PermissionStatus::Partial => "partial (metadata unavailable)".to_owned(),
+fn permission_text(entry: PortEntryView<'_>) -> &'static str {
+    match (entry.permission, entry.pid) {
+        (PermissionStatus::Full, _) => "full",
+        (PermissionStatus::Partial, None) => {
+            "owner hidden: the owning process could not be read (usually another user's; try sudo)"
+        }
+        (PermissionStatus::Partial, Some(_)) => "partial: some process details could not be read",
     }
 }
 
@@ -474,14 +384,10 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
     use std::path::PathBuf;
 
-    use super::{
-        MISSING, children_text, docker_panel_text, docker_summary_text, panel_lines, parent_text,
-        permission_text, user_text,
-    };
+    use super::{MISSING, children_text, panel_lines, parent_text, permission_text, user_text};
     use crate::model::{
-        ChildProcess, ChildProcessSnapshot, DockerContainerPort, DockerPortContext,
-        PermissionStatus, Platform, PortEntry, PortEntryView, ProcessContext, Protocol,
-        SocketState,
+        ChildProcess, ChildProcessSnapshot, PermissionStatus, Platform, PortEntry, PortEntryView,
+        ProcessContext, Protocol, SocketState,
     };
     use crate::ui::theme::Theme;
 
@@ -552,67 +458,6 @@ mod tests {
     }
 
     #[test]
-    fn docker_context_adds_bounded_details_without_replacing_os_metadata() {
-        let docker = DockerPortContext {
-            containers: vec![DockerContainerPort {
-                id: "a762a2b37a1d".to_owned(),
-                name: "postgres-dev".to_owned(),
-                compose_project: Some("swamp".to_owned()),
-                compose_service: Some("db".to_owned()),
-                host_port: 5432,
-                container_port: 5432,
-                protocol: Protocol::Tcp,
-            }],
-            truncated: false,
-        };
-        let context = ProcessContext {
-            docker: Some(docker.clone()),
-            ..ProcessContext::default()
-        };
-        let row = entry();
-        let text = super::TextCache::default();
-        let lines = panel_lines(
-            PortEntryView::from(&row),
-            Some(&context),
-            false,
-            Theme::from_environment(),
-            7,
-            &text,
-        );
-
-        assert_eq!(lines.len(), 7);
-        assert!(
-            lines
-                .iter()
-                .all(|line| !line.to_string().starts_with("Docker:")),
-            "Docker must not displace safety and OS metadata in a full panel",
-        );
-        assert_eq!(
-            docker_panel_text(Some(&context)).as_deref(),
-            Some("swamp/db (postgres-dev) 5432->5432/tcp"),
-        );
-        assert_eq!(
-            docker_summary_text(&docker),
-            "swamp/db (postgres-dev) 5432->5432/tcp",
-        );
-
-        let expanded = panel_lines(
-            PortEntryView::from(&row),
-            Some(&context),
-            false,
-            Theme::from_environment(),
-            8,
-            &text,
-        );
-        assert_eq!(expanded.len(), 8);
-        assert!(
-            expanded
-                .iter()
-                .any(|line| line.to_string().starts_with("Docker:")),
-        );
-    }
-
-    #[test]
     fn parent_text_covers_partial_metadata() {
         let mut row = entry();
         assert_eq!(
@@ -628,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn children_text_distinguishes_unavailable_none_and_named_children() {
+    fn children_text_distinguishes_missing_none_and_named_children() {
         let mut row = entry();
         let context = ProcessContext {
             owner_uid: Some(1000),
@@ -646,7 +491,6 @@ mod tests {
                 ],
                 truncated: false,
             },
-            docker: None,
         };
 
         assert_eq!(
@@ -658,7 +502,7 @@ mod tests {
         row.pid = None;
         assert_eq!(
             children_text(PortEntryView::from(&row), Some(&context), false),
-            "unavailable (missing PID)"
+            MISSING
         );
 
         row.pid = Some(18_422);
@@ -680,7 +524,7 @@ mod tests {
                 Some(&ProcessContext::default()),
                 false
             ),
-            "unavailable (process identity not verified)"
+            "not shown (the process may have exited or been replaced)"
         );
         assert_eq!(
             children_text(PortEntryView::from(&row), None, true),
@@ -693,11 +537,16 @@ mod tests {
     }
 
     #[test]
-    fn permission_text_explains_partial_metadata() {
-        assert_eq!(permission_text(PermissionStatus::Full), "full");
+    fn permission_text_explains_hidden_owners_and_partial_metadata() {
+        let mut row = entry();
+        row.permission = PermissionStatus::Full;
+        assert_eq!(permission_text(PortEntryView::from(&row)), "full");
+        row.permission = PermissionStatus::Partial;
         assert_eq!(
-            permission_text(PermissionStatus::Partial),
-            "partial (metadata unavailable)"
+            permission_text(PortEntryView::from(&row)),
+            "partial: some process details could not be read"
         );
+        row.pid = None;
+        assert!(permission_text(PortEntryView::from(&row)).starts_with("owner hidden:"));
     }
 }

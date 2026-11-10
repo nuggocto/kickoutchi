@@ -105,15 +105,13 @@ Linux `/proc/net/*6` rows do not expose an IPv6 scope identifier in the selected
 format. Every observed IPv6 endpoint therefore has unavailable scope. Such a row
 cannot support exact scoped-IPv6 matching or an exact-address proven observation,
 although wildcard selectors can still match without scope equality. Human output
-renders the missing identity as `%unavailable` rather than collapsing it into an
-apparently unscoped address.
+shows these addresses without a `%` suffix; JSON output records the scope as
+`unavailable`.
 
 Root may make more procfs process descriptors and metadata readable, but it does
 not widen the current network namespace, escape the PID namespace, repair an
 incomplete procfs mount, or make IPv6 scope IDs appear. Elevation can reduce
-permission gaps; it cannot turn out-of-scope data into in-scope data. Optional
-PATH-resolved Docker enrichment is disabled while elevated or when privilege
-status cannot be established safely.
+permission gaps; it cannot turn out-of-scope data into in-scope data.
 
 ## macOS
 
@@ -225,30 +223,9 @@ raced snapshot or socket-set gap is not safe for ordinary bind/release diffing.
 Therefore absence of an event does not prove that no transient socket activity
 occurred.
 
-Watch never invokes Docker or another external network tool in its polling loop.
-Its events use native socket and process observations plus configured labels, so
-short polling intervals cannot become external-process spawn loops.
-
-## Docker evidence
-
-Docker is not an authoritative collector. Core socket facts always come from the
-native operating-system source. Existing optional Docker details enrichment is
-local-only: it is pinned to a local Unix socket or Windows named pipe, rejects a
-remote Docker host or context, is bounded, and never upgrades the certainty of a
-core verdict. Docker output can be stale, incomplete, unavailable, or describe a
-publication that does not establish the current native socket owner.
-
-Docker enrichment is disabled by default, which guarantees that Kickoutchi does
-not resolve or execute the Docker CLI. Set `docker_enrichment = true` to opt in.
-Enrichment is limited to qualifying TUI process-context requests; native
-collection, CLI listing, watch, and Why do not depend on it.
-
-`kick why` does not request Docker enrichment. It uses one native snapshot and
-exact bind probes, so its output must not be read as a container inventory. This
-keeps the diagnostic independent of an optional CLI and daemon, avoids PATH and
-privilege-boundary risks, and prevents non-authoritative container metadata from
-affecting the verdict. The absence of Docker evidence means only that Docker was
-not consulted.
+Watch never runs an external tool in its polling loop. Its events use native
+socket and process observations plus configured labels, so short polling
+intervals cannot become external-process spawn loops.
 
 ## Bind probes
 

@@ -1,4 +1,3 @@
-use std::cell::Cell;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -10,8 +9,8 @@ use super::{
 use crate::config::Config;
 use crate::input::Action;
 use crate::model::{
-    DockerContainerPort, DockerPortContext, PermissionStatus, Platform, PortEntry, PortEntryView,
-    ProcessContext, Protocol, SocketState, SortMode,
+    PermissionStatus, Platform, PortEntry, PortEntryView, ProcessContext, Protocol, SocketState,
+    SortMode,
 };
 use crate::observation::Ipv6Scope;
 use crate::process::{ConfirmationRequirement, KillMode, KillTarget, TerminationOutcome};
@@ -76,21 +75,6 @@ fn context(start_time_ticks: u64) -> ProcessContext {
     }
 }
 
-fn docker_context() -> DockerPortContext {
-    DockerPortContext {
-        containers: vec![DockerContainerPort {
-            id: "abc123".to_owned(),
-            name: "postgres-dev".to_owned(),
-            compose_project: None,
-            compose_service: None,
-            host_port: 5432,
-            container_port: 5432,
-            protocol: Protocol::Tcp,
-        }],
-        truncated: false,
-    }
-}
-
 fn finish_selected_context(app: &mut App, context: ProcessContext) {
     let key = RowKey::from(app.selected_row().expect("test app has selected row"));
     let (sender, receiver) = mpsc::channel();
@@ -133,70 +117,6 @@ fn preserved_selection_distinguishes_ipv6_interface_scopes() {
 }
 
 #[test]
-fn selected_context_can_attach_docker_metadata_without_a_pid() {
-    let row = entry_without_pid(5432);
-
-    let context = super::collect_selected_process_context_with(
-        PortEntryView::from(&row),
-        true,
-        |_| panic!("a row without a PID has no process context to read"),
-        |_| panic!("a row without a PID has no process generation to check"),
-        |_| Some(docker_context()),
-    );
-
-    assert_eq!(context.children.children.len(), 0);
-    assert!(context.process_start_time_marker.is_none());
-    assert_eq!(
-        context
-            .docker
-            .as_ref()
-            .and_then(DockerPortContext::single_container)
-            .map(|container| container.name.as_str()),
-        Some("postgres-dev"),
-    );
-}
-
-#[test]
-fn selected_context_requests_docker_enrichment_without_a_rendering_gate() {
-    let mut row = entry(5432, Some("docker-proxy"));
-    row.executable_path = Some(std::path::PathBuf::from("/usr/bin/docker-proxy").into());
-    let enrichment_requested = Cell::new(false);
-
-    let _context = super::collect_selected_process_context_with(
-        PortEntryView::from(&row),
-        true,
-        |_| context(55),
-        |_| marker(55),
-        |_| {
-            enrichment_requested.set(true);
-            None
-        },
-    );
-
-    assert!(enrichment_requested.get());
-}
-
-#[test]
-fn disabled_docker_enrichment_never_invokes_the_enricher() {
-    let row = entry(5432, Some("docker-proxy"));
-    let enrichment_requested = Cell::new(false);
-
-    let context = super::collect_selected_process_context_with(
-        PortEntryView::from(&row),
-        false,
-        |_| context(55),
-        |_| marker(55),
-        |_| {
-            enrichment_requested.set(true);
-            Some(docker_context())
-        },
-    );
-
-    assert!(!enrichment_requested.get());
-    assert!(context.docker.is_none());
-}
-
-#[test]
 fn selected_context_keeps_process_facts_only_for_the_rows_process_generation() {
     let row = entry(3000, Some("node"));
     let owned = || ProcessContext {
@@ -212,8 +132,7 @@ fn selected_context_keeps_process_facts_only_for_the_rows_process_generation() {
     };
     let collect = |context_marker: u64, after_marker: u64| {
         super::collect_selected_process_context_with(
-            PortEntryView::from(&row),
-            false,
+            row.process_identity,
             |pid| {
                 assert_eq!(pid, 3000);
                 ProcessContext {
@@ -222,7 +141,6 @@ fn selected_context_keeps_process_facts_only_for_the_rows_process_generation() {
                 }
             },
             |_| marker(after_marker),
-            |_| None,
         )
     };
 
@@ -234,11 +152,9 @@ fn selected_context_keeps_process_facts_only_for_the_rows_process_generation() {
     let mut unverified = row.clone();
     unverified.process_identity = None;
     let context = super::collect_selected_process_context_with(
-        PortEntryView::from(&unverified),
-        false,
+        unverified.process_identity,
         |_| panic!("an unverified PID must not attach process-owned facts"),
         |_| panic!("an unverified PID has no generation to check"),
-        |_| None,
     );
     assert_eq!(context, ProcessContext::default());
 }
@@ -253,7 +169,7 @@ fn starts_sorted_and_selects_first_row() {
 }
 
 #[test]
-fn table_selection_never_requests_details_or_docker_context() {
+fn table_selection_never_requests_details_context() {
     let mut app = app_with_rows(vec![entry(1, Some("one")), entry(2, Some("two"))]);
 
     app.apply_action(Action::MoveUp);
@@ -1320,7 +1236,7 @@ mod tree_kill {
         let infos = vec![tree_info(3000, Some(1), "node", 55)];
         app.finish_tree_preview_for_test(Ok(preview_of(&infos, 3000)));
         let confirmation = app.tree_confirmation().expect("confirmation stays open");
-        assert!(confirmation.input.is_empty());
+        assert_eq!(confirmation.input, "");
         assert!(confirmation.error.is_none());
     }
 
@@ -1347,8 +1263,8 @@ mod tree_kill {
             .tree_confirmation()
             .expect("confirmation remains open while metadata loads");
         assert_eq!(app.modal(), ModalKind::ConfirmTreeKill);
-        assert!(ops.stops.is_empty());
-        assert!(ops.delivered.is_empty());
+        assert_eq!(ops.stops, [] as [u32; 0]);
+        assert_eq!(ops.delivered, [] as [u32; 0]);
         assert!(
             confirmation
                 .error
@@ -1421,7 +1337,7 @@ mod tree_kill {
             "a root the tree scan classifies as protected must require the protected confirmation",
         );
         assert!(confirmation.target.protected);
-        assert!(confirmation.input.is_empty());
+        assert_eq!(confirmation.input, "");
     }
 
     #[test]

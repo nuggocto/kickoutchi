@@ -41,43 +41,7 @@ fn binary_override_helper_process() {
 }
 
 #[test]
-#[ignore = "subprocess fixture; invoked explicitly by contract tests"]
-fn tracing_helper_process() {
-    if std::env::var_os(TRACING_HELPER_ENV).is_some() {
-        tracing_subscriber::fmt()
-            .with_writer(io::sink)
-            .try_init()
-            .expect("helper tracing subscriber must install");
-        assert_eq!(kickoutchi::run(), std::process::ExitCode::from(2));
-        assert_eq!(kickoutchi::run(), std::process::ExitCode::from(2));
-    }
-}
-
-#[test]
-fn public_run_tracing_preserves_an_existing_subscriber_across_repeated_calls() {
-    let output = run_command_with_deadline(
-        Command::new(std::env::current_exe().expect("test binary path resolves"))
-            .args([
-                "--exact",
-                "tracing_helper_process",
-                "--ignored",
-                "--nocapture",
-            ])
-            .env(TRACING_HELPER_ENV, "1"),
-        None,
-        REAL_BINARY_EXIT_WAIT,
-    )
-    .expect("tracing helper must exit before its deadline");
-
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-#[test]
-fn verbose_diagnostics_use_stderr_without_contaminating_json_stdout() {
+fn verbose_flag_keeps_json_stdout_valid() {
     let config_dir = TemporaryDirectory::new("verbose-diagnostics");
     let config_path = config_dir.path().join("config.toml");
     fs::write(&config_path, "").expect("empty isolated config must be writable");
@@ -97,10 +61,7 @@ fn verbose_diagnostics_use_stderr_without_contaminating_json_stdout() {
 
     assert!(matches!(output.status.code(), Some(0 | 3)), "{output:?}");
     serde_json::from_slice::<serde_json::Value>(&output.stdout)
-        .expect("verbose diagnostics must leave stdout as valid JSON");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("verbose diagnostics enabled"), "{stderr}");
-    assert!(!output.stdout.windows(5).any(|bytes| bytes == b"DEBUG"));
+        .expect("--verbose must leave stdout as valid JSON");
 }
 
 #[test]
@@ -257,7 +218,7 @@ fn required_release_artifact_paths_are_complete_and_versioned() {
         )
         .expect("release binary version command must finish before its deadline");
         assert_eq!(output.status.code(), Some(0));
-        assert!(output.stderr.is_empty());
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "");
         assert_eq!(
             String::from_utf8(output.stdout).expect("version output must be UTF-8"),
             format!("kickoutchi {}\n", env!("CARGO_PKG_VERSION")),

@@ -54,13 +54,6 @@ fn yaml_mapping(mapping: &Mapping, key: &str) -> BTreeMap<String, String> {
     .collect()
 }
 
-fn yaml_sequence(mapping: &Mapping, key: &str) -> Vec<String> {
-    required_sequence(mapping, key)
-        .iter()
-        .map(scalar_text)
-        .collect()
-}
-
 fn workflow_root(workflow: &Value) -> &Mapping {
     required_mapping(workflow, "workflow root")
 }
@@ -110,29 +103,6 @@ fn step_runs(step: &Mapping, command: &str) -> bool {
         })
 }
 
-fn step_uses(step: &Mapping, action: &str) -> bool {
-    mapping_value(step, "uses")
-        .and_then(Value::as_str)
-        .is_some_and(|reference| {
-            reference
-                .split_once('@')
-                .is_some_and(|(name, _)| name == action)
-        })
-}
-
-fn job_step_running<'a>(job: &'a Mapping, command: &str) -> &'a Mapping {
-    job_steps(job)
-        .into_iter()
-        .find(|step| step_runs(step, command))
-        .unwrap_or_else(|| panic!("missing workflow command {command}"))
-}
-
-fn step_script(step: &Mapping) -> &str {
-    mapping_value(step, "run")
-        .and_then(Value::as_str)
-        .expect("workflow step must define a run script")
-}
-
 fn step_env(step: &Mapping, key: &str) -> Option<String> {
     mapping_value(step, "env")
         .map(|value| required_mapping(value, "step environment"))
@@ -145,18 +115,6 @@ fn job_needs(job: &Mapping) -> Vec<String> {
         Some(Value::Sequence(values)) => values.iter().map(scalar_text).collect(),
         Some(value) => vec![scalar_text(value)],
     }
-}
-
-fn matrix_entries(job: &Mapping) -> &[Value] {
-    let strategy = required_mapping(
-        mapping_value(job, "strategy").expect("matrix job must define a strategy"),
-        "job strategy",
-    );
-    let matrix = required_mapping(
-        mapping_value(strategy, "matrix").expect("strategy must define a matrix"),
-        "job matrix",
-    );
-    required_sequence(matrix, "include")
 }
 
 fn assert_workflow_security(source: &str) {

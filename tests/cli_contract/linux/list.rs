@@ -315,7 +315,7 @@ fn untrusted_newlines_cannot_forge_diagnostic_lines() {
             .lines()
             .any(|line| line == "FORGED_ARG_LINE")
     );
-    assert!(argument_error.stdout.is_empty());
+    assert_eq!(String::from_utf8_lossy(&argument_error.stdout), "");
 }
 
 #[test]

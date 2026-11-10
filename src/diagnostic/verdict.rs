@@ -146,6 +146,17 @@ pub(crate) struct Evidence {
     pub(crate) message: String,
 }
 
+const OWNED_ENDPOINT_SUFFIX: &str = " owned the endpoint at snapshot capture";
+
+impl Evidence {
+    /// `PID 42 (node)` for visible-owner evidence, used by the short `why` line.
+    pub(crate) fn owner_label(&self) -> Option<&str> {
+        (self.code == EvidenceCode::VisibleVerifiedOwner)
+            .then(|| self.message.strip_suffix(OWNED_ENDPOINT_SUFFIX))
+            .flatten()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct VerdictResult {
     pub(crate) endpoint: EndpointIdentity,
@@ -328,6 +339,54 @@ fn owner_possibly_hidden(socket: &SocketObservation, snapshot: &NetworkSnapshot)
         || (socket.owners.is_empty() && !snapshot.owner_completeness.is_complete())
 }
 
+/// Verified owners of active sockets that can block `endpoint` only through
+/// IPv4/IPv6 dual-stack overlap, as `PID 42 (node) on 127.0.0.1:3000`.
+///
+/// The verdict stays unknown for these because the host's dual-stack default
+/// is not observed; the short `why` line still names the likely holder.
+pub(crate) fn dual_stack_blockers(
+    endpoint: &EndpointIdentity,
+    ipv6_mode: Ipv6Mode,
+    snapshot: &NetworkSnapshot,
+) -> Vec<String> {
+    const BLOCKERS_SHOWN_MAX: usize = 4;
+    snapshot
+        .sockets
+        .iter()
+        .filter(|socket| {
+            active_socket(socket)
+                && relationship(&socket.local_endpoint, endpoint, ipv6_mode)
+                    == EndpointRelationship::PotentialDualStackOverlap
+        })
+        .flat_map(|socket| {
+            socket.owners.iter().filter_map(move |owner| match owner {
+                OwnerObservation::Verified(identity) => Some((socket, identity)),
+                OwnerObservation::UnverifiedPid { .. } => None,
+            })
+        })
+        .take(BLOCKERS_SHOWN_MAX)
+        .map(|(socket, identity)| {
+            let endpoint = crate::display::human_endpoint_text(
+                socket.local_endpoint.address,
+                socket.local_endpoint.port.get(),
+                socket.local_endpoint.ipv6_scope,
+            );
+            match snapshot
+                .processes
+                .get(identity)
+                .and_then(|process| process.name.as_deref())
+            {
+                Some(name) => format!(
+                    "PID {} ({}) on {endpoint}",
+                    identity.pid,
+                    crate::display::sanitize(name)
+                ),
+                None => format!("PID {} on {endpoint}", identity.pid),
+            }
+        })
+        .collect()
+}
+
 fn authoritative_sockets<'a>(
     endpoint: &'a EndpointIdentity,
     ipv6_mode: Ipv6Mode,
@@ -390,18 +449,8 @@ fn append_owner_evidence(
                     let process = snapshot.processes.get(identity);
                     let name = process.and_then(|process| process.name.as_deref());
                     let message = name.map_or_else(
-                        || {
-                            format!(
-                                "PID {} owned the endpoint at snapshot capture",
-                                identity.pid
-                            )
-                        },
-                        |name| {
-                            format!(
-                                "PID {} ({name}) owned the endpoint at snapshot capture",
-                                identity.pid
-                            )
-                        },
+                        || format!("PID {}{OWNED_ENDPOINT_SUFFIX}", identity.pid),
+                        |name| format!("PID {} ({name}){OWNED_ENDPOINT_SUFFIX}", identity.pid),
                     );
                     Evidence {
                         code: EvidenceCode::VisibleVerifiedOwner,

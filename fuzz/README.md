@@ -4,13 +4,12 @@ These Linux-only targets exercise pure byte-to-data adapters:
 
 - `config`: bounded config reads, UTF-8 decoding, TOML parsing, and semantic
   validation;
-- `linux_proc`: synthetic process-stat, process-status, and socket-table text;
-- `archive_member_path`: release-archive member-path canonicalization.
+- `linux_proc`: synthetic process-stat, process-status, and socket-table text.
 
-They do not terminate processes, inspect the host, invoke Docker, or use the
-network. Each entry point rejects input beyond its stated byte limit before
-parsing, and the workflow also enforces per-input time, total campaign time, and
-resident-memory limits.
+They do not terminate processes, inspect the host, or use the network. Each
+entry point rejects input beyond its stated byte limit before parsing, and the
+workflow also enforces per-input time, total campaign time, and resident-memory
+limits.
 
 The small checked-in corpora are replayed by ordinary Rust tests on every CI
 run. Longer mutation campaigns run weekly or through manual workflow dispatch:
@@ -20,7 +19,7 @@ run. Longer mutation campaigns run weekly or through manual workflow dispatch:
   campaign_corpus="$(mktemp -d)"
   trap 'rm -rf "$campaign_corpus"' EXIT
   cp -a fuzz/corpus/config/. "$campaign_corpus"/
-  cargo +nightly-2026-07-01 fuzz run config "$campaign_corpus" -- \
+  cargo +nightly-2026-11-09 fuzz run config "$campaign_corpus" -- \
     -max_total_time=60 -max_len=65537 -timeout=5 -rss_limit_mb=1024
 )
 ```

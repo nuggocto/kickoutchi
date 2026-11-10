@@ -302,7 +302,7 @@ The stable values, in canonical source order, are:
 - `docker`
 - `analysis`
 
-The presence of `docker` in the vocabulary does not mean current watch or Why commands run Docker. They do not.
+`docker` is a reserved value and is never emitted; Kickoutchi does not run Docker.
 
 #### Evidence codes
 
@@ -324,7 +324,7 @@ The stable `EvidenceCode` values are:
 - `potential_scope_overlap`
 - `observation_probe_conflict`
 
-Some codes are reserved by the public vocabulary but are not emitted by every command or host.
+Some codes are reserved by the public vocabulary but are not emitted by every command or host. `docker_context` is reserved and never emitted.
 
 #### Operational codes
 
@@ -393,10 +393,10 @@ Each array element has exactly these fields:
 
 Process names and command lines preserve the established lossy decoding behavior: invalid Unix bytes or Windows UTF-16 sequences become U+FFFD. Executable paths do not use lossy conversion; invalid UTF-8 becomes `null` and makes metadata partial.
 
-Human output appends `%<interface-index>` or `%unavailable` to IPv6 addresses so
-distinct endpoint identities remain visible. That display convention does not
-change this legacy JSON contract: `local_addr` remains bare canonical IP text,
-and consumers that need structured scope identity should use snapshot JSON.
+Human output appends `%<interface-index>` to IPv6 addresses when the interface
+index is known. That display convention does not change this legacy JSON
+contract: `local_addr` remains bare canonical IP text, and consumers that need
+structured scope identity should use snapshot JSON.
 
 The array order follows the selected `--sort` mode, or the configured default sort when `--sort` is absent. Filtering occurs before serialization. An empty result is exactly `[]\n`. An empty result from an explicit selection or filter exits `3`; an unfiltered empty host is successful.
 
@@ -703,7 +703,7 @@ Each compact NDJSON record is built in a fresh buffer capped at 64 KiB, includin
 - Ctrl-C, duration expiry, and a broken stdout pipe exit `0`.
 - Intervals are `100ms..=60s`, default `1s`; explicit durations are `100ms..=7d`. Invalid values exit `2` before collection.
 
-Watch never invokes Docker in its polling loop. It uses native socket/process observations and configured labels only.
+Watch never runs an external tool in its polling loop. It uses native socket/process observations and configured labels only.
 
 **Illustrative baseline record:** endpoint facts vary by host.
 
@@ -845,7 +845,7 @@ Why binds each exact endpoint and immediately closes it. It does not listen, acc
 
 `bindable_now` means the exact probe succeeded at its recorded completion time. It does not reserve the endpoint, guarantee that a later process will bind first, or promise future availability. The host may change after the probe. Conversely, a successful probe can coexist with an earlier snapshot observation because that socket may have closed or host bind semantics may allow coexistence; the earlier observation remains evidence but does not override the successful later probe.
 
-Why does not request Docker enrichment in this release. Docker evidence cannot change a core verdict or exit code, and no Docker process is spawned by Why.
+Without `--json`, Why prints one line per endpoint, such as `TCP 127.0.0.1:3000  in use by PID 4242 (node)`. That summary is for people and is not a stable format. Global `--verbose` prints every probe result, evidence item, and gap instead.
 
 ### Verdict exits and aggregation
 
@@ -954,7 +954,7 @@ Treat all structured output as sensitive local-system data.
 - JSON escaping prevents malformed JSON; it is not redaction. Host metadata remains raw structured data subject to the documented byte and decoding rules.
 - Evidence and operational messages are sanitized and bounded, but they may still reveal host facts. Message text is not a stable API.
 - Human terminal sanitization is independent from structured output and does not make JSON safe to publish.
-- Global `--verbose`/`-v` writes internal diagnostics only to stderr and never changes structured stdout. Those diagnostics can still contain local process or operating-system details.
+- Global `--verbose`/`-v` changes only Why's human output and never changes structured stdout.
 
 Redact structured output before sharing it. See [Security Policy](../SECURITY.md) for private vulnerability reporting.
 

@@ -258,7 +258,7 @@ fn isolated_namespace_port_kill_signals_or_refuses_without_delivery() {
     let refused_during_revalidation = stderr.contains("ownership for PID")
         && stderr.contains("became unavailable before SIGTERM")
         && stderr.contains("no termination was sent");
-    let refused_before_prompt = stderr.contains("is the only holder of port");
+    let refused_before_prompt = stderr.contains("kick cannot verify PID");
     assert!(
         signalled
             || refused_during_collection

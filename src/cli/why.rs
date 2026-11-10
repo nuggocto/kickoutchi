@@ -13,7 +13,9 @@ use serde::{Serialize, Serializer};
 
 use crate::collector::{self, CollectorError};
 use crate::config::Config;
-use crate::diagnostic::verdict::{Verdict, VerdictResult, WHY_ENDPOINTS_MAX, analyze};
+use crate::diagnostic::verdict::{
+    Evidence, Verdict, VerdictResult, WHY_ENDPOINTS_MAX, analyze, dual_stack_blockers,
+};
 use crate::display::{human_endpoint_text, sanitize, sanitize_bounded};
 use crate::labels::{SELECTOR_ADDRESS_MAX_BYTES, normalize_ip_address};
 use crate::model::Protocol;
@@ -79,6 +81,11 @@ pub(crate) struct WhyArgs {
     /// Print one `kickoutchi.why/1` JSON document instead of human evidence.
     #[arg(long)]
     pub(crate) json: bool,
+
+    /// Print every probe, evidence item, and gap instead of one line per
+    /// endpoint. Set from the global `--verbose` flag.
+    #[arg(skip)]
+    pub(crate) detailed: bool,
 }
 
 #[derive(Debug)]
@@ -91,6 +98,7 @@ struct WhyOptions {
     reuse_address: ReuseAddressMode,
     endpoints: Vec<RequestedEndpoint>,
     json: bool,
+    detailed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -293,6 +301,7 @@ impl WhyOptions {
             reuse_address,
             endpoints,
             json: args.json,
+            detailed: args.detailed,
         })
     }
 }
@@ -372,8 +381,10 @@ fn render_document(
 ) -> Result<(), PublicOutputError> {
     if options.json {
         render_json(output, options, snapshot, results, aggregate)
-    } else {
+    } else if options.detailed {
         render_human(output, options, snapshot, results, aggregate)
+    } else {
+        render_summary(output, options, snapshot, results)
     }
 }
 
@@ -457,6 +468,99 @@ fn render_human(
     }
     writeln!(output, "aggregate_exit_code={}", aggregate as u8)?;
     Ok(())
+}
+
+/// One line per endpoint: what holds it, or that it is free.
+fn render_summary(
+    output: &mut impl Write,
+    options: &WhyOptions,
+    snapshot: &NetworkSnapshot,
+    results: &[CompletedResult],
+) -> Result<(), PublicOutputError> {
+    let endpoints = results
+        .iter()
+        .map(|result| summary_endpoint_text(&result.verdict.endpoint))
+        .collect::<Vec<_>>();
+    let width = endpoints
+        .iter()
+        .map(|text| text.chars().count())
+        .max()
+        .unwrap_or(0);
+    for (result, endpoint) in results.iter().zip(&endpoints) {
+        let label = result
+            .verdict
+            .label
+            .as_deref()
+            .map_or_else(String::new, |label| format!("  [{}]", sanitize(label)));
+        writeln!(
+            output,
+            "{endpoint:<width$}  {}{label}",
+            summary_verdict_text(result, options, snapshot)
+        )?;
+    }
+    Ok(())
+}
+
+fn summary_endpoint_text(endpoint: &EndpointIdentity) -> String {
+    format!(
+        "{} {}",
+        endpoint.protocol.label(),
+        human_endpoint_text(endpoint.address, endpoint.port.get(), endpoint.ipv6_scope)
+    )
+}
+
+fn summary_verdict_text(
+    result: &CompletedResult,
+    options: &WhyOptions,
+    snapshot: &NetworkSnapshot,
+) -> String {
+    match result.verdict.verdict {
+        Verdict::BindableNow => "free".to_owned(),
+        Verdict::Owned => {
+            let owners = result
+                .verdict
+                .evidence
+                .iter()
+                .filter_map(Evidence::owner_label)
+                .map(sanitize)
+                .collect::<Vec<_>>();
+            if owners.is_empty() {
+                "in use".to_owned()
+            } else {
+                format!("in use by {}", owners.join(", "))
+            }
+        }
+        Verdict::OwnerHidden => {
+            "in use; the owner could not be read (usually another user's process; try sudo)"
+                .to_owned()
+        }
+        Verdict::KernelStateObserved => {
+            "busy: the kernel still holds a socket here (for example TIME_WAIT)".to_owned()
+        }
+        Verdict::PermissionDenied => {
+            "not allowed: binding needs more privilege or is blocked by policy".to_owned()
+        }
+        Verdict::AddressUnavailable => "address is not available on this host".to_owned(),
+        Verdict::ReservationOrPolicyUnknown => {
+            let message = result.probe.result.os_error_message.as_deref().map_or_else(
+                || "the bind failed".to_owned(),
+                |message| sanitize_bounded(message, PUBLIC_MESSAGE_MAX_BYTES),
+            );
+            let blockers =
+                dual_stack_blockers(&result.verdict.endpoint, options.ipv6_mode, snapshot);
+            if blockers.is_empty() {
+                format!("cannot bind ({message}); the cause is not visible, see --verbose")
+            } else {
+                format!(
+                    "cannot bind ({message}); probably held through dual-stack by {}",
+                    blockers.join(", ")
+                )
+            }
+        }
+        Verdict::ObservationRaced => "changed while checking; run it again".to_owned(),
+        Verdict::Unsupported => "not supported on this host".to_owned(),
+        Verdict::Indeterminate => "could not tell; rerun with --verbose for evidence".to_owned(),
+    }
 }
 
 fn render_human_result(

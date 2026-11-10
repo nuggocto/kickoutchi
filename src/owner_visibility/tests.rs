@@ -146,10 +146,9 @@ fn table_notes_name_unheld_sockets_without_blaming_permissions() {
 fn table_notes_are_silent_when_every_row_is_attributed() {
     let owned = ownerless(8080, Some(ME));
 
-    assert!(
-        visibility(496)
-            .table_notes([(true, true, &owned)])
-            .is_empty()
+    assert_eq!(
+        visibility(496).table_notes([(true, true, &owned)]),
+        [] as [String; 0]
     );
 }
 

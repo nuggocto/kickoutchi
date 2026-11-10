@@ -12,7 +12,11 @@ use crate::observation::Ipv6Scope;
 
 pub(crate) const REPLACEMENT: char = '�';
 
-/// Render an address for a human without discarding IPv6 interface identity.
+/// Render an address for a human.
+///
+/// A known IPv6 interface index is kept as `%index`. When the platform cannot
+/// report the scope (Linux procfs and macOS descriptor rows never do), the plain
+/// address is shown; structured output still records the scope as unavailable.
 pub(crate) fn human_address_text(address: IpAddr, ipv6_scope: Option<Ipv6Scope>) -> String {
     debug_assert!(
         address.is_ipv6() || ipv6_scope.is_none(),
@@ -20,12 +24,11 @@ pub(crate) fn human_address_text(address: IpAddr, ipv6_scope: Option<Ipv6Scope>)
     );
     match (address, ipv6_scope) {
         (IpAddr::V4(address), _) => address.to_string(),
-        (IpAddr::V6(address), Some(Ipv6Scope::Unscoped)) => address.to_string(),
         (IpAddr::V6(address), Some(Ipv6Scope::InterfaceIndex(index))) => {
             format!("{address}%{index}")
         }
-        (IpAddr::V6(address), Some(Ipv6Scope::Unavailable) | None) => {
-            format!("{address}%unavailable")
+        (IpAddr::V6(address), Some(Ipv6Scope::Unscoped | Ipv6Scope::Unavailable) | None) => {
+            address.to_string()
         }
     }
 }
@@ -232,7 +235,7 @@ mod tests {
         );
         assert_eq!(
             human_address_text(link_local, Some(Ipv6Scope::Unavailable)),
-            "fe80::1%unavailable"
+            "fe80::1"
         );
     }
 

@@ -7,7 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-10
+
 ### Changed
+
+- `kick kill --port` works for your own processes on a normal desktop. It used
+  to refuse with exit 4 whenever any process on the host could not be read,
+  which on Linux is almost always true (root and service processes), because
+  an unreadable process might share the socket. When the port has one verified
+  owner, kick now prints a note and targets that owner by PID with the same
+  checks as `kick kill --pid`. If a hidden process does share the socket, the
+  after-kill report says the port is still visible. A port whose owner itself
+  cannot be read is still refused.
+- `kick why` prints one line per endpoint, such as
+  `TCP 127.0.0.1:3000  in use by PID 4242 (node)` or `TCP [::1]:3000  free`.
+  The previous key=value evidence dump moved behind `--verbose`. `--json` is
+  unchanged.
+- Global `--verbose` now controls only the `why` evidence detail. It used to
+  enable debug logging whose only remaining output was a startup line.
+  Warnings, such as a failed terminal restore, still go to stderr.
+- IPv6 addresses whose interface index the platform cannot report (every IPv6
+  row on Linux and macOS) no longer show a `%unavailable` suffix in the TUI,
+  `list`, `inspect`, `watch`, and `kill` output. Known indexes still show as
+  `%3`. JSON output still records the scope as `unavailable`.
+- The TUI details pane explains hidden owners ("owner hidden: the owning process
+  could not be read") instead of printing "unavailable" in several fields.
+- When `kick why` cannot bind an IPv6 wildcard such as `[::]:3000` because an
+  IPv4 socket on the same port blocks it through dual-stack, the one-line
+  summary now names that socket's owner, for example
+  `probably held through dual-stack by PID 4242 (node) on 127.0.0.1:3000`.
+  The verdict and JSON output are unchanged.
+- A filter field name within two edits of a real one, such as `prot:tcp` or
+  `lable:web`, is now an error that suggests the intended field. It used to be
+  searched as plain text and match nothing. Other text with a colon, such as
+  `localhost:3000`, is still a plain search.
+- Windows tree kills no longer freeze the Job Object through an undocumented
+  Windows interface, and the executable no longer launches itself as a
+  freeze-capability probe before each tree kill. Containment, the final
+  membership and identity checks, and `TerminateJobObject` remain. Children
+  that members start after assignment join the job and are terminated with it.
+  The final check now runs while the tree is still running, so a tree that
+  starts processes during that check is refused without termination and can be
+  retried.
+- Release builds use one codegen unit, fat LTO, and `opt-level = "s"`. The
+  stripped Linux x86_64 binary shrank from 3.6 MB to 2.2 MB with no measured
+  change in `kick list` time. The Arch package and the Nix flake install `kick`
+  as a symlink to `kickoutchi` instead of a second copy.
+
+### Removed
+
+- Docker details in the TUI. The feature was off by default. The
+  `docker_enrichment` key is still accepted and ignored so existing config
+  files load.
+- The `tracing`, `tracing-subscriber`, and `dirs` dependencies. Warnings go
+  straight to stderr, and the config directory is resolved by a small function
+  with the same paths as before.
 
 - Borrowed and owned port rows share owner, identity, socket-state, and
   permission resolution. Watch events carry the observation sides required by
@@ -17,6 +71,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replaced platform forwarding functions with native re-exports and removed an
   unused test-only projection helper. Workflow permission checks no longer
   depend on YAML mapping order.
+- The release archive validator extracts archives with the runner's `tar` and
+  hashes them with the runner's own tool, which removes four pinned
+  test-only dependencies (`sha2`, `tar`, `xz4rust`, `zip`) and the
+  archive-path fuzz target. Workflow contract tests keep the action-pinning,
+  credential, permission, trigger, and image-digest checks and no longer assert
+  CI job names or step text.
+- Updated dependencies to their latest semver-compatible versions.
+- Builds and CI use Rust 1.99.1 (was 1.97.1); the minimum supported Rust
+  version stays 1.95.0. Linux release builds still run in a Debian 11 container
+  to keep the glibc 2.31 floor; it is now `rust:1.98.0-bullseye`, the last
+  official Rust image on Debian 11, with 1.99.1 installed by rustup.
+- CI and release tooling: cargo-dist 0.34.0 (macOS release builds move to
+  macos-15), cargo-deny 0.20.2, axoupdater-cli 0.10.3, the fuzz nightly
+  `nightly-2026-11-09`, and the latest patch releases of the pinned GitHub
+  Actions and the Arch Linux image.
+- Tests that check for empty output use `assert_eq!`, so a failure prints the
+  unexpected value. Clippy 1.99 requires this under the pedantic lints.
 
 ## [1.5.2] - 2026-10-03
 
@@ -1727,7 +1798,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tracing` diagnostics routed to stderr only, never the TUI surface.
 - Unit tests for the quit predicate, including the key-release edge case.
 
-[Unreleased]: https://github.com/nuggocto/kickoutchi/compare/v1.5.2...HEAD
+[Unreleased]: https://github.com/nuggocto/kickoutchi/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/nuggocto/kickoutchi/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/nuggocto/kickoutchi/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/nuggocto/kickoutchi/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/nuggocto/kickoutchi/compare/v1.4.6...v1.5.0

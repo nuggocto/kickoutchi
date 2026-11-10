@@ -78,8 +78,6 @@ pub(crate) struct Config {
     pub(crate) hide_system_processes: bool,
     /// Whether force kill uses the stronger typed confirmation when `--yes` is absent.
     pub(crate) confirm_force_kill: bool,
-    /// Whether TUI process-context requests may invoke Docker for optional details.
-    pub(crate) docker_enrichment: bool,
     /// Process names that require stronger confirmation before termination.
     pub(crate) protected_processes: Vec<String>,
     /// Validated endpoint annotations shared by CLI, TUI, and future diagnostics.
@@ -94,7 +92,6 @@ impl Default for Config {
             default_sort: SortMode::Port,
             hide_system_processes: false,
             confirm_force_kill: true,
-            docker_enrichment: false,
             // Built-in protections for container runtimes, databases, init
             // systems, and desktop services.
             protected_processes: protection::default_protected_processes(),
@@ -114,9 +111,10 @@ struct ConfigFile {
     default_sort: Option<SortMode>,
     hide_system_processes: Option<bool>,
     confirm_force_kill: Option<bool>,
+    // Deprecated compatibility keys. They keep their bool shape because
+    // persisted configs are strict, but Docker enrichment and automatic update
+    // checking no longer exist.
     docker_enrichment: Option<bool>,
-    // Deprecated compatibility key. Keep its bool shape because persisted
-    // configs are strict, but automatic update checking no longer exists.
     check_for_updates: Option<bool>,
     protected_processes: Option<Vec<String>>,
     ports: Option<PortLabels>,
@@ -241,10 +239,7 @@ impl Config {
         if let Some(confirm) = file.confirm_force_kill {
             config.confirm_force_kill = confirm;
         }
-        if let Some(enabled) = file.docker_enrichment {
-            config.docker_enrichment = enabled;
-        }
-        let _ = file.check_for_updates;
+        let _ = (file.docker_enrichment, file.check_for_updates);
         if let Some(protected) = file.protected_processes {
             config.protected_processes =
                 merge_protected_processes(config.protected_processes, protected).map_err(
@@ -405,7 +400,41 @@ fn merge_protected_processes(
 /// The platform default config path. Returns `None` when no config directory is
 /// available.
 fn default_config_path() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("kickoutchi").join("config.toml"))
+    Some(
+        platform_config_dir()?
+            .join("kickoutchi")
+            .join("config.toml"),
+    )
+}
+
+/// The per-user config directory: `$XDG_CONFIG_HOME` or `~/.config` on Linux,
+/// `~/Library/Application Support` on macOS, and `%APPDATA%` on Windows.
+/// Relative or empty values are ignored, as the XDG specification requires.
+fn platform_config_dir() -> Option<PathBuf> {
+    let absolute = |path: PathBuf| path.is_absolute().then_some(path);
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .and_then(absolute)
+            .or_else(|| {
+                std::env::home_dir()
+                    .and_then(absolute)
+                    .map(|home| home.join(".config"))
+            })
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::env::home_dir()
+            .and_then(absolute)
+            .map(|home| home.join("Library").join("Application Support"))
+    }
+    #[cfg(windows)]
+    {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .and_then(absolute)
+    }
 }
 
 #[cfg(test)]
@@ -444,7 +473,6 @@ mod tests {
         assert_eq!(config.default_sort, SortMode::Port);
         assert!(!config.hide_system_processes);
         assert!(config.confirm_force_kill);
-        assert!(!config.docker_enrichment);
         assert!(config.protected_processes.contains(&"systemd".to_owned()));
     }
 
@@ -601,7 +629,6 @@ label = "web"
         assert_eq!(config.default_sort, SortMode::Port);
         assert!(!config.hide_system_processes);
         assert!(config.confirm_force_kill);
-        assert!(!config.docker_enrichment);
     }
 
     #[test]
@@ -612,7 +639,6 @@ label = "web"
             default_sort = "scope"
             hide_system_processes = true
             confirm_force_kill = false
-            docker_enrichment = true
             protected_processes = ["redis", "postgres"]
             "#,
         )
@@ -621,7 +647,6 @@ label = "web"
         assert_eq!(config.default_sort, SortMode::Scope);
         assert!(config.hide_system_processes);
         assert!(!config.confirm_force_kill);
-        assert!(config.docker_enrichment);
         assert!(config.protected_processes.contains(&"docker".to_owned()));
         assert!(config.protected_processes.contains(&"postgres".to_owned()));
         assert!(config.protected_processes.contains(&"systemd".to_owned()));
@@ -645,7 +670,6 @@ label = "web"
         assert_eq!(config.default_sort, SortMode::Port);
         assert!(!config.hide_system_processes);
         assert!(config.confirm_force_kill);
-        assert!(!config.docker_enrichment);
         assert!(
             config
                 .protected_processes
@@ -668,6 +692,7 @@ label = "web"
             Some("local web services")
         );
         assert!(!example.contains("check_for_updates"));
+        assert!(!example.contains("docker_enrichment"));
     }
 
     #[test]
@@ -702,8 +727,13 @@ label = "web"
     }
 
     #[test]
-    fn deprecated_update_check_bool_is_accepted_and_ignored() {
-        for input in ["check_for_updates = true", "check_for_updates = false"] {
+    fn deprecated_bool_keys_are_accepted_and_ignored() {
+        for input in [
+            "check_for_updates = true",
+            "check_for_updates = false",
+            "docker_enrichment = true",
+            "docker_enrichment = false",
+        ] {
             let config = parse(input).expect("deprecated bool remains accepted");
 
             assert_eq!(
@@ -725,10 +755,12 @@ label = "web"
     }
 
     #[test]
-    fn deprecated_update_check_requires_a_boolean() {
-        let detail = invalid_detail(parse("check_for_updates = \"yes\""));
-        assert!(detail.contains("check_for_updates"), "detail: {detail}");
-        assert!(detail.contains("boolean"), "detail: {detail}");
+    fn deprecated_keys_still_require_a_boolean() {
+        for key in ["check_for_updates", "docker_enrichment"] {
+            let detail = invalid_detail(parse(&format!("{key} = \"yes\"")));
+            assert!(detail.contains(key), "detail: {detail}");
+            assert!(detail.contains("boolean"), "detail: {detail}");
+        }
     }
 
     #[test]

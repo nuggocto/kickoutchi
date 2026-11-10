@@ -58,12 +58,12 @@ valid and therefore selects all built-in defaults.
 `--refresh-interval SECONDS` is the global CLI override for
 `refresh_interval_seconds`; it accepts `1..=3600`. For `list`, `--sort MODE`
 overrides `default_sort` for that invocation. There are no CLI overrides for
-`hide_system_processes`, `confirm_force_kill`, `docker_enrichment`,
-`protected_processes`, or `ports`.
+`hide_system_processes`, `confirm_force_kill`, `protected_processes`, or
+`ports`.
 
-Global `--verbose`/`-v` is a diagnostic-output switch rather than a
-configuration override. It enables internal debug diagnostics on stderr and
-never changes command stdout.
+Global `--verbose`/`-v` is not a configuration override. It makes `kick why`
+print every probe result, evidence item, and collection gap instead of one line
+per endpoint, and does not change other commands.
 
 The watch polling interval is separate: `watch --interval` does not use
 `refresh_interval_seconds`.
@@ -76,7 +76,7 @@ The watch polling interval is separate: `watch --interval` does not use
 | `default_sort` | string | `"port"` | Exactly `"port"`, `"pid"`, `"protocol"`, `"process"`, `"parent"`, or `"scope"`. Sets the initial TUI sort and the `list` sort when `--sort` is absent. |
 | `hide_system_processes` | boolean | `false` | When `true`, conservatively classified system/service rows are hidden from normal `list` and TUI views. It does not affect `watch` or `list --snapshot-json`. |
 | `confirm_force_kill` | boolean | `true` | When `true`, force kill uses stronger typed confirmation unless `--yes` applies. It does not weaken protected-process confirmation. |
-| `docker_enrichment` | boolean | `false` | When `true`, qualifying TUI details and termination-context requests may run a bounded, PATH-resolved Docker CLI query for optional container metadata. When `false`, Kickoutchi never resolves or executes the Docker CLI. Native socket evidence and termination policy are unaffected. |
+| `docker_enrichment` | boolean | N/A | Deprecated compatibility key. Docker details were removed; both `true` and `false` are accepted and ignored so older configuration files still load. Non-boolean values remain invalid. |
 | `check_for_updates` | boolean | N/A | Deprecated compatibility key. Both `true` and `false` are accepted and ignored so older configuration files still load. Kickoutchi performs no automatic update check. Non-boolean values remain invalid. |
 | `protected_processes` | array of strings | `[]` as a configured extension | Adds names to the built-in protected set; it never replaces that set. Empty names are invalid. The merged, exactly deduplicated set may contain at most 256 names. |
 | `ports` | array of tables | empty | Defines up to 256 validated endpoint label selectors. See [Endpoint labels](#endpoint-labels). |
@@ -250,11 +250,12 @@ nothing. `list --port`, `list --process`, configuration-driven system hiding,
 and all `--filter` terms are likewise combined.
 
 A token whose text before the first colon is a recognized field is parsed and
-validated as structured syntax. A token without a colon is plain search. For
-backward compatibility, an unrecognized `name:value` token is also plain search
-using the entire token; it is not rejected merely because it contains a colon.
-For example, `future:value` searches for the literal case-normalized text
-`future:value`.
+validated as structured syntax. A token without a colon is plain search. An
+unrecognized `name:value` token is also plain search using the entire token, so
+`localhost:3000` and `future:value` search for that literal text. The exception
+is a lowercase name within two edits of a recognized field: `prot:tcp` or
+`lable:web` is rejected with a suggestion (`proto`, `label`) instead of
+silently searching for text that will never match.
 
 Recognized fields are reserved. If a recognized field is unsupported by a
 command, the command reports an invalid-arguments error rather than treating it
@@ -352,8 +353,8 @@ intentionally a substring search over both parent PID text and parent name.
 For list and TUI rows, each plain term can match any of:
 
 - local port or owner PID;
-- local address, `address:port`, `[address]:port`, or scoped
-  `[address%scope]:port` text (`%unavailable` when the interface is unknown);
+- local address, `address:port`, `[address]:port`, or, when the interface index
+  is known, scoped `[address%scope]:port` text;
 - protocol, visible legacy state (`listen` or `bound`), or bind scope;
 - resolved label;
 - process name, executable path, or complete bounded command line;

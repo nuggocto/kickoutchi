@@ -226,7 +226,6 @@ fn windows_port_owner_move_after_root_prepare_never_commits_job() {
         owner_uid: None,
         process_start_time_marker: crate::observation::ProcessStartMarker::windows(55).ok(),
         children: crate::model::ChildProcessSnapshot::default(),
-        docker: None,
     };
 
     let reason = super::run_windows_tree_kill_with(
@@ -297,13 +296,14 @@ fn windows_post_commit_protected_issue_exits_with_protected_code() {
         ),
         secondary_post_commit_issue: Some(
             crate::tree::windows::WindowsTreePostCommitIssue::SnapshotFailed(
-                "freezing committed Job Object failed: freeze failed".to_owned(),
+                "reading Job membership failed".to_owned(),
             ),
         ),
         cleanup_issue: Some(
-            crate::tree::windows::WindowsTreeCleanupIssue::WithheldJobThawFailed(
-                "thaw failed".to_owned(),
-            ),
+            crate::tree::windows::WindowsTreeCleanupIssue::PostTerminationSurvivors {
+                pids: vec![100],
+                wait_errors: Vec::new(),
+            },
         ),
     };
     let mut collect_ports = || Ok(Vec::new());
@@ -413,13 +413,14 @@ fn windows_partial_report_names_every_outcome_pid() {
         ),
         secondary_post_commit_issue: Some(
             crate::tree::windows::WindowsTreePostCommitIssue::SnapshotFailed(
-                "freezing committed Job Object failed: freeze failed".to_owned(),
+                "reading Job membership failed".to_owned(),
             ),
         ),
         cleanup_issue: Some(
-            crate::tree::windows::WindowsTreeCleanupIssue::WithheldJobThawFailed(
-                "thaw failed".to_owned(),
-            ),
+            crate::tree::windows::WindowsTreeCleanupIssue::PostTerminationSurvivors {
+                pids: vec![100],
+                wait_errors: Vec::new(),
+            },
         ),
     };
 
@@ -436,7 +437,7 @@ fn windows_partial_report_names_every_outcome_pid() {
         "{text}"
     );
     assert!(
-            text.contains("secondary post-commit issue: enumerating the Windows process tree failed after commit: freezing committed Job Object failed: freeze failed"),
+            text.contains("secondary post-commit issue: enumerating the Windows process tree failed after commit: reading Job membership failed"),
             "{text}"
         );
     assert!(
@@ -444,7 +445,7 @@ fn windows_partial_report_names_every_outcome_pid() {
         "{text}"
     );
     assert!(
-        text.contains("cleanup issue: thawing the withheld Windows Job Object failed: thaw failed"),
+        text.contains("cleanup issue: TerminateJobObject returned success but PID(s) 100 were not confirmed exited"),
         "{text}"
     );
 }
@@ -480,11 +481,7 @@ fn failed_windows_job_mapping_prints_partial_report_and_refreshes_ports() {
             termination_state: WindowsTreeTerminationState::Partial,
             post_commit_issue: None,
             secondary_post_commit_issue: None,
-            cleanup_issue: Some(
-                crate::tree::windows::WindowsTreeCleanupIssue::FailedTerminationThawFailed(
-                    "thaw failed".to_owned(),
-                ),
-            ),
+            cleanup_issue: None,
         }),
     };
     let mut refreshes = 0;
@@ -506,10 +503,6 @@ fn failed_windows_job_mapping_prints_partial_report_and_refreshes_ports() {
     );
     assert!(text.contains("already exited (PIDs: 102)"), "{text}");
     assert!(text.contains("not confirmed terminated: 100"), "{text}");
-    assert!(
-            text.contains("cleanup issue: thawing the Windows Job Object after TerminateJobObject failed: thaw failed"),
-            "{text}"
-        );
     assert!(
         text.contains("confirmed target ports are no longer visible"),
         "{text}"
@@ -881,7 +874,7 @@ fn port_selected_tree_pins_old_root_before_endpoint_move_and_sends_no_signal() {
         ],
         "the old root handle must be prepared before final endpoint ownership collection",
     );
-    assert!(ops.stops.is_empty());
+    assert_eq!(ops.stops, [] as [u32; 0]);
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -958,7 +951,7 @@ fn tree_authority_refusal_has_zero_stop_or_delivery() {
     );
 
     assert_eq!(reason, ExitReason::Failure);
-    assert!(ops.stops.is_empty());
+    assert_eq!(ops.stops, [] as [u32; 0]);
     assert!(
         !ops.events
             .borrow()

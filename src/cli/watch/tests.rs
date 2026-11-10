@@ -614,7 +614,7 @@ fn third_consecutive_failure_flushes_three_gaps_and_stops_collection() {
     assert_eq!(result, ExitReason::Failure);
     assert_eq!(runtime.collect_count, 4);
     assert_eq!(stdout.flush_count, 4);
-    assert!(stdout.pending.is_empty());
+    assert_eq!(String::from_utf8_lossy(&stdout.pending), "");
     let records = String::from_utf8(stdout.committed).unwrap();
     let values = records
         .lines()
@@ -637,7 +637,7 @@ fn third_consecutive_failure_flushes_three_gaps_and_stops_collection() {
     assert_eq!(values[0]["data"]["evidence_gaps"], serde_json::json!([]));
     assert_eq!(values[0]["data"]["omitted_evidence_gap_count"], 0);
     assert_eq!(values[2]["data"]["consecutive_failures"], 3);
-    assert!(stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&stderr), "");
 }
 
 #[test]
@@ -669,7 +669,7 @@ fn failed_collection_waits_a_full_interval_after_slow_completion() {
 
     assert_eq!(result, ExitReason::Failure);
     assert_eq!(runtime.monotonic, Duration::from_millis(500));
-    assert!(stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&stderr), "");
 }
 
 #[test]
@@ -700,7 +700,7 @@ fn recovery_uses_the_last_valid_snapshot_without_fabricated_releases() {
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()["event"].clone())
         .collect::<Vec<_>>();
     assert_eq!(events, ["collection_gap"]);
-    assert!(stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&stderr), "");
 }
 
 #[test]
@@ -744,7 +744,7 @@ fn ownership_and_metadata_partial_snapshot_advances_the_comparison_baseline() {
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()["event"].clone())
         .collect::<Vec<_>>();
     assert_eq!(events, ["baseline", "release", "bind", "bind", "release"]);
-    assert!(diagnostics.is_empty());
+    assert_eq!(String::from_utf8_lossy(&diagnostics), "");
 }
 
 #[test]
@@ -790,7 +790,7 @@ fn unsafe_snapshot_does_not_advance_the_comparison_baseline() {
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()["event"].clone())
         .collect::<Vec<_>>();
     assert_eq!(events, ["baseline", "collection_gap", "release", "bind"]);
-    assert!(diagnostics.is_empty());
+    assert_eq!(String::from_utf8_lossy(&diagnostics), "");
 }
 
 #[test]
@@ -826,7 +826,7 @@ fn successful_poll_resets_the_failure_budget() {
         })
         .collect::<Vec<_>>();
     assert_eq!(failures, [1, 1, 2]);
-    assert!(diagnostics.is_empty());
+    assert_eq!(String::from_utf8_lossy(&diagnostics), "");
 }
 
 struct FailingWriter {
@@ -897,7 +897,7 @@ fn broken_pipe_is_success_and_other_writer_failures_are_operational() {
         ),
         ExitReason::Success
     );
-    assert!(diagnostics.is_empty());
+    assert_eq!(String::from_utf8_lossy(&diagnostics), "");
 
     let mut failed_runtime = FakeRuntime::new(vec![Ok(snapshot())]);
     let mut failed = FailingWriter {
@@ -935,7 +935,7 @@ fn broken_pipe_is_success_and_other_writer_failures_are_operational() {
         ),
         ExitReason::Success
     );
-    assert!(flush_diagnostics.is_empty());
+    assert_eq!(String::from_utf8_lossy(&flush_diagnostics), "");
 
     let mut flush_failed_runtime = FakeRuntime::new(vec![Ok(snapshot())]);
     let mut flush_failed = FlushFailWriter {
@@ -978,8 +978,8 @@ fn no_duration_watch_stops_on_injected_cancellation_without_an_extra_collection(
 
     assert_eq!(result, ExitReason::Success);
     assert_eq!(runtime.collect_count, 1);
-    assert!(stdout.is_empty());
-    assert!(stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&stdout), "");
+    assert_eq!(String::from_utf8_lossy(&stderr), "");
 }
 
 #[test]
@@ -997,7 +997,7 @@ fn initial_collection_failure_emits_no_record_and_one_diagnostic() {
     );
 
     assert_eq!(result, ExitReason::Failure);
-    assert!(stdout.is_empty());
+    assert_eq!(String::from_utf8_lossy(&stdout), "");
     let diagnostic = String::from_utf8(stderr).unwrap();
     assert_eq!(diagnostic.lines().count(), 1);
     assert!(diagnostic.contains("initial collection failed"));
@@ -1027,7 +1027,7 @@ fn initial_partial_socket_set_fails_without_emitting_a_baseline() {
     );
 
     assert_eq!(result, ExitReason::Failure);
-    assert!(stdout.is_empty());
+    assert_eq!(String::from_utf8_lossy(&stdout), "");
     assert_eq!(
         String::from_utf8(stderr).unwrap(),
         "error: initial observation has a partial socket set\n"
@@ -1050,7 +1050,7 @@ fn slow_initial_collection_failure_is_not_masked_by_duration_expiry() {
     );
 
     assert_eq!(result, ExitReason::Failure);
-    assert!(stdout.is_empty());
+    assert_eq!(String::from_utf8_lossy(&stdout), "");
     assert!(
         String::from_utf8(stderr)
             .unwrap()
@@ -1075,7 +1075,7 @@ fn cancellation_during_initial_failure_does_not_mask_the_error() {
     );
 
     assert_eq!(result, ExitReason::Failure);
-    assert!(stdout.is_empty());
+    assert_eq!(String::from_utf8_lossy(&stdout), "");
     assert!(
         String::from_utf8(stderr)
             .unwrap()
@@ -1107,7 +1107,7 @@ fn failed_poll_crossing_duration_emits_and_flushes_its_gap() {
     let value: serde_json::Value = serde_json::from_str(records.trim()).unwrap();
     assert_eq!(value["event"], "collection_gap");
     assert_eq!(value["data"]["error"]["code"], "socket_table_unavailable");
-    assert!(stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&stderr), "");
 }
 
 #[test]
@@ -1147,7 +1147,7 @@ fn unsafe_poll_crossing_duration_emits_and_flushes_its_gap() {
         let value: serde_json::Value = serde_json::from_str(records.trim()).unwrap();
         assert_eq!(value["event"], "collection_gap");
         assert_eq!(value["data"]["error"]["code"], expected_code);
-        assert!(stderr.is_empty());
+        assert_eq!(String::from_utf8_lossy(&stderr), "");
     }
 }
 
@@ -1180,7 +1180,7 @@ fn third_failed_poll_crossing_duration_exhausts_the_failure_budget() {
     assert_eq!(result, ExitReason::Failure);
     assert_eq!(runtime.collect_count, 4);
     assert_eq!(String::from_utf8(stdout).unwrap().lines().count(), 3);
-    assert!(stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&stderr), "");
 }
 
 #[test]
@@ -1213,7 +1213,7 @@ fn cancellation_during_third_failed_poll_does_not_mask_budget_exhaustion() {
     assert_eq!(result, ExitReason::Failure);
     assert_eq!(runtime.collect_count, 4);
     assert_eq!(String::from_utf8(stdout).unwrap().lines().count(), 3);
-    assert!(stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&stderr), "");
 }
 
 #[test]
@@ -1240,7 +1240,7 @@ fn cancellation_during_failed_poll_exits_cleanly_after_its_gap() {
     let records = String::from_utf8(stdout).unwrap();
     let value: serde_json::Value = serde_json::from_str(records.trim()).unwrap();
     assert_eq!(value["event"], "collection_gap");
-    assert!(stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&stderr), "");
 }
 
 #[test]
@@ -1259,7 +1259,7 @@ fn wall_clock_failure_after_baseline_emits_no_gap() {
     );
 
     assert_eq!(result, ExitReason::Failure);
-    assert!(stdout.is_empty());
+    assert_eq!(String::from_utf8_lossy(&stdout), "");
     assert!(
         String::from_utf8(stderr)
             .unwrap()
@@ -1292,7 +1292,7 @@ fn reversed_failed_poll_interval_is_an_immediate_clock_failure() {
     );
 
     assert_eq!(result, ExitReason::Failure);
-    assert!(stdout.is_empty());
+    assert_eq!(String::from_utf8_lossy(&stdout), "");
     assert!(
         String::from_utf8(stderr)
             .unwrap()
@@ -1328,7 +1328,7 @@ fn reversed_interval_between_successful_snapshots_is_a_clock_failure() {
     );
 
     assert_eq!(result, ExitReason::Failure);
-    assert!(stdout.is_empty());
+    assert_eq!(String::from_utf8_lossy(&stdout), "");
     assert!(
         String::from_utf8(stderr)
             .unwrap()
@@ -1352,7 +1352,7 @@ fn collector_clock_failure_is_immediate_and_never_becomes_a_gap() {
     );
 
     assert_eq!(result, ExitReason::Failure);
-    assert!(stdout.is_empty());
+    assert_eq!(String::from_utf8_lossy(&stdout), "");
     assert_eq!(runtime.collect_count, 1);
     assert!(
         String::from_utf8(stderr)
@@ -1381,7 +1381,7 @@ fn duration_is_checked_between_baseline_events() {
 
     assert_eq!(result, ExitReason::Success);
     assert_eq!(String::from_utf8(stdout).unwrap().lines().count(), 1);
-    assert!(stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&stderr), "");
 }
 
 #[test]
@@ -1807,7 +1807,7 @@ fn filter_result_order_crosses_batch_boundaries_without_retaining_the_group() {
     output.flush().unwrap();
 
     assert_eq!(reason, None);
-    assert!(diagnostics.is_empty());
+    assert_eq!(String::from_utf8_lossy(&diagnostics), "");
     let rendered = String::from_utf8(output.committed).unwrap();
     let mut lines = rendered.lines();
     assert!(lines.next().unwrap().contains("filter=matched"));
@@ -1882,7 +1882,7 @@ fn filtering_uses_the_uncancelled_owner_beyond_the_public_owner_limit() {
     );
 
     assert_eq!(reason, None);
-    assert!(diagnostics.is_empty());
+    assert_eq!(String::from_utf8_lossy(&diagnostics), "");
     let output = String::from_utf8(output).unwrap();
     assert_eq!(output.lines().count(), 1);
     assert!(output.contains("RELEASE"));

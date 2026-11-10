@@ -83,7 +83,10 @@ impl Drop for KillCancellationGuard {
             )
         };
         if error != 0 {
-            tracing::error!(error = %io::Error::from_raw_os_error(error), "failed to restore kill signal mask");
+            warn_stderr!(
+                "failed to restore kill signal mask: {}",
+                io::Error::from_raw_os_error(error)
+            );
         }
     }
 }

@@ -1031,7 +1031,7 @@ fn unrestricted_visibility_remains_complete_without_target_inodes() {
     assert!(scan.losses.is_empty());
     let pass = native_pass_from_records(&[], &scan).expect("complete scan is representable");
     assert_eq!(pass.global_owner_completeness, OwnerCompleteness::Complete);
-    assert!(pass.evidence_gaps.is_empty());
+    assert_eq!(pass.evidence_gaps, []);
 
     fs::remove_dir_all(proc_root).expect("temp proc root must clean up");
 }
@@ -1305,7 +1305,7 @@ fn native_snapshot_retains_inode_and_complete_empty_owner_set() {
             .kind,
         TcpTimerKind::None
     );
-    assert!(snapshot.sockets[0].owners.is_empty());
+    assert_eq!(snapshot.sockets[0].owners, []);
     assert_eq!(snapshot.owner_completeness, OwnerCompleteness::Complete);
     assert_eq!(
         snapshot.sockets[0].owner_completeness,
@@ -1864,10 +1864,10 @@ fn tree_snapshot_accepts_exact_max_name_and_rejects_max_plus_one() {
     );
 
     fs::remove_file(&comm).expect("vanished tree name");
-    assert!(
+    assert_eq!(
         collect_tree_process_infos(&proc_root)
-            .expect("a process vanishing during its name read must still be skipped")
-            .is_empty()
+            .expect("a process vanishing during its name read must still be skipped"),
+        []
     );
 
     fs::remove_dir_all(proc_root).expect("test proc root must clean up");

@@ -155,7 +155,7 @@ fn closed_ports_do_not_end_the_wait_for_a_running_process() {
     );
 
     assert_eq!(report.ports, PortsStatus::Cleared);
-    assert!(report.exited.is_empty());
+    assert_eq!(report.exited, [] as [u32; 0]);
     assert_eq!(report.running, vec![18_422]);
     assert_eq!(script.exit_polls, SETTLE_ATTEMPTS_MAX);
     // Ports cleared on the first poll and are not polled again.
@@ -179,8 +179,8 @@ fn an_exit_observed_later_ends_the_wait() {
     );
 
     assert_eq!(report.exited, vec![18_422]);
-    assert!(report.running.is_empty());
-    assert!(report.unknown.is_empty());
+    assert_eq!(report.running, [] as [u32; 0]);
+    assert_eq!(report.unknown, []);
     assert_eq!(script.exit_polls, 4);
     assert_eq!(script.sleeps, 3);
 }
@@ -294,10 +294,17 @@ fn retry_hints_cover_several_survivors_and_unknown_ports() {
         super::sigkill_retry_hint(Platform::Linux, KillMode::Terminate, &[7, 8], false),
         "; rerun `kick kill --pid PID --tree --force` for each to send SIGKILL (it also stops their children)"
     );
-    assert!(super::sigkill_retry_hint(Platform::Linux, KillMode::Terminate, &[], false).is_empty());
-    assert!(super::sigkill_retry_hint(Platform::Linux, KillMode::Force, &[7], true).is_empty());
-    assert!(
-        super::sigkill_retry_hint(Platform::Windows, KillMode::Terminate, &[7], true).is_empty()
+    assert_eq!(
+        super::sigkill_retry_hint(Platform::Linux, KillMode::Terminate, &[], false),
+        ""
+    );
+    assert_eq!(
+        super::sigkill_retry_hint(Platform::Linux, KillMode::Force, &[7], true),
+        ""
+    );
+    assert_eq!(
+        super::sigkill_retry_hint(Platform::Windows, KillMode::Terminate, &[7], true),
+        ""
     );
 }
 

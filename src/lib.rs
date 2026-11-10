@@ -2,11 +2,22 @@
 //!
 //! This crate is internal application plumbing shared by the `kickoutchi` and
 //! `kick` binaries. It is not a supported embedding API. Its bootstrap reads
-//! process-global arguments and owns terminal, standard-I/O, tracing, and signal
+//! process-global arguments and owns terminal, standard-I/O, and signal
 //! lifecycle while it runs.
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 compile_error!("Kickoutchi supports only Linux, macOS, and Windows");
+
+/// Print a best-effort warning to stderr.
+///
+/// Used where a cleanup or restore step fails but the command can continue.
+/// Write errors are ignored because callers include `Drop` and panic paths.
+macro_rules! warn_stderr {
+    ($($argument:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), "warning: {}", format_args!($($argument)*));
+    }};
+}
 
 mod app;
 mod cli;
@@ -15,7 +26,6 @@ mod command;
 mod config;
 mod diagnostic;
 mod display;
-mod docker;
 mod error;
 mod input;
 mod inspect;
@@ -31,8 +41,6 @@ mod process_evidence;
 mod protection;
 mod public_output;
 mod query;
-#[cfg(fuzzing)]
-mod release_archive_path;
 #[cfg(test)]
 mod test_support;
 mod tree;
@@ -61,14 +69,6 @@ use crate::display::sanitize_multiline;
 #[doc(hidden)]
 #[must_use]
 pub fn run() -> ExitCode {
-    #[cfg(windows)]
-    if tree::windows::freeze_probe_requested() {
-        return tree::windows::run_freeze_probe_child();
-    }
-
-    // Install tracing before clap renders errors, without replacing an existing
-    // subscriber or interpreting other argv content.
-    init_tracing(verbose_requested());
     let args = match Cli::try_parse() {
         Ok(args) => args,
         Err(error) => {
@@ -90,10 +90,6 @@ pub fn run() -> ExitCode {
             return ExitReason::InvalidArguments.into();
         }
     };
-    if args.verbose {
-        tracing::debug!("verbose diagnostics enabled");
-    }
-
     let watch_signal_guard = if matches!(args.command.as_ref(), Some(Command::Watch(_))) {
         match WatchSignalGuard::install() {
             Ok(guard) => Some(guard),
@@ -122,7 +118,12 @@ pub fn run() -> ExitCode {
     config.apply_cli_overrides(args.refresh_interval);
 
     match args.command {
-        Some(command) => cli::run(&command, &config, watch_signal_guard).into(),
+        Some(mut command) => {
+            if let Command::Why(why) = &mut command {
+                why.detailed = args.verbose;
+            }
+            cli::run(&command, &config, watch_signal_guard).into()
+        }
         None => run_tui(&config),
     }
 }
@@ -143,8 +144,7 @@ fn run_tui(config: &Config) -> ExitCode {
     match result {
         Ok(()) => ExitReason::Success.into(),
         Err(error) => {
-            // The terminal is restored before this branch. Print the fatal error
-            // once because tracing also writes to stderr.
+            // The terminal is restored before this branch.
             eprintln!("error: {}", sanitize_multiline(&error.to_string()));
             ExitReason::Failure.into()
         }
@@ -159,30 +159,6 @@ fn write_cli_stdout(mut writer: impl Write, text: &str) -> io::Result<()> {
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
         result => result,
     }
-}
-
-/// Set up tracing for diagnostics written outside rendered TUI frames.
-///
-/// Logs go to stderr during startup, shutdown, panic handling, and fatal-error
-/// reporting. The alternate screen owns stdout.
-fn init_tracing(verbose: bool) {
-    // Embedders own the process-global subscriber; an existing one is valid.
-    let max_level = if verbose {
-        tracing::Level::DEBUG
-    } else {
-        tracing::Level::WARN
-    };
-    let _ = tracing_subscriber::fmt()
-        .with_writer(io::stderr)
-        .with_ansi(false)
-        .with_max_level(max_level)
-        .try_init();
-}
-
-fn verbose_requested() -> bool {
-    std::env::args_os()
-        .skip(1)
-        .any(|argument| argument == "--verbose" || argument == "-v")
 }
 
 #[cfg(test)]

@@ -1,47 +1,29 @@
 //! Small, platform-neutral helpers shared by the TUI state transitions.
 
 use crate::command;
-use crate::docker;
-use crate::model::{DockerPortContext, PortEntryView, ProcessContext};
+use crate::model::ProcessContext;
 use crate::observation::{ProcessIdentity, ProcessStartMarker};
 use crate::platform;
 use crate::process::{self, KillMode, KillTarget, TerminationOutcome};
 
 pub(super) fn collect_selected_process_context(
-    entry: PortEntryView<'_>,
-    docker_enrichment: bool,
+    identity: Option<ProcessIdentity>,
 ) -> ProcessContext {
     collect_selected_process_context_with(
-        entry,
-        docker_enrichment,
+        identity,
         platform::collect_process_context,
         platform::process_start_time_marker,
-        docker::enrich_port,
     )
 }
 
-pub(super) fn collect_selected_process_context_with<CollectContext, ReadMarker, EnrichDocker>(
-    entry: PortEntryView<'_>,
-    docker_enrichment: bool,
-    collect_context: CollectContext,
-    read_marker: ReadMarker,
-    enrich_docker: EnrichDocker,
-) -> ProcessContext
-where
-    CollectContext: FnOnce(u32) -> ProcessContext,
-    ReadMarker: FnOnce(u32) -> Option<ProcessStartMarker>,
-    EnrichDocker: FnOnce(PortEntryView<'_>) -> Option<DockerPortContext>,
-{
-    let mut context = entry
-        .process_identity
+pub(super) fn collect_selected_process_context_with(
+    identity: Option<ProcessIdentity>,
+    collect_context: impl FnOnce(u32) -> ProcessContext,
+    read_marker: impl FnOnce(u32) -> Option<ProcessStartMarker>,
+) -> ProcessContext {
+    identity
         .map(|identity| same_generation_context(identity, collect_context, read_marker))
-        .unwrap_or_default();
-    context.docker = if docker_enrichment {
-        enrich_docker(entry)
-    } else {
-        None
-    };
-    context
+        .unwrap_or_default()
 }
 
 /// Read process-owned context only for the generation the snapshot row named.
