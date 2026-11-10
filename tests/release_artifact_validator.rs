@@ -61,46 +61,62 @@ fn require_native_target(raw: &str, target: &str) -> ValidationResult<()> {
 }
 
 /// SHA-256 of a file, computed with the runner's own tool so the validator
-/// needs no hashing dependency.
+/// needs no hashing dependency. Windows uses `certutil`, which ships with the
+/// OS; PowerShell's `Get-FileHash` fails to load when a runner's module path
+/// points Windows PowerShell at PowerShell 7 modules.
 fn sha256(path: &Path) -> ValidationResult<String> {
+    let path = external_tool_path(path);
     let mut command = if cfg!(windows) {
-        let mut command = Command::new("powershell");
-        command
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "(Get-FileHash -Algorithm SHA256 -LiteralPath $env:KICKOUTCHI_HASH_PATH).Hash",
-            ])
-            .env("KICKOUTCHI_HASH_PATH", path);
+        let mut command = Command::new("certutil");
+        command.arg("-hashfile").arg(&path).arg("SHA256");
         command
     } else if cfg!(target_os = "macos") {
         let mut command = Command::new("shasum");
-        command.args(["-a", "256"]).arg(path);
+        command.args(["-a", "256"]).arg(&path);
         command
     } else {
         let mut command = Command::new("sha256sum");
-        command.arg(path);
+        command.arg(&path);
         command
     };
     let description = format!("SHA-256 of {}", path.display());
     let output = run_command(&mut command, &description, BINARY_COMMAND_WAIT)?;
-    let digest = str::from_utf8(&output.stdout)
+    match str::from_utf8(&output.stdout)
         .ok()
-        .and_then(|stdout| stdout.split_ascii_whitespace().next())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if !output.status.success()
-        || digest.len() != 64
-        || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        .and_then(parse_sha256_output)
     {
-        return Err(format!(
-            "could not compute {description}: status={}, stderr={:?}",
+        Some(digest) if output.status.success() => Ok(digest),
+        _ => Err(format!(
+            "could not compute {description}: status={}, stdout={:?}, stderr={:?}",
             output.status,
+            String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
-        ));
+        )),
     }
-    Ok(digest)
+}
+
+/// The digest from `sha256sum`/`shasum` (`HEX  FILE`) or `certutil` (a
+/// header line, the hex digest, possibly space-separated, then a status line).
+fn parse_sha256_output(stdout: &str) -> Option<String> {
+    let is_digest =
+        |text: &str| text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit());
+    stdout.lines().find_map(|line| {
+        let first = line.split_ascii_whitespace().next()?;
+        if is_digest(first) {
+            return Some(first.to_ascii_lowercase());
+        }
+        let joined = line.split_ascii_whitespace().collect::<String>();
+        is_digest(&joined).then(|| joined.to_ascii_lowercase())
+    })
+}
+
+/// Drop the Windows verbatim prefix (`\\?\`) that `canonicalize` adds, which
+/// not every external tool accepts. Other paths are returned unchanged.
+fn external_tool_path(path: &Path) -> PathBuf {
+    path.to_str()
+        .and_then(|text| text.strip_prefix(r"\\?\"))
+        .filter(|rest| !rest.starts_with(r"UNC\"))
+        .map_or_else(|| path.to_path_buf(), PathBuf::from)
 }
 
 fn verify_checksum(archive: &Path, digest: &str) -> ValidationResult<()> {
@@ -193,9 +209,9 @@ fn extract_release_binaries(
     let output = run_command(
         Command::new(tar)
             .arg("-xf")
-            .arg(archive)
+            .arg(external_tool_path(archive))
             .arg("-C")
-            .arg(destination),
+            .arg(external_tool_path(destination)),
         &description,
         RELEASE_COMMAND_WAIT,
     )?;
@@ -1128,6 +1144,53 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&selected["kick"]).expect("extracted alias"),
             "kick"
+        );
+    }
+
+    #[test]
+    fn hash_output_parser_reads_unix_and_certutil_formats() {
+        let digest = "ab".repeat(32);
+        assert_eq!(
+            parse_sha256_output(&format!("{digest}  artifact.zip\n")).as_deref(),
+            Some(digest.as_str())
+        );
+        let certutil = format!(
+            "SHA256 hash of D:\\a\\artifact.zip:\r\n{}\r\nCertUtil: -hashfile command completed successfully.\r\n",
+            digest.to_ascii_uppercase()
+        );
+        assert_eq!(
+            parse_sha256_output(&certutil).as_deref(),
+            Some(digest.as_str())
+        );
+        let spaced = format!(
+            "SHA256 hash of artifact.zip:\n{}\nCertUtil: done\n",
+            digest
+                .as_bytes()
+                .chunks(2)
+                .map(|pair| str::from_utf8(pair).expect("hex is ASCII"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        assert_eq!(
+            parse_sha256_output(&spaced).as_deref(),
+            Some(digest.as_str())
+        );
+        assert_eq!(parse_sha256_output("CertUtil: error\n"), None);
+    }
+
+    #[test]
+    fn external_tool_paths_drop_only_the_local_verbatim_prefix() {
+        assert_eq!(
+            external_tool_path(Path::new(r"\\?\D:\a\artifact.zip")),
+            PathBuf::from(r"D:\a\artifact.zip")
+        );
+        assert_eq!(
+            external_tool_path(Path::new(r"\\?\UNC\server\share")),
+            PathBuf::from(r"\\?\UNC\server\share")
+        );
+        assert_eq!(
+            external_tool_path(Path::new("/tmp/artifact.tar.xz")),
+            PathBuf::from("/tmp/artifact.tar.xz")
         );
     }
 
