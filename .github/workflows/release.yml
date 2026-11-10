@@ -274,7 +274,7 @@ jobs:
             installer: kickoutchi-installer.sh
             targets_json: '["x86_64-unknown-linux-gnu"]'
           - name: macOS ARM64
-            runner: macos-14
+            runner: macos-15
             installer: kickoutchi-installer.sh
             targets_json: '["aarch64-apple-darwin"]'
           - name: Windows x64
