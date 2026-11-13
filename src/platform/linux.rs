@@ -822,7 +822,7 @@ fn parse_socket_table(
     }
 
     let mut records = Vec::new();
-    for (line_index, line) in lines.enumerate() {
+    for line in lines {
         if line.trim().is_empty() {
             continue;
         }
@@ -832,13 +832,7 @@ fn parse_socket_table(
         match parse_socket_line(line, protocol, address_family, clock_ticks_per_second) {
             Ok(Some(record)) => records.push(record),
             Ok(None) => {}
-            Err(error) => {
-                warn_stderr!(
-                    "skipped malformed /proc/net row {}: {error}",
-                    line_index + 2
-                );
-                return Err(error);
-            }
+            Err(error) => return Err(error),
         }
     }
     Ok(records)

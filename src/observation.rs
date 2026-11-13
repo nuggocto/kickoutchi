@@ -45,17 +45,16 @@ pub(crate) enum Ipv6Scope {
 
 #[cfg(test)]
 impl Ipv6Scope {
-    pub(crate) fn interface_index(value: u64) -> Result<Self, EndpointIdentityError> {
+    /// `None` unless the value is in `1..=u32::MAX`.
+    pub(crate) fn interface_index(value: u64) -> Option<Self> {
         u32::try_from(value)
             .ok()
             .and_then(NonZeroU32::new)
             .map(Self::InterfaceIndex)
-            .ok_or(EndpointIdentityError::InvalidInterfaceIndex)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[allow(dead_code, reason = "validation variants are host-specific")]
 pub(crate) enum EndpointIdentityError {
     #[error("endpoint port must be in 1..=65535")]
     InvalidPort,
@@ -63,8 +62,6 @@ pub(crate) enum EndpointIdentityError {
     Ipv4WithScope,
     #[error("IPv6 endpoints require an explicit scope state")]
     Ipv6WithoutScope,
-    #[error("IPv6 interface index must be in 1..=4294967295")]
-    InvalidInterfaceIndex,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -358,7 +355,10 @@ impl TcpTimerObservation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[allow(dead_code, reason = "not every evidence code is emitted on every host")]
+#[allow(
+    dead_code,
+    reason = "not every evidence code is emitted on every host, and `ScopeExcluded` is a reserved contract value"
+)]
 pub(crate) enum EvidenceGapCode {
     OwnerPermissionDenied,
     OwnerAttributionIncomplete,
@@ -565,7 +565,10 @@ pub(crate) enum SnapshotCompleteness {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[allow(dead_code, reason = "limitations are host and capability specific")]
+#[allow(
+    dead_code,
+    reason = "limitations are host and capability specific, and `NativeFieldUnavailable` is a reserved contract value"
+)]
 pub(crate) enum ScopeLimitation {
     OtherNetworkNamespacesExcluded,
     ProcessFirstSocketVisibilityLimited,

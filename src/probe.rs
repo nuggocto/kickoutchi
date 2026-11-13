@@ -118,9 +118,6 @@ impl From<EndpointIdentityError> for ProbeRequestError {
             EndpointIdentityError::InvalidPort => Self::InvalidPort,
             EndpointIdentityError::Ipv4WithScope => Self::Ipv4WithScope,
             EndpointIdentityError::Ipv6WithoutScope => Self::Ipv6WithoutScope,
-            EndpointIdentityError::InvalidInterfaceIndex => {
-                unreachable!("`EndpointIdentity::new` performs no interface-index validation")
-            }
         }
     }
 }

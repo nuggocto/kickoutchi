@@ -29,12 +29,7 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App, theme: Theme) -> 
     let content_rows = usize::from(area.height.saturating_sub(2));
     let content_cols = usize::from(area.width.saturating_sub(2));
     let lines = app.kill_confirmation().map_or_else(
-        || {
-            Some(vec![Line::styled(
-                "No termination target selected.",
-                theme.muted(),
-            )])
-        },
+        || Some(vec![Line::raw("No termination target selected.")]),
         |confirmation| confirmation_lines(confirmation, theme, content_rows, content_cols),
     );
     let (lines, actionable) = lines.map_or_else(
@@ -45,8 +40,7 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App, theme: Theme) -> 
     let modal = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
         Block::bordered()
             .title("Confirm Termination")
-            .title_style(theme.title())
-            .border_style(theme.border()),
+            .title_style(theme.title()),
     );
     frame.render_widget(Clear, area);
     frame.render_widget(modal, area);
@@ -71,12 +65,7 @@ pub(crate) fn render_tree(frame: &mut Frame, area: Rect, app: &App, theme: Theme
     let content_rows = usize::from(area.height.saturating_sub(2));
     let content_cols = usize::from(area.width.saturating_sub(2));
     let lines = app.tree_confirmation().map_or_else(
-        || {
-            Some(vec![Line::styled(
-                "No tree termination target selected.",
-                theme.muted(),
-            )])
-        },
+        || Some(vec![Line::raw("No tree termination target selected.")]),
         |confirmation| tree_confirmation_lines(confirmation, theme, content_rows, content_cols),
     );
     let (lines, actionable) = lines.map_or_else(
@@ -92,8 +81,7 @@ pub(crate) fn render_tree(frame: &mut Frame, area: Rect, app: &App, theme: Theme
     let modal = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
         Block::bordered()
             .title("Confirm Tree Termination")
-            .title_style(theme.title())
-            .border_style(theme.border()),
+            .title_style(theme.title()),
     );
     frame.render_widget(Clear, area);
     frame.render_widget(modal, area);
@@ -126,10 +114,7 @@ fn tree_confirmation_lines(
         // The background worker is still walking the process table; the modal
         // must say so instead of showing a count it does not have or accepting
         // a word before the user can review that count.
-        None => head.push(Line::styled(
-            "Enumerating the process tree...",
-            theme.muted(),
-        )),
+        None => head.push(Line::raw("Enumerating the process tree...")),
         Some(preview) => head.push(field(
             "Scope",
             format!("tree ({} processes)", preview.len()),

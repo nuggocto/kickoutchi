@@ -276,6 +276,8 @@ The stable `EvidenceGapCode` values are:
 - `noncritical_evidence_truncated`
 - `observation_raced`
 
+`scope_excluded` is reserved and is not emitted today.
+
 #### Scope limitations
 
 The stable values, in serialization order, are:
@@ -288,6 +290,8 @@ The stable values, in serialization order, are:
 - `scoped_ipv6_exact_matching_unavailable`
 - `native_field_unavailable`
 - `polling_interval_blind_spot`
+
+As a scope limitation, `native_field_unavailable` is reserved and is not emitted today. The evidence-gap code of the same name is emitted.
 
 #### Evidence sources
 

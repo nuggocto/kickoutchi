@@ -15,7 +15,7 @@ permissions:
 env:
   AXOUPDATER_VERSION: "0.10.3"
   DIST_VERSION: "0.34.0"
-  RUST_VERSION: "1.99.1"
+  RUST_VERSION: "1.100.0"
 
 concurrency:
   # Releases share the Homebrew tap branch and must publish in order.

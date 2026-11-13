@@ -15,10 +15,7 @@ use super::{rendered_rows, status_messages, theme::Theme};
 pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     let messages = status_messages(app);
     let lines = if messages.is_empty() {
-        vec![Line::styled(
-            "No kill results or errors to show.",
-            theme.muted(),
-        )]
+        vec![Line::raw("No kill results or errors to show.")]
     } else {
         let mut lines = Vec::with_capacity(messages.len() * 2);
         for message in messages {
@@ -31,8 +28,7 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
     };
     let block = Block::bordered()
         .title("Kill Results and Errors")
-        .title_style(theme.title())
-        .border_style(theme.border());
+        .title_style(theme.title());
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);

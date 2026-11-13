@@ -187,24 +187,34 @@ impl Config {
         if let Some(path) = path_override {
             return Self::load_from(path);
         }
-        Self::load_default(default_config_path())
+        Self::load_first(default_config_paths())
     }
 
-    fn load_default(path: Option<PathBuf>) -> Result<Self, ConfigError> {
-        let Some(path) = path else {
-            // No config directory on this system, so there's nothing to read.
-            return Ok(Self::default());
-        };
-        match read_config_file(&path) {
-            Ok(text) => Self::parse(&text, &path),
-            // Read directly to avoid an existence-check race.
-            Err(ConfigError::Read { source, .. })
-                if source.kind() == std::io::ErrorKind::NotFound =>
-            {
-                Ok(Self::default())
+    /// Load the first file that exists. No candidate, or none present, selects
+    /// the built-in defaults. A file that exists but cannot be read or parsed
+    /// is an error rather than a reason to try the next one.
+    fn load_first(
+        candidates: impl IntoIterator<Item = DefaultConfigFile>,
+    ) -> Result<Self, ConfigError> {
+        for DefaultConfigFile {
+            path,
+            required_owner,
+        } in candidates
+        {
+            let text = match required_owner {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                Some(owner) => read_config_file_owned_by(&path, owner),
+                _ => read_config_file(&path),
+            };
+            match text {
+                Ok(text) => return Self::parse(&text, &path),
+                // Read directly to avoid an existence-check race.
+                Err(ConfigError::Read { source, .. })
+                    if source.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
             }
-            Err(error) => Err(error),
         }
+        Ok(Self::default())
     }
 
     /// Load an explicitly selected file. A missing file is an error.
@@ -291,6 +301,38 @@ fn read_config_file(path: &Path) -> Result<String, ConfigError> {
         path: path.to_path_buf(),
         source,
     })?;
+    read_config_from(file, path)
+}
+
+/// Read the invoking user's config while running as root for them.
+///
+/// That user controls the path, so a symlink there could point root at a file
+/// the user cannot read, and a TOML error would then echo part of it. The
+/// opened file must therefore be a regular file owned by that user. The check
+/// runs on the open descriptor, so the path cannot be swapped after it.
+/// Non-blocking open keeps a planted FIFO from hanging the process.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn read_config_file_owned_by(path: &Path, owner: u32) -> Result<String, ConfigError> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let read_error = |source| ConfigError::Read {
+        path: path.to_path_buf(),
+        source,
+    };
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
+        .open(path)
+        .map_err(read_error)?;
+    let metadata = file.metadata().map_err(read_error)?;
+    if !metadata.is_file() || metadata.uid() != owner {
+        return Err(ConfigError::Invalid {
+            path: path.to_path_buf(),
+            detail: format!(
+                "not a regular file owned by the user who ran sudo (uid {owner}); pass --config FILE to read it anyway"
+            ),
+        });
+    }
     read_config_from(file, path)
 }
 
@@ -397,37 +439,49 @@ fn merge_protected_processes(
     Ok(defaults)
 }
 
-/// The platform default config path. Returns `None` when no config directory is
-/// available.
-fn default_config_path() -> Option<PathBuf> {
-    Some(
-        platform_config_dir()?
-            .join("kickoutchi")
-            .join("config.toml"),
-    )
+/// The default config paths in the order they are tried. Empty when no config
+/// directory is available.
+///
+/// Under `sudo` the invoking user's file comes first. sudo normally resets
+/// `HOME` to root's, which would otherwise drop that user's protected names and
+/// confirmation settings for the run with the most kill authority.
+fn default_config_paths() -> Vec<DefaultConfigFile> {
+    let mut dirs: Vec<(PathBuf, Option<u32>)> = Vec::with_capacity(2);
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    dirs.extend(sudo_invoker_config_dir().map(|(dir, uid)| (dir, Some(uid))));
+    dirs.extend(platform_config_dir().map(|dir| (dir, None)));
+    // When both name the same directory, the owner-checked entry is kept.
+    dirs.dedup_by(|later, earlier| later.0 == earlier.0);
+    dirs.into_iter()
+        .map(|(dir, required_owner)| DefaultConfigFile {
+            path: dir.join("kickoutchi").join("config.toml"),
+            required_owner,
+        })
+        .collect()
+}
+
+/// One default config path to try.
+struct DefaultConfigFile {
+    path: PathBuf,
+    /// Set for the path taken from the user who ran sudo: the file must be a
+    /// regular file owned by this UID before root reads it.
+    required_owner: Option<u32>,
 }
 
 /// The per-user config directory: `$XDG_CONFIG_HOME` or `~/.config` on Linux,
 /// `~/Library/Application Support` on macOS, and `%APPDATA%` on Windows.
 /// Relative or empty values are ignored, as the XDG specification requires.
 fn platform_config_dir() -> Option<PathBuf> {
-    let absolute = |path: PathBuf| path.is_absolute().then_some(path);
     #[cfg(target_os = "linux")]
     {
         std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .and_then(absolute)
-            .or_else(|| {
-                std::env::home_dir()
-                    .and_then(absolute)
-                    .map(|home| home.join(".config"))
-            })
+            .or_else(|| std::env::home_dir().and_then(home_config_dir))
     }
     #[cfg(target_os = "macos")]
     {
-        std::env::home_dir()
-            .and_then(absolute)
-            .map(|home| home.join("Library").join("Application Support"))
+        std::env::home_dir().and_then(home_config_dir)
     }
     #[cfg(windows)]
     {
@@ -435,6 +489,45 @@ fn platform_config_dir() -> Option<PathBuf> {
             .map(PathBuf::from)
             .and_then(absolute)
     }
+}
+
+fn absolute(path: PathBuf) -> Option<PathBuf> {
+    path.is_absolute().then_some(path)
+}
+
+/// The config directory inside a home directory, ignoring a relative home.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn home_config_dir(home: PathBuf) -> Option<PathBuf> {
+    let home = absolute(home)?;
+    #[cfg(target_os = "linux")]
+    return Some(home.join(".config"));
+    #[cfg(target_os = "macos")]
+    return Some(home.join("Library").join("Application Support"));
+}
+
+/// The config directory and UID of the user who ran `sudo`, when this process
+/// is root because of it. The home directory comes from the account database, since
+/// sudo does not pass the user's `HOME` or `XDG_CONFIG_HOME` along by default.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn sudo_invoker_config_dir() -> Option<(PathBuf, u32)> {
+    let uid = sudo_invoker_uid(
+        crate::process::current_user_id(),
+        std::env::var_os("SUDO_UID").as_deref(),
+    )?;
+    let dir = crate::account::home_dir(uid).and_then(home_config_dir)?;
+    Some((dir, uid))
+}
+
+/// The non-root UID in `SUDO_UID`, honored only when running as root. An
+/// unprivileged process ignores the variable, so setting it cannot redirect
+/// the config path.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn sudo_invoker_uid(effective_uid: u32, sudo_uid: Option<&std::ffi::OsStr>) -> Option<u32> {
+    if effective_uid != 0 {
+        return None;
+    }
+    let uid = sudo_uid?.to_str()?.parse::<u32>().ok()?;
+    (uid != 0).then_some(uid)
 }
 
 #[cfg(test)]
@@ -862,7 +955,7 @@ label = "web"
         fs::create_dir(&directory).expect("test directory must be created");
         let path = directory.join("config.toml");
 
-        let config = Config::load_default(Some(path)).expect("an absent default is valid");
+        let config = Config::load_first([unchecked(path)]).expect("an absent default is valid");
 
         assert_eq!(config.refresh_interval, Config::default().refresh_interval);
         assert_eq!(config.default_sort, Config::default().default_sort);
@@ -871,6 +964,89 @@ label = "web"
             Config::default().protected_processes
         );
         fs::remove_dir(directory).expect("test directory must be removed");
+    }
+
+    #[test]
+    fn first_existing_default_config_wins_and_a_broken_one_is_not_skipped() {
+        let directory = std::env::temp_dir().join(format!(
+            "kickoutchi-config-candidates-{}",
+            std::process::id(),
+        ));
+        fs::create_dir(&directory).expect("test directory must be created");
+        let missing = directory.join("missing.toml");
+        let first = directory.join("first.toml");
+        let second = directory.join("second.toml");
+        let broken = directory.join("broken.toml");
+        fs::write(&first, "refresh_interval_seconds = 7").expect("fixture must be written");
+        fs::write(&second, "refresh_interval_seconds = 9").expect("fixture must be written");
+        fs::write(&broken, "refresh_interval_seconds = ").expect("fixture must be written");
+
+        let config = Config::load_first([missing.clone(), first, second.clone()].map(unchecked))
+            .expect("the first existing file must load");
+        let rejected = Config::load_first([missing, broken, second].map(unchecked));
+
+        fs::remove_dir_all(directory).expect("test directory must be removed");
+        assert_eq!(config.refresh_interval, Duration::from_secs(7));
+        assert!(matches!(rejected, Err(ConfigError::Invalid { .. })));
+    }
+
+    fn unchecked(path: std::path::PathBuf) -> super::DefaultConfigFile {
+        super::DefaultConfigFile {
+            path,
+            required_owner: None,
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn sudo_user_config_must_be_a_regular_file_owned_by_that_user() {
+        use std::os::unix::fs::MetadataExt;
+
+        use super::read_config_file_owned_by;
+
+        let directory =
+            std::env::temp_dir().join(format!("kickoutchi-config-owner-{}", std::process::id()));
+        fs::create_dir(&directory).expect("test directory must be created");
+        let file = directory.join("config.toml");
+        let link = directory.join("link.toml");
+        fs::write(&file, "refresh_interval_seconds = 7").expect("fixture must be written");
+        std::os::unix::fs::symlink("/etc/passwd", &link).expect("symlink must be created");
+        let owner = fs::metadata(&file).expect("fixture must exist").uid();
+
+        let accepted = read_config_file_owned_by(&file, owner);
+        let wrong_owner = read_config_file_owned_by(&file, owner.wrapping_add(1));
+        let foreign_target = read_config_file_owned_by(&link, owner.wrapping_add(1));
+        let not_a_file = read_config_file_owned_by(&directory, owner);
+
+        fs::remove_dir_all(directory).expect("test directory must be removed");
+        assert_eq!(
+            accepted.expect("own file loads"),
+            "refresh_interval_seconds = 7"
+        );
+        for rejected in [wrong_owner, foreign_target] {
+            let detail = invalid_detail(rejected.map(|_| Config::default()));
+            assert!(
+                detail.contains("not a regular file owned"),
+                "detail: {detail}"
+            );
+            assert!(!detail.contains("root:"), "detail: {detail}");
+        }
+        assert!(not_a_file.is_err());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn sudo_uid_is_honored_only_for_root_and_only_when_it_names_another_user() {
+        use std::ffi::OsStr;
+
+        use super::sudo_invoker_uid;
+
+        assert_eq!(sudo_invoker_uid(0, Some(OsStr::new("1000"))), Some(1000));
+        assert_eq!(sudo_invoker_uid(1000, Some(OsStr::new("1001"))), None);
+        assert_eq!(sudo_invoker_uid(0, Some(OsStr::new("0"))), None);
+        assert_eq!(sudo_invoker_uid(0, Some(OsStr::new("-1"))), None);
+        assert_eq!(sudo_invoker_uid(0, Some(OsStr::new("someone"))), None);
+        assert_eq!(sudo_invoker_uid(0, None), None);
     }
 
     #[test]

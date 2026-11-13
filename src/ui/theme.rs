@@ -19,12 +19,13 @@ impl Theme {
         }
     }
 
-    pub(crate) fn title(self) -> Style {
-        self.fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    #[cfg(test)]
+    pub(crate) fn from_no_color(no_color: bool) -> Self {
+        Self { no_color }
     }
 
-    pub(crate) fn border(self) -> Style {
-        self.fg(Color::Reset)
+    pub(crate) fn title(self) -> Style {
+        self.fg(Color::Cyan).add_modifier(Modifier::BOLD)
     }
 
     pub(crate) fn table_header(self) -> Style {
@@ -50,8 +51,15 @@ impl Theme {
         self.fg(Color::Yellow).add_modifier(Modifier::BOLD)
     }
 
-    pub(crate) fn muted(self) -> Style {
-        self.fg(Color::Reset)
+    /// A row whose owner could be read: the default foreground in bold. It
+    /// uses no palette color, so it is legible in any terminal theme and stays
+    /// on under `NO_COLOR`.
+    #[expect(
+        clippy::unused_self,
+        reason = "every Theme accessor takes self so callers stay uniform when a style becomes palette-dependent"
+    )]
+    pub(crate) fn readable_owner(self) -> Style {
+        Style::default().add_modifier(Modifier::BOLD)
     }
 
     pub(crate) fn label(self) -> Style {

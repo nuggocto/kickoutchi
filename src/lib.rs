@@ -19,6 +19,8 @@ macro_rules! warn_stderr {
     }};
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod account;
 mod app;
 mod cli;
 mod collector;
@@ -67,7 +69,6 @@ use crate::display::sanitize_multiline;
 /// Argument errors are rendered here rather than by clap's process-exiting helper
 /// so untrusted argv text passes through the terminal sanitizer.
 #[doc(hidden)]
-#[must_use]
 pub fn run() -> ExitCode {
     let args = match Cli::try_parse() {
         Ok(args) => args,

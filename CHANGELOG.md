@@ -7,10 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-11-13
+
 ### Changed
 
+- `sudo kick` reads the invoking user's configuration file on Linux and macOS.
+  sudo resets `HOME`, so it used to load root's file or the built-in defaults,
+  which dropped your protected names, labels, and confirmation settings for the
+  run with the most kill authority. The file must be a regular file owned by
+  that user. Root's default path is still read when the user has no file, and
+  `--config` still wins.
+- TUI rows with a hidden owner use the plain default foreground instead of
+  bold yellow, and rows whose owner was read are bold. As a normal user most
+  system sockets have a hidden owner, so yellow covered nearly the whole table.
+  Yellow now marks a known PID whose details could not all be read, and red
+  still marks protected processes. The help modal explains the row styles.
+- ratatui, clap, and toml are built without default features they did not use.
+  The lockfile drops from 213 to 109 packages, including `time` and the unused
+  terminal backends. Help and error text are unchanged.
+- The pinned toolchain for local, CI, and release builds is Rust 1.100.0. The
+  minimum supported Rust version remains 1.95.0.
+- `errno` is updated to 0.3.15 in both lockfiles.
 - The Nix flake locks nixpkgs `nixos-unstable` from 2026-11-07 (was
   2026-06-29).
+
+### Fixed
+
+- A malformed `/proc/net` row no longer prints a warning over the TUI on every
+  refresh. The failed collection is already reported in the status line and by
+  the CLI error.
+
+### Documentation
+
+- The README covers the TUI keys, row colors, `NO_COLOR`, and running under
+  sudo, and no longer describes a `SCOPE` column in `kick list`.
+- `docs/configuration.md` documents the sudo configuration path, `NO_COLOR`,
+  and why `hide_system_processes` hides more rows under sudo.
+- `docs/structured-output.md` marks the `scope_excluded` gap code and the
+  `native_field_unavailable` scope limitation as reserved.
+- `docs/configuration.md` no longer says `list --port` accepts `0`.
+- `docs/platform-support.md` describes the current `kill --port` behavior when
+  other processes cannot be read.
+- `SECURITY.md` covers the configuration file read under sudo.
 
 ## [1.6.0] - 2026-11-10
 
@@ -1803,7 +1841,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tracing` diagnostics routed to stderr only, never the TUI surface.
 - Unit tests for the quit predicate, including the key-release edge case.
 
-[Unreleased]: https://github.com/nuggocto/kickoutchi/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/nuggocto/kickoutchi/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/nuggocto/kickoutchi/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/nuggocto/kickoutchi/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/nuggocto/kickoutchi/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/nuggocto/kickoutchi/compare/v1.5.0...v1.5.1

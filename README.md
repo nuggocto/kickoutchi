@@ -36,7 +36,7 @@ evidence, and protected processes that were not explicitly confirmed.
 # Homebrew (Linux and macOS)
 brew install nuggocto/tap/kickoutchi
 
-# Arch (AUR) — prebuilt binary
+# Arch (AUR), prebuilt binary
 yay -S kickoutchi-bin
 
 # Cargo from Git
@@ -103,7 +103,7 @@ Package-manager installs should use the same manager that installed Kickoutchi:
 brew update
 brew upgrade nuggocto/tap/kickoutchi
 
-# Arch (AUR) — a normal full-system upgrade covers it
+# Arch (AUR): a normal full-system upgrade covers it
 yay -Syu
 
 # Nix profile installed from the repository flake (Linux only)
@@ -126,7 +126,7 @@ the package manager commands above when you choose to check for an update.
 
 An unqualified Git or Linux Nix GitHub source follows the repository's default branch,
 which can contain changes newer than the latest stable release. For a
-reproducible stable source install, select an explicit tag such as `v1.6.0` and
+reproducible stable source install, select an explicit tag such as `v1.7.0` and
 replace that tag deliberately when upgrading. Direct-archive installs must be
 replaced manually after verifying the new archive.
 
@@ -136,6 +136,7 @@ replaced manually after verifying the new archive.
 kickoutchi                              # open the TUI
 kick list                               # list visible ports
 kick list --port 3000                   # select one port
+kick list --process node --sort pid     # match a process name, sort by PID
 kick list --json                        # stable script-friendly array
 kick list --snapshot-json               # complete within-scope snapshot
 kick inspect --port 3000                # inspect the owning process family
@@ -149,6 +150,52 @@ kick kill --pid 12345 --group            # Linux/macOS process group
 
 `kick` and `kickoutchi` expose the same commands. Running either without a
 subcommand opens the TUI.
+
+### TUI keys
+
+| Key | Action |
+| --- | --- |
+| `j` / `k`, arrows | Move the selection |
+| `Enter` | Open details for the selected row |
+| `/` | Edit the search filter; `Enter` keeps it, `Esc` clears it |
+| `s` | Cycle the sort mode |
+| `r` | Refresh now |
+| `x` / `X` | Terminate / force-kill the selected process |
+| `t` / `T` | Terminate / force-kill the selected process tree (Linux and macOS) |
+| `m` | Show full kill results and errors |
+| `?` | Help |
+| `Esc` | Clear the search, close a modal, or quit |
+| `q`, `Ctrl+C` | Quit |
+
+The automatic refresh interval comes from `refresh_interval_seconds` or
+`--refresh-interval SECONDS`.
+
+Row colors tell you what you can act on:
+
+- Bold rows have an owner Kickoutchi could read. These are usually your own
+  processes.
+- Plain rows have a hidden owner. The socket is visible, but the process holding
+  it could not be read, usually because it belongs to another user.
+- Yellow rows have a known PID whose details could not all be read.
+- Red rows are protected processes. Killing one asks you to type its PID or
+  name.
+
+Set `NO_COLOR` to drop the colors; bold and reverse video remain. Bold and plain
+rows use your terminal's default foreground, and yellow and red come from its
+ANSI palette, so the table follows your terminal theme.
+
+### Running with sudo
+
+As a normal user, most system sockets show `-` for PID and process, and you can
+only kill your own processes. `sudo kick` shows every owner, so the plain
+rows turn bold and protected services such as `postgres` or `docker-proxy` show in
+red.
+
+`sudo kick` still reads your configuration file, not root's. On Linux and macOS
+it looks in the home directory of the user who ran sudo first, and reads the
+file only if that user owns it. See
+[`docs/configuration.md`](docs/configuration.md#running-under-sudo) for the
+exact rule.
 
 ### Direct PID safety policy
 
@@ -290,6 +337,10 @@ label = "local web services"
 
 The `docker_enrichment` key from older versions is still accepted and ignored.
 
+`hide_system_processes` hides rows classified as system or service processes
+from `list` and the TUI. A row with a hidden owner cannot be classified and
+stays visible, so the option hides more under `sudo`.
+
 Configured protected names extend the built-in safety list. Exact endpoint labels
 take precedence over wildcard labels. See [`docs/configuration.md`](docs/configuration.md)
 for paths, precedence, validation, and the complete filter reference.
@@ -343,8 +394,9 @@ Published archives target:
   process descriptor are outside its declared scope.
 - Windows uses IP Helper and excludes the separate WSL network stack. Run the
   Linux build inside WSL to inspect WSL sockets and processes.
-- Tree kill is supported on all three platforms. Process-group kill is available
-  only on Linux and macOS.
+- `kick kill --tree` is supported on all three platforms. The TUI tree-kill
+  keys `t` and `T`, and process-group kill, are available only on Linux and
+  macOS.
 
 ### Reading addresses and scope
 
@@ -368,8 +420,9 @@ Published archives target:
   kill banner. `kick inspect` also notes when init or a service manager
   adopted the process, a sign that its launcher exited and it may be orphaned.
 
-The `SCOPE` column labels wildcard addresses `public`, loopback addresses
-`loopback`, and other concrete addresses `local`.
+The TUI's `SCOPE` column, `--sort scope`, and the `scope:` filter label wildcard
+addresses `public`, loopback addresses `loopback`, and other concrete addresses
+`local`. The `kick list` table has no `SCOPE` column.
 
 Completeness is always relative to the declared native observation scope. See
 [`docs/platform-support.md`](docs/platform-support.md) for permanent limitations,

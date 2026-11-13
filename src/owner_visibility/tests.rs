@@ -162,9 +162,3 @@ fn hidden_port_message_names_the_socket_user_and_the_cause() {
         "port 5432 is visible, but its owner is hidden: the socket belongs to uid 4000000001 and at least 3 process(es) could not be read (permission denied); rerun with higher privileges, or pass --pid when known"
     );
 }
-
-#[cfg(target_os = "linux")]
-#[test]
-fn uid_zero_resolves_to_root() {
-    assert_eq!(super::user_name(0).as_deref(), Some("root"));
-}

@@ -33,6 +33,26 @@ kick --config ./kickoutchi.toml list
 kick watch --config ./kickoutchi.toml
 ```
 
+#### Running under sudo
+
+`sudo` normally resets `HOME` to root's and drops `XDG_CONFIG_HOME`, so the
+default path would point at root's configuration. On Linux and macOS, when
+Kickoutchi runs as root and `SUDO_UID` names another user, it first looks for
+that user's file below the home directory in the account database:
+`~/.config/kickoutchi/config.toml` on Linux and
+`~/Library/Application Support/kickoutchi/config.toml` on macOS. If that file
+does not exist, it reads root's default path as before. Your protected names,
+labels, and confirmation settings therefore still apply to `sudo kick`.
+
+Root reads that file only if it is a regular file owned by the user who ran
+sudo. Anything else there, such as a symlink to another user's file, is an
+error instead of being read with root's permissions. `--config FILE` reads
+exactly the file you name.
+
+The user's own `XDG_CONFIG_HOME` is not visible under sudo. If your file lives
+there, pass it with `--config`. `SUDO_UID` is ignored unless the process is
+running as root.
+
 An explicitly selected file must exist and be readable. A missing explicit
 file is an error; Kickoutchi does not fall back to the default path or built-in
 defaults.
@@ -74,7 +94,7 @@ The watch polling interval is separate: `watch --interval` does not use
 | --- | --- | --- | --- |
 | `refresh_interval_seconds` | integer | `3` | `1..=3600`. Controls TUI automatic recollection. The global `--refresh-interval` overrides it. |
 | `default_sort` | string | `"port"` | Exactly `"port"`, `"pid"`, `"protocol"`, `"process"`, `"parent"`, or `"scope"`. Sets the initial TUI sort and the `list` sort when `--sort` is absent. |
-| `hide_system_processes` | boolean | `false` | When `true`, conservatively classified system/service rows are hidden from normal `list` and TUI views. It does not affect `watch` or `list --snapshot-json`. |
+| `hide_system_processes` | boolean | `false` | When `true`, conservatively classified system/service rows are hidden from normal `list` and TUI views. It does not affect `watch` or `list --snapshot-json`. A row whose owner is hidden has no PID to classify and stays visible, so this hides more rows under `sudo` than for a normal user. |
 | `confirm_force_kill` | boolean | `true` | When `true`, force kill uses stronger typed confirmation unless `--yes` applies. It does not weaken protected-process confirmation. |
 | `docker_enrichment` | boolean | N/A | Deprecated compatibility key. Docker details were removed; both `true` and `false` are accepted and ignored so older configuration files still load. Non-boolean values remain invalid. |
 | `check_for_updates` | boolean | N/A | Deprecated compatibility key. Both `true` and `false` are accepted and ignored so older configuration files still load. Kickoutchi performs no automatic update check. Non-boolean values remain invalid. |
@@ -87,6 +107,12 @@ configured initial sort interactively.
 
 No other top-level keys are accepted. Internal event-loop timing is not a
 configuration option.
+
+### Environment
+
+Setting `NO_COLOR` to any non-empty value removes colors from the TUI. Bold and
+reverse video remain, so the selected row and row emphasis stay readable. `sudo` drops `NO_COLOR` unless its policy keeps it; use
+`sudo NO_COLOR=1 kick` or `sudo --preserve-env=NO_COLOR kick`.
 
 ### Protected process extension
 
@@ -279,7 +305,7 @@ collection first.
 | `scope_id:` | Yes | Yes | Yes | Exact nonzero IPv6 interface index. |
 | `family:` | Yes | Yes | Yes | Normalized IPv4 or IPv6 family. |
 | `state:` | Error | Error | Yes | Exact full socket state. Reserved but unsupported by list/TUI. |
-| `list --port` | Yes | No | No | Separate exact-port CLI selector; `u16`, including `0`. |
+| `list --port` | Yes | No | No | Separate exact-port CLI selector, `1..=65535`. |
 | `list --process` | Yes | No | No | Separate case-insensitive process-name substring selector. |
 | `watch --tcp`, `--udp` | No | No | Yes | Protocol selectors; neither means both, and both may be supplied. |
 | `watch --address`, `--scope-id`, `--port` | No | No | Yes | Endpoint selectors applied before filter terms. |

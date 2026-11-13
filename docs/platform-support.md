@@ -86,10 +86,11 @@ A restricted, incomplete, or nonstandard procfs mount can hide socket tables,
 PIDs, descriptor links, identities, or metadata. Permission denial while reading
 a required socket table fails collection; denial or disappearance during owner
 and metadata reads is retained as an explicit gap where possible.
-`kill --port` refuses when an ownership gap has no endpoint provenance because
-an unobserved process could share the selected socket. The CLI applies this
-check to its first snapshot, so the refusal comes before the confirmation
-prompt and names the `kill --pid` command for the verified owner.
+An ownership gap with no endpoint provenance means an unobserved process could
+share any socket, so `kill --port` cannot prove that a port has a single owner.
+When the port has one verified owner, the CLI prints a note and targets that
+owner by PID, under the same checks as `kill --pid`. When the owner itself
+cannot be read, the CLI refuses before the confirmation prompt and says why.
 
 Linux socket rows also report the UID that created each socket. Human output
 uses it to explain an owner-less row, for example "the socket belongs to root

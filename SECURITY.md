@@ -40,10 +40,11 @@ and local topology.
 Terminal sanitization protects human output, and JSON escaping preserves JSON
 syntax. Structured host strings can still contain terminal-significant Unicode,
 so JSON is not safe for direct terminal display. Neither mechanism is redaction.
-Before sharing output, remove or replace command lines,
-PIDs and start markers, names, paths, parent relationships, addresses and ports,
-labels, scope identifiers, and evidence and error messages. Prefer the smallest excerpt needed to report
-the issue, and preserve stable schema codes only when they are relevant.
+Before sharing output, remove or replace command lines, PIDs and start markers,
+names, paths, parent relationships, addresses and ports, labels, scope
+identifiers, and evidence and error messages. Prefer the smallest excerpt needed
+to report the issue, and preserve stable schema codes only when they are
+relevant.
 
 ## Observation And Probe Limits
 
@@ -90,14 +91,22 @@ as root or Administrator merely to obtain more metadata unless you understand
 the expanded process visibility and termination authority. Structured host data
 remains sensitive.
 
+Under `sudo` on Linux and macOS, Kickoutchi reads the configuration file of the
+user who ran sudo, so that user's protected names and confirmation settings
+still apply. That path is controlled by an unprivileged user, so root reads it
+only when the opened file is a regular file owned by that user. A symlink to
+another user's file is an error and its contents are never printed. `SUDO_UID`
+is ignored unless the process is running as root.
+
 ## Security Model
 
 The relevant attacker is a local unprivileged user or process able to influence
 configuration, CLI arguments, process metadata, socket churn, child-process
 output, or a downstream output consumer. Kernel and native APIs provide
-authority but are not trusted for stable sizes or timing. Downloaded build tools, GitHub Actions, package registries, release hosting,
-installer and updater execution, the Homebrew tap, the Scoop bucket, Git and Nix
-source installs, and AUR maintainers cross distinct trust boundaries.
+authority but are not trusted for stable sizes or timing. Downloaded build
+tools, GitHub Actions, package registries, release hosting, installer and
+updater execution, the Homebrew tap, the Scoop bucket, Git and Nix source
+installs, and AUR maintainers cross distinct trust boundaries.
 
 Security objectives are correct process identity and signal delivery, truthful
 scope and certainty claims, memory safety at native boundaries, bounded resource
@@ -142,9 +151,8 @@ The documented Unix and PowerShell installer commands execute content from the
 mutable GitHub Release `latest` URL. TLS and the GitHub repository are therefore
 part of the trust decision before the installer can be inspected locally.
 The cargo-dist-generated standalone `kickoutchi-update` uses the same release
-authority. An unqualified
-`cargo install --git` or `github:nuggocto/kickoutchi` Linux Nix flake reference follows
-the repository's default branch and can select unreleased code; `--locked` pins
+authority. An unqualified `cargo install --git` or `github:nuggocto/kickoutchi`
+Linux Nix flake reference follows the repository's default branch and can select unreleased code; `--locked` pins
 the selected checkout's Cargo dependency graph, not that checkout. Select an
 explicit tag or commit when reproducibility matters. The committed Nix lock pins
 the flake's `nixpkgs` input, not Kickoutchi's own source revision.

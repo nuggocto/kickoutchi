@@ -9,6 +9,8 @@
 
 use std::collections::BTreeMap;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use crate::account::user_name;
 use crate::display::sanitize;
 use crate::observation::{EvidenceGapCode, NetworkSnapshot, SocketObservation};
 
@@ -175,43 +177,6 @@ fn user_label(uid: u32) -> String {
     match user_name(uid) {
         Some(name) => format!("{} (uid {uid})", sanitize(&name)),
         None => format!("uid {uid}"),
-    }
-}
-
-/// Largest `getpwuid_r` scratch buffer tried before giving up on a name.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-const USER_NAME_BUFFER_MAX: usize = 64 * 1024;
-
-/// The account name for a UID, or `None` when it does not resolve.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-fn user_name(uid: u32) -> Option<String> {
-    let mut buffer = vec![0_u8; 1024];
-    loop {
-        let mut entry = std::mem::MaybeUninit::<libc::passwd>::zeroed();
-        let mut result: *mut libc::passwd = std::ptr::null_mut();
-        // SAFETY: `entry` and `buffer` are writable for the sizes passed, and
-        // `result` is a valid out-pointer. getpwuid_r stores string data only
-        // inside `buffer` and retains none of the pointers.
-        let code = unsafe {
-            libc::getpwuid_r(
-                uid,
-                entry.as_mut_ptr(),
-                buffer.as_mut_ptr().cast(),
-                buffer.len(),
-                &raw mut result,
-            )
-        };
-        if code == libc::ERANGE && buffer.len() < USER_NAME_BUFFER_MAX {
-            buffer.resize(buffer.len() * 2, 0);
-            continue;
-        }
-        if code != 0 || result.is_null() {
-            return None;
-        }
-        // SAFETY: on success with a non-null result, `pw_name` points to a
-        // NUL-terminated string inside `buffer`, which is still alive here.
-        let name = unsafe { std::ffi::CStr::from_ptr((*result).pw_name) };
-        return Some(name.to_string_lossy().into_owned());
     }
 }
 

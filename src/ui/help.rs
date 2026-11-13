@@ -37,15 +37,23 @@ pub(crate) fn render(frame: &mut Frame, area: Rect, app: &App, theme: Theme) {
         key_line("q", "quit", theme),
         key_line("Ctrl+C", "quit", theme),
         Line::raw(""),
+        // Kept to one line, above the search notes, so it is visible without
+        // scrolling on a 30-row terminal.
+        Line::from(vec![
+            Span::raw("Rows: "),
+            Span::styled("bold", theme.readable_owner()),
+            Span::raw(" owner readable, plain owner hidden (try sudo), "),
+            Span::styled("yellow", theme.warning()),
+            Span::raw(" details incomplete, "),
+            Span::styled("red", theme.protected()),
+            Span::raw(" protected"),
+        ]),
         Line::raw("Search mode: type to filter, Enter keeps the filter, Esc clears it."),
         Line::raw("Filters: pid:18422 port:3000 proto:udp scope:public protected:true parent:node"),
         Line::raw("         label:web address:127.0.0.1 scope_id:3 family:ipv6"),
         Line::raw("Press Enter to load selected-row children, owner UID, and protected warnings."),
     ]);
-    let block = Block::bordered()
-        .title("Help")
-        .title_style(theme.title())
-        .border_style(theme.border());
+    let block = Block::bordered().title("Help").title_style(theme.title());
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);

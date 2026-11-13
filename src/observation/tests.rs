@@ -541,10 +541,7 @@ fn endpoints_reject_zero_and_overflow_and_accept_exact_maxima() {
             .ipv6_scope,
         Some(Ipv6Scope::InterfaceIndex(NonZeroU32::MAX))
     );
-    assert_eq!(
-        Ipv6Scope::interface_index(u64::from(u32::MAX) + 1),
-        Err(EndpointIdentityError::InvalidInterfaceIndex)
-    );
+    assert_eq!(Ipv6Scope::interface_index(u64::from(u32::MAX) + 1), None);
     assert_eq!(
         EndpointIdentity::new(
             Protocol::Tcp,

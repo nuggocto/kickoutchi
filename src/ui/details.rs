@@ -89,8 +89,7 @@ pub(super) fn render_panel(
 ) {
     let block = Block::bordered()
         .title("Details")
-        .title_style(theme.title())
-        .border_style(theme.border());
+        .title_style(theme.title());
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if let Some(entry) = app.selected_row().filter(|entry| entry.protected) {
@@ -120,19 +119,16 @@ pub(super) fn render_panel(
             chunks[1],
         );
     } else {
-        let lines = app.selected_row().map_or_else(
-            || empty_lines(theme),
-            |entry| {
-                panel_lines(
-                    entry,
-                    app.selected_process_context(),
-                    app.selected_process_context_loading(),
-                    theme,
-                    usize::from(inner.height),
-                    text,
-                )
-            },
-        );
+        let lines = app.selected_row().map_or_else(empty_lines, |entry| {
+            panel_lines(
+                entry,
+                app.selected_process_context(),
+                app.selected_process_context_loading(),
+                theme,
+                usize::from(inner.height),
+                text,
+            )
+        });
         frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     }
 }
@@ -144,18 +140,15 @@ pub(super) fn render_modal(
     theme: Theme,
     text: &TextCache,
 ) {
-    let lines = app.selected_row().map_or_else(
-        || empty_lines(theme),
-        |entry| {
-            modal_lines(
-                entry,
-                app.selected_process_context(),
-                app.selected_process_context_loading(),
-                theme,
-                text,
-            )
-        },
-    );
+    let lines = app.selected_row().map_or_else(empty_lines, |entry| {
+        modal_lines(
+            entry,
+            app.selected_process_context(),
+            app.selected_process_context_loading(),
+            theme,
+            text,
+        )
+    });
     let warning = app.selected_row().filter(|entry| entry.protected).map(|_| {
         Line::styled(
             "Protected process: stronger confirmation will be required before termination.",
@@ -164,8 +157,7 @@ pub(super) fn render_modal(
     });
     let block = Block::bordered()
         .title("Port Details")
-        .title_style(theme.title())
-        .border_style(theme.border());
+        .title_style(theme.title());
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
@@ -289,8 +281,8 @@ fn modal_lines<'a>(
     lines
 }
 
-fn empty_lines(theme: Theme) -> Vec<Line<'static>> {
-    vec![Line::styled("No open ports to show.", theme.muted())]
+fn empty_lines<'a>() -> Vec<Line<'a>> {
+    vec![Line::raw("No open ports to show.")]
 }
 
 fn optional_u32(value: Option<u32>) -> String {

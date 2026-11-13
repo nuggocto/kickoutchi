@@ -914,7 +914,7 @@ fn render_header(frame: &mut Frame, area: Rect, theme: Theme) {
     ]);
     let header = Paragraph::new(line)
         .alignment(Alignment::Center)
-        .block(Block::bordered().border_style(theme.border()));
+        .block(Block::bordered());
     frame.render_widget(header, area);
 }
 
@@ -1029,8 +1029,7 @@ fn render_too_small(frame: &mut Frame, area: Rect, theme: Theme) {
         .block(
             Block::bordered()
                 .title("Kickoutchi")
-                .title_style(theme.title())
-                .border_style(theme.border()),
+                .title_style(theme.title()),
         );
     frame.render_widget(message, area);
 }

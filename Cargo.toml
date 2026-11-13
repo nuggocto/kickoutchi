@@ -1,6 +1,6 @@
 [package]
 name = "kickoutchi"
-version = "1.6.0"
+version = "1.7.0"
 edition = "2024"
 rust-version = "1.95.0"
 description = "A clean TUI and CLI port janitor: see which process owns each open local port and kick it out safely"
@@ -32,14 +32,19 @@ path = "src/bin/kick.rs"
 [dependencies]
 # TUI + terminal control. crossterm is kept as a direct dependency (not only via
 # ratatui's re-export) because the event loop and terminal lifecycle use it.
-ratatui = "0.30.2"
+# Default features are off to keep the calendar widget (and the `time` crate)
+# and the macros crate out of the dependency tree.
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache"] }
 crossterm = "0.29.0"
 
 # CLI parsing and serialization for the shared model, config, and CLI.
-clap = { version = "4.6.1", features = ["derive"] }
+# clap's `color` default is off: help and errors pass through the terminal
+# sanitizer as plain text, so the styling crates were never used. The config
+# file is only read, so toml needs no writer.
+clap = { version = "4.6.1", default-features = false, features = ["derive", "std", "help", "usage", "error-context", "suggestions"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-toml = "1.1.2"
+toml = { version = "1.1.2", default-features = false, features = ["parse", "serde", "std"] }
 
 # Typed errors keep module boundaries explicit.
 thiserror = "2.0.18"
