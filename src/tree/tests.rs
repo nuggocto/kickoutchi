@@ -4,7 +4,7 @@ use std::net::{IpAddr, Ipv4Addr};
 
 use super::{
     FrozenNode, GROUP_YES_SKIP_MAX_PROCESSES, GroupPlanError, MAX_GROUP_PROCESSES,
-    MAX_TREE_PROCESSES, PROCESS_TREE_INDEX_MAX, ProcessTreeIndex, ScopeAuthorization,
+    MAX_TREE_PROCESSES, PROCESS_TREE_INDEX_MAX, ProcessTreeIndex, ScopeAuthorization, StopCleanup,
     TreeKillOutcome, TreePlanError, TreeProcessInfo, TreeProcessOps, TreeRefusalClass,
     TreeSignalResult, TreeStopError, TreeStopResult, execute_group_kill, execute_tree_kill,
     plan_process_group, plan_process_tree, stop_deadline_expired, verify_frozen_identities,
@@ -98,6 +98,36 @@ fn refusal_semantics_have_one_stable_class_and_cause() {
         assert_eq!(outcome.refusal_class(), Some(class));
         assert_eq!(outcome.failure_cause_text(), cause);
     }
+    assert_eq!(
+        TreeKillOutcome::Cancelled.refusal_class(),
+        Some(TreeRefusalClass::Cancelled)
+    );
+}
+
+#[test]
+fn an_unreadable_signal_set_is_a_cancellation_check_failure_not_a_snapshot_failure() {
+    use crate::process::cancellation::KillCheckError;
+
+    let outcome = super::execute::cancellation_tree_outcome(&KillCheckError::Failed(
+        std::io::Error::from_raw_os_error(libc::EINVAL),
+    ));
+
+    assert!(matches!(
+        outcome,
+        TreeKillOutcome::CancellationCheckFailed(_)
+    ));
+    assert_eq!(outcome.refusal_class(), Some(TreeRefusalClass::Failure));
+    assert!(
+        outcome
+            .failure_cause_text()
+            .starts_with("checking for kill cancellation failed: "),
+        "{}",
+        outcome.failure_cause_text()
+    );
+    assert_eq!(
+        super::execute::cancellation_tree_outcome(&KillCheckError::Cancelled),
+        TreeKillOutcome::Cancelled
+    );
 }
 
 /// A scripted process table plus a recorded call log.
@@ -226,8 +256,13 @@ impl TreeProcessOps for FakeOps {
         }
     }
 
-    fn prepare_thaw(&mut self, pid: u32, marker: Option<crate::observation::ProcessStartMarker>) {
-        self.prepared_thaws.insert(pid, marker);
+    fn thaw(
+        &mut self,
+        pid: u32,
+        rollback_marker: Option<crate::observation::ProcessStartMarker>,
+    ) -> TreeSignalResult {
+        self.prepared_thaws.insert(pid, rollback_marker);
+        self.cont(pid)
     }
 
     fn prepare_delivery(
@@ -667,7 +702,14 @@ fn production_index_bound_is_wired_through_planning_and_final_verification() {
     assert_eq!(preview.len(), 1);
     assert!(!preview.truncated());
 
-    let root = FrozenNode::from_info(&exact[0], 0);
+    let root = FrozenNode::after_stop(
+        &exact[0],
+        0,
+        StopCleanup {
+            rollback_start_time_marker: exact[0].start_time_marker,
+            resume_on_cleanup: true,
+        },
+    );
     let mut frozen = [root];
     verify_frozen_identities(&mut frozen, super::SweepScope::Tree, &exact)
         .expect("exact production index maximum verifies");

@@ -8,11 +8,10 @@ use crate::process_evidence::{FreshProcessEvidence, ProcessEvidenceError};
 use super::{
     KillMode, KillTarget, TerminationHandle, UNIX_STOP_ACKNOWLEDGEMENT_MAX, check_final_evidence,
     finish_stopped_termination, outcome_after_thaw, refuse_stopped_termination,
-    run_before_stop_deadline, tree_cont, tree_send_signal, unix_signal,
+    run_before_stop_deadline, stop_observation_failure, tree_cont, tree_send_signal, unix_signal,
 };
 use super::{
     StopFailure, TerminationOutcome, UnixProcessState, UnixProcessStatus, stop_deadline_failure,
-    tree_stop_error,
 };
 
 #[cfg(target_os = "macos")]
@@ -145,6 +144,11 @@ fn macos_stop_process(
         cleanup_required: false,
         rollback_start_time_marker: None,
     })?;
+    // Kickoutchi owes a cleanup SIGCONT only if it moved the process into the
+    // stopped state; a process that was already stopped is left stopped.
+    let transitioned = before.status != UnixProcessStatus::Stopped;
+    let deadline_failure =
+        || stop_deadline_failure(transitioned, transitioned.then_some(before.marker));
     let stop = run_before_stop_deadline(deadline, std::time::Instant::now, || unsafe {
         // SAFETY: pid is range checked and SIGSTOP has no pointer arguments.
         libc::kill(platform_pid, libc::SIGSTOP)
@@ -159,11 +163,7 @@ fn macos_stop_process(
 
     loop {
         if std::time::Instant::now() >= deadline {
-            let cleanup_required = before.status != UnixProcessStatus::Stopped;
-            return Err(stop_deadline_failure(
-                cleanup_required,
-                cleanup_required.then_some(before.marker),
-            ));
+            return Err(deadline_failure());
         }
         match macos_process_state(pid) {
             Ok(state) => {
@@ -176,24 +176,20 @@ fn macos_stop_process(
                 }
             }
             Err(error) => {
+                // The state read failed, so there is no fresh identity to
+                // record; the caller re-reads it before any rollback.
                 if std::time::Instant::now() >= deadline {
-                    let cleanup_required = before.status != UnixProcessStatus::Stopped;
-                    return Err(stop_deadline_failure(cleanup_required, None));
+                    return Err(stop_deadline_failure(transitioned, None));
                 }
-                return Err(StopFailure {
-                    outcome: macos_signal_outcome("proc_pidinfo after SIGSTOP", &error),
-                    cleanup_required: before.status != UnixProcessStatus::Stopped,
-                    rollback_start_time_marker: None,
-                });
+                return Err(stop_observation_failure(
+                    transitioned,
+                    macos_signal_outcome("proc_pidinfo after SIGSTOP", &error),
+                ));
             }
         }
         let now = std::time::Instant::now();
         if now >= deadline {
-            let cleanup_required = before.status != UnixProcessStatus::Stopped;
-            return Err(stop_deadline_failure(
-                cleanup_required,
-                cleanup_required.then_some(before.marker),
-            ));
+            return Err(deadline_failure());
         }
         std::thread::sleep(UNIX_STOP_POLL.min(deadline.saturating_duration_since(now)));
     }
@@ -267,7 +263,7 @@ pub(super) fn terminate_handle_checked_platform(
         fresh,
         |mode| {
             if let Err(error) = cancellation.check() {
-                return TerminationOutcome::UnknownFailure(error.to_string());
+                return super::cancellation_outcome(&error);
             }
             let signal = unix_signal(mode);
             let result = unsafe {
@@ -398,39 +394,13 @@ fn macos_signal_outcome(operation: &str, error: &std::io::Error) -> TerminationO
     }
 }
 
-/// Classify a stop attempt's `Result` into the tree signal/stop outcome pair.
-///
-/// A clean stop maps to `Delivered`/`Stopped`; a process that already exited
-/// or changed identity without needing cleanup maps to `NotFound`; every other
-/// failure maps to `Denied`/`Failed` with its cleanup requirements preserved.
-#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
-pub(super) fn macos_tree_stop_result(
-    result: Result<bool, StopFailure>,
-) -> crate::tree::TreeStopResult {
-    use crate::tree::TreeStopResult;
-
-    match result {
-        Ok(transitioned) => TreeStopResult::Stopped { transitioned },
-        Err(StopFailure {
-            outcome: TerminationOutcome::AlreadyExited | TerminationOutcome::TargetChanged,
-            cleanup_required: false,
-            ..
-        }) => TreeStopResult::NotFound,
-        Err(failure) => TreeStopResult::Failed {
-            cleanup_required: failure.cleanup_required,
-            rollback_start_time_marker: failure.rollback_start_time_marker,
-            error: tree_stop_error(failure.outcome),
-        },
-    }
-}
-
 /// Send `SIGSTOP` to a PID for the process-tree freeze.
 ///
 /// macOS stops by PID and verifies identity after the stop. Linux uses pidfds
 /// through `tree_stop_handle` instead.
 #[cfg(target_os = "macos")]
 pub(crate) fn tree_stop(pid: u32, deadline: std::time::Instant) -> crate::tree::TreeStopResult {
-    macos_tree_stop_result(macos_stop_process(pid, None, deadline))
+    super::tree_stop_result(macos_stop_process(pid, None, deadline))
 }
 
 /// macOS delivery preparation: probe that the stopped process still exists.

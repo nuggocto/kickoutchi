@@ -83,36 +83,66 @@ impl FilterCache {
     }
 }
 
+/// An event carried a snapshot side that its batch has no index for, such as a
+/// release reaching the baseline batch. This is a programmer error in batch
+/// construction; the caller stops the stream instead of guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct MissingEventSide;
+
+impl std::fmt::Display for MissingEventSide {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("watch event side has no snapshot index in this batch (internal error)")
+    }
+}
+
+/// Whether `event` may be emitted with these side indexes. Checked before any
+/// filtering so a mismatched batch fails even when no filter is active.
+const fn event_sides_indexed(
+    event: WatchEvent<'_>,
+    previous_indexed: bool,
+    current_indexed: bool,
+) -> Result<(), MissingEventSide> {
+    if (event.previous().is_some() && !previous_indexed)
+        || (event.current().is_some() && !current_indexed)
+    {
+        Err(MissingEventSide)
+    } else {
+        Ok(())
+    }
+}
+
 pub(super) fn evaluate_event(
     event: WatchEvent<'_>,
     options: &WatchOptions,
     config: &Config,
     previous_cache: Option<&mut FilterCache>,
     current_cache: Option<&mut FilterCache>,
-) -> Option<FilterResult> {
+) -> Result<Option<FilterResult>, MissingEventSide> {
+    event_sides_indexed(event, previous_cache.is_some(), current_cache.is_some())?;
     if !selectors_match(event.endpoint(), options) {
-        return None;
+        return Ok(None);
     }
     if !options.filter_active {
-        return Some(FilterResult::NotApplied);
+        return Ok(Some(FilterResult::NotApplied));
     }
     let evaluate = |side: EventSide<'_>, cache: Option<&mut FilterCache>| {
-        evaluate_side(
+        let cache = cache.ok_or(MissingEventSide)?;
+        Ok(evaluate_side(
             side.snapshot,
             side.socket,
             options,
             config,
-            cache.expect("every event side has a filter cache"),
-        )
+            cache,
+        ))
     };
     let result = match event.sides {
         EventSides::Baseline(current) | EventSides::Bind(current) => {
-            evaluate(current, current_cache)
+            evaluate(current, current_cache)?
         }
-        EventSides::Release(previous) => evaluate(previous, previous_cache),
+        EventSides::Release(previous) => evaluate(previous, previous_cache)?,
         EventSides::Replacement { previous, current } => {
-            let previous = evaluate(previous, previous_cache);
-            let current = evaluate(current, current_cache);
+            let previous = evaluate(previous, previous_cache)?;
+            let current = evaluate(current, current_cache)?;
             match (previous, current) {
                 (Truth::True, _) | (_, Truth::True) => Truth::True,
                 (Truth::False, Truth::False) => Truth::False,
@@ -120,13 +150,13 @@ pub(super) fn evaluate_event(
             }
         }
     };
-    match result {
+    Ok(match result {
         Truth::False => None,
         Truth::True => Some(FilterResult::Matched),
         // Opting into definite matches treats a possible match like a miss.
         Truth::Unknown if options.matched_only => None,
         Truth::Unknown => Some(FilterResult::Indeterminate),
-    }
+    })
 }
 
 fn selectors_match(endpoint: &EndpointIdentity, options: &WatchOptions) -> bool {

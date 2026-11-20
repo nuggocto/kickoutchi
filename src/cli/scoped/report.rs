@@ -528,7 +528,9 @@ fn map_scoped_outcome(
             );
             tree_refusal_exit_reason(outcome)
         }
-        TreeKillOutcome::Truncated { .. } | TreeKillOutcome::ProtectedDescendant { .. } => {
+        TreeKillOutcome::Truncated { .. }
+        | TreeKillOutcome::ProtectedDescendant { .. }
+        | TreeKillOutcome::CancellationCheckFailed(_) => {
             eprintln!(
                 "error: {}; any frozen process was thawed and no termination was sent",
                 sanitize(&outcome.failure_cause_text()),
@@ -577,6 +579,10 @@ fn map_scoped_outcome(
             );
             tree_refusal_exit_reason(outcome)
         }
+        TreeKillOutcome::Cancelled => {
+            eprintln!("kill cancelled; any frozen process was thawed and no termination was sent");
+            tree_refusal_exit_reason(outcome)
+        }
     }
 }
 
@@ -588,6 +594,8 @@ fn tree_refusal_exit_reason(outcome: &tree::TreeKillOutcome) -> ExitReason {
             ExitReason::ProtectedNeedsConfirmation
         }
         Some(tree::TreeRefusalClass::Failure) => ExitReason::Failure,
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        Some(tree::TreeRefusalClass::Cancelled) => ExitReason::KillCancelled,
         None => unreachable!("completed or cleanup outcomes are not refusals"),
     }
 }

@@ -391,6 +391,14 @@ fn run_watch_loop(
                     }
                 };
                 if consecutive_failures == WATCH_FAILURES_MAX {
+                    // The gap record above carries the details; stderr tells an
+                    // interactive user why the stream ended.
+                    write_diagnostic(
+                        writer.diagnostics,
+                        &format!(
+                            "watch stopped after {WATCH_FAILURES_MAX} consecutive collection failures"
+                        ),
+                    );
                     return ExitReason::Failure;
                 }
                 if should_stop(
@@ -552,6 +560,10 @@ impl SnapshotIndex {
 }
 
 struct EventBatch<'a> {
+    /// `None` for the baseline batch, which has no previous snapshot. Every
+    /// event is checked against this before filtering or output, so a
+    /// previous-side event in a baseline batch stops the stream with an
+    /// internal-error diagnostic instead of panicking or losing evidence.
     previous: Option<&'a mut SnapshotIndex>,
     current: &'a mut SnapshotIndex,
     observation: ObservationTimes,
@@ -617,14 +629,21 @@ where
                 break;
             }
             group_end = scan.clone();
-            if let Some(filter_result) = evaluate_event(
+            match evaluate_event(
                 event,
                 options,
                 config,
                 previous_cache.as_deref_mut(),
                 current_cache.as_deref_mut(),
             ) {
-                rank_mask |= 1 << event_order_rank(filter_result, event.certainty);
+                Ok(Some(filter_result)) => {
+                    rank_mask |= 1 << event_order_rank(filter_result, event.certainty);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    write_diagnostic(diagnostics, &error.to_string());
+                    return Some(flush_exit(output, diagnostics, ExitReason::Failure));
+                }
             }
             scanned_since_check += 1;
             if scanned_since_check == WATCH_EVENT_BATCH_MAX {
@@ -665,14 +684,19 @@ where
                 if compare_event_prefix(first, event) != std::cmp::Ordering::Equal {
                     break;
                 }
-                let Some(filter_result) = evaluate_event(
+                let filter_result = match evaluate_event(
                     event,
                     options,
                     config,
                     previous_cache.as_deref_mut(),
                     current_cache.as_deref_mut(),
-                ) else {
-                    continue;
+                ) {
+                    Ok(Some(filter_result)) => filter_result,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        write_diagnostic(diagnostics, &error.to_string());
+                        return Some(flush_exit(output, diagnostics, ExitReason::Failure));
+                    }
                 };
                 if event_order_rank(filter_result, event.certainty) != rank {
                     continue;
@@ -1276,11 +1300,14 @@ impl BoundedRecord {
 
 impl Write for BoundedRecord {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if self
-            .bytes
-            .len()
-            .checked_add(bytes.len())
-            .is_none_or(|length| length > WATCH_RECORD_MAX_BYTES)
+        // Once the limit is hit the record is incomplete; refuse later writes
+        // so a smaller trailing write cannot extend a truncated record.
+        if self.limit_exceeded
+            || self
+                .bytes
+                .len()
+                .checked_add(bytes.len())
+                .is_none_or(|length| length > WATCH_RECORD_MAX_BYTES)
         {
             self.limit_exceeded = true;
             return Err(io::Error::new(

@@ -31,8 +31,8 @@ use crate::observation::{
     TcpTimerObservation, UnverifiedOwnerReason,
 };
 use crate::process::{
-    TreeDeliveryHandle, tree_cont, tree_cont_handle, tree_deliver_handle,
-    tree_open_delivery_handle, tree_stop_handle,
+    TreeDeliveryHandle, tree_cont_handle, tree_deliver_handle, tree_open_delivery_handle,
+    tree_stop_handle,
 };
 use crate::process_evidence::{FreshProcessEvidence, ProcessEvidenceError};
 use crate::tree::{
@@ -1669,12 +1669,14 @@ impl TreeProcessOps for LinuxTreeOps {
         result
     }
 
+    /// Continue only through the pidfd retained since this process was stopped.
+    /// Every member Kickoutchi stopped keeps its handle, so a missing handle
+    /// means the pipeline has no proof of identity. Report that as a refused
+    /// continue instead of signalling a raw PID that may have been reused.
     fn cont(&mut self, pid: u32) -> TreeSignalResult {
-        if let Some(handle) = self.delivery_handles.get(&pid) {
-            tree_cont_handle(handle)
-        } else {
-            tree_cont(pid)
-        }
+        self.delivery_handles
+            .get(&pid)
+            .map_or(TreeSignalResult::Denied, tree_cont_handle)
     }
 
     // The verified start marker is unused on Linux: the pidfd opened before the

@@ -72,9 +72,33 @@ pub(super) struct FrozenNode {
     pub(super) depth: usize,
 }
 
+/// What one stop attempt proved about cleanup for that process.
+///
+/// A [`FrozenNode`] can only be built with one, so cleanup ownership is decided
+/// by the stop result rather than by a default that each caller must remember
+/// to override.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct StopCleanup {
+    /// Identity observed after `SIGSTOP` was accepted, guarding rollback.
+    pub(super) rollback_start_time_marker: Option<ProcessStartMarker>,
+    /// Kickoutchi moved the process into the stopped state, so cleanup may
+    /// resume it. A process that was already stopped is left stopped.
+    pub(super) resume_on_cleanup: bool,
+}
+
+/// A member found in a snapshot that has not been stopped yet.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Debug, Clone, Copy)]
+struct Candidate<'a> {
+    info: &'a TreeProcessInfo,
+    depth: usize,
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 impl FrozenNode {
-    pub(super) fn from_info(info: &TreeProcessInfo, depth: usize) -> Self {
+    /// Record a process after its stop attempt established `cleanup`.
+    pub(super) fn after_stop(info: &TreeProcessInfo, depth: usize, cleanup: StopCleanup) -> Self {
         Self {
             pid: info.pid,
             parent_pid: info.parent_pid,
@@ -83,9 +107,26 @@ impl FrozenNode {
             executable_name: info.executable_name.clone(),
             owner_uid: info.owner_uid,
             start_time_marker: info.start_time_marker,
-            rollback_start_time_marker: info.start_time_marker,
-            resume_on_cleanup: true,
+            rollback_start_time_marker: cleanup.rollback_start_time_marker,
+            resume_on_cleanup: cleanup.resume_on_cleanup,
             depth,
+        }
+    }
+
+    /// The root as known from the confirmed target, when no fresh snapshot row
+    /// is available to describe it.
+    fn confirmed_root(root: &KillTarget, cleanup: StopCleanup) -> Self {
+        Self {
+            pid: root.pid,
+            parent_pid: None,
+            parent_process_name: None,
+            process_name: root.process_name.clone(),
+            executable_name: None,
+            owner_uid: root.owner_uid,
+            start_time_marker: root.process_start_time_marker,
+            rollback_start_time_marker: cleanup.rollback_start_time_marker,
+            resume_on_cleanup: cleanup.resume_on_cleanup,
+            depth: 0,
         }
     }
 
@@ -128,12 +169,12 @@ impl SweepScope {
 
     /// Not-yet-frozen members visible in this snapshot, in deterministic (PID)
     /// order.
-    fn unfrozen_members(
+    fn unfrozen_members<'a>(
         self,
-        snapshot: &[TreeProcessInfo],
-        index: &ProcessTreeIndex<'_>,
+        snapshot: &'a [TreeProcessInfo],
+        index: &ProcessTreeIndex<'a>,
         frozen: &[FrozenNode],
-    ) -> Vec<FrozenNode> {
+    ) -> Vec<Candidate<'a>> {
         match self {
             Self::Tree => unfrozen_children(index, frozen),
             Self::Group { pgid } => unfrozen_group_members(snapshot, frozen, pgid),
@@ -204,6 +245,15 @@ pub(crate) enum TreeKillOutcome {
         pid: u32,
     },
     SnapshotFailed(String),
+    /// Blocking or reading the pending termination signals failed, so the
+    /// kill could not tell whether it was cancelled. The text is the full
+    /// cause; every member Kickoutchi stopped was thawed.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    CancellationCheckFailed(String),
+    /// A termination signal arrived before delivery started; every member
+    /// Kickoutchi stopped was thawed and nothing was terminated.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    Cancelled,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     ThawFailed {
         pids: Vec<u32>,
@@ -222,6 +272,9 @@ pub(crate) enum TreeRefusalClass {
     PermissionDenied,
     ProtectedNeedsConfirmation,
     Failure,
+    /// A termination signal stopped the kill before delivery.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    Cancelled,
 }
 
 impl TreeKillOutcome {
@@ -239,6 +292,8 @@ impl TreeKillOutcome {
         match self {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             Self::Completed(_) | Self::ThawFailed { .. } => None,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            Self::Cancelled => Some(TreeRefusalClass::Cancelled),
             Self::RootAlreadyExited => Some(TreeRefusalClass::NoMatch),
             Self::PermissionDenied { .. } | Self::OwnershipUnavailable { .. } => {
                 Some(TreeRefusalClass::PermissionDenied)
@@ -253,6 +308,8 @@ impl TreeKillOutcome {
             | Self::FreshConfirmationRequired
             | Self::PartialMetadata { .. }
             | Self::SnapshotFailed(_) => Some(TreeRefusalClass::Failure),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            Self::CancellationCheckFailed(_) => Some(TreeRefusalClass::Failure),
         }
     }
 
@@ -288,6 +345,10 @@ impl TreeKillOutcome {
                 format!("process metadata for PID {pid} was incomplete")
             }
             Self::SnapshotFailed(error) => error.clone(),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            Self::CancellationCheckFailed(cause) => cause.clone(),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            Self::Cancelled => "a termination signal interrupted the kill".to_owned(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             Self::ThawFailed { pids, cause } => format!(
                 "{}; cleanup could not continue PID(s) {}",
@@ -354,10 +415,6 @@ pub(crate) fn execute_group_kill<Ops: TreeProcessOps>(
 /// deepest-first/root-last, or group members with every terminating signal
 /// queued before any continue.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[expect(
-    clippy::too_many_lines,
-    reason = "keep freeze, cancellation, verification, delivery, and rollback ordering together"
-)]
 fn execute_freeze_kill<Ops: TreeProcessOps>(
     root: &KillTarget,
     scope: SweepScope,
@@ -385,7 +442,11 @@ fn execute_freeze_kill<Ops: TreeProcessOps>(
     let stop_deadline = ops.stop_acknowledgement_now() + UNIX_STOP_ACKNOWLEDGEMENT_MAX;
     let cancellation = match KillCancellationGuard::block() {
         Ok(guard) => guard,
-        Err(error) => return TreeKillOutcome::SnapshotFailed(error.to_string()),
+        Err(error) => {
+            return TreeKillOutcome::CancellationCheckFailed(format!(
+                "blocking termination signals failed: {error}"
+            ));
+        }
     };
 
     // Stop the root before anything else: while it remains stopped it cannot
@@ -407,54 +468,31 @@ fn execute_freeze_kill<Ops: TreeProcessOps>(
                 rollback_start_time_marker,
                 error,
             } => {
-                let rollback_start_time_marker = rollback_start_time_marker.or_else(|| {
-                    ops.rollback_identity_after_stop(root.pid, root.process_start_time_marker)
-                });
-                let root_node = FrozenNode {
-                    pid: root.pid,
-                    parent_pid: None,
-                    parent_process_name: None,
-                    process_name: root.process_name.clone(),
-                    executable_name: None,
-                    owner_uid: root.owner_uid,
-                    start_time_marker: root.process_start_time_marker,
-                    rollback_start_time_marker,
+                let cleanup = StopCleanup {
+                    rollback_start_time_marker: rollback_start_time_marker.or_else(|| {
+                        ops.rollback_identity_after_stop(root.pid, root.process_start_time_marker)
+                    }),
                     resume_on_cleanup: true,
-                    depth: 0,
                 };
                 return refuse_after_thaw(
                     tree_stop_error_outcome(root.pid, error),
-                    &[root_node],
+                    &[FrozenNode::confirmed_root(root, cleanup)],
                     ops,
                 );
             }
         };
+    let root_cleanup = StopCleanup {
+        rollback_start_time_marker,
+        resume_on_cleanup: root_transitioned,
+    };
 
-    let mut frozen = match verify_root_after_stop(root, scope, rollback_start_time_marker, ops) {
-        Ok(mut node) => {
-            node.resume_on_cleanup = root_transitioned;
-            vec![node]
-        }
+    let mut frozen = match verify_root_after_stop(root, scope, root_cleanup, ops) {
+        Ok(node) => vec![node],
         Err((outcome, observed_root)) => {
             // Only the root is stopped at this point.
             let root_node = observed_root.map_or_else(
-                || FrozenNode {
-                    pid: root.pid,
-                    parent_pid: None,
-                    parent_process_name: None,
-                    process_name: root.process_name.clone(),
-                    executable_name: None,
-                    owner_uid: root.owner_uid,
-                    start_time_marker: root.process_start_time_marker,
-                    rollback_start_time_marker,
-                    resume_on_cleanup: root_transitioned,
-                    depth: 0,
-                },
-                |node| {
-                    let mut node = *node;
-                    node.resume_on_cleanup = root_transitioned;
-                    node
-                },
+                || FrozenNode::confirmed_root(root, root_cleanup),
+                |node| *node,
             );
             return refuse_after_thaw(outcome, &[root_node], ops);
         }
@@ -481,11 +519,7 @@ fn execute_freeze_kill<Ops: TreeProcessOps>(
     }
 
     if let Err(error) = cancellation.check() {
-        return refuse_after_thaw(
-            TreeKillOutcome::SnapshotFailed(error.to_string()),
-            &frozen,
-            ops,
-        );
+        return refuse_after_thaw(cancellation_tree_outcome(&error), &frozen, ops);
     }
 
     // Once delivery starts, finish the bounded batch and its cleanup before
@@ -510,7 +544,7 @@ fn stop_before_deadline<Ops: TreeProcessOps>(
 fn verify_root_after_stop<Ops: TreeProcessOps>(
     root: &KillTarget,
     scope: SweepScope,
-    rollback_start_time_marker: Option<ProcessStartMarker>,
+    cleanup: StopCleanup,
     ops: &mut Ops,
 ) -> Result<FrozenNode, (TreeKillOutcome, Option<Box<FrozenNode>>)> {
     let snapshot = ops
@@ -519,11 +553,10 @@ fn verify_root_after_stop<Ops: TreeProcessOps>(
     let Some(info) = snapshot.iter().find(|info| info.pid == root.pid) else {
         return Err((TreeKillOutcome::RootAlreadyExited, None));
     };
-    let mut observed = FrozenNode::from_info(info, 0);
+    let mut observed = FrozenNode::after_stop(info, 0, cleanup);
     // The post-stop marker is rollback evidence only. Keep the marker that the
     // user authorized as the termination identity even on this refusal path.
     observed.start_time_marker = root.process_start_time_marker;
-    observed.rollback_start_time_marker = rollback_start_time_marker;
     if !root_identity_matches(root, info) {
         return Err((
             TreeKillOutcome::TargetChanged { pid: root.pid },
@@ -579,7 +612,7 @@ fn freeze_sweep<Ops: TreeProcessOps>(
     for _ in 0..MAX_FREEZE_PASSES {
         cancellation
             .check()
-            .map_err(|error| TreeKillOutcome::SnapshotFailed(error.to_string()))?;
+            .map_err(|error| cancellation_tree_outcome(&error))?;
         let snapshot = ops.snapshot().map_err(TreeKillOutcome::SnapshotFailed)?;
         let index =
             ProcessTreeIndex::new(&snapshot, PROCESS_TREE_INDEX_MAX).map_err(
@@ -599,65 +632,60 @@ fn freeze_sweep<Ops: TreeProcessOps>(
         let mut vanished: HashSet<u32> = HashSet::new();
         let mut discovered_in_pass = false;
         loop {
-            let discovered: Vec<FrozenNode> = scope
+            let discovered: Vec<Candidate<'_>> = scope
                 .unfrozen_members(&snapshot, &index, frozen)
                 .into_iter()
-                .filter(|member| !vanished.contains(&member.pid))
+                .filter(|member| !vanished.contains(&member.info.pid))
                 .collect();
             if discovered.is_empty() {
                 break;
             }
             discovered_in_pass = true;
-            for member in discovered {
+            for Candidate { info, depth } in discovered {
+                let pid = info.pid;
                 cancellation
                     .check()
-                    .map_err(|error| TreeKillOutcome::SnapshotFailed(error.to_string()))?;
+                    .map_err(|error| cancellation_tree_outcome(&error))?;
                 if frozen.len() >= member_cap {
                     return Err(TreeKillOutcome::Truncated { limit: member_cap });
                 }
-                if let Some(reason) = unsafe_pid_reason(member.pid) {
-                    return Err(TreeKillOutcome::UnsafePid {
-                        pid: member.pid,
-                        reason,
-                    });
+                if let Some(reason) = unsafe_pid_reason(pid) {
+                    return Err(TreeKillOutcome::UnsafePid { pid, reason });
                 }
-                if member.start_time_marker.is_none() {
-                    return Err(TreeKillOutcome::PartialMetadata { pid: member.pid });
+                if info.start_time_marker.is_none() {
+                    return Err(TreeKillOutcome::PartialMetadata { pid });
                 }
-                match stop_before_deadline(member.pid, stop_deadline, ops) {
+                match stop_before_deadline(pid, stop_deadline, ops) {
                     TreeStopResult::Stopped { transitioned } => {
-                        let mut member = member;
-                        member.rollback_start_time_marker =
-                            ops.rollback_identity_after_stop(member.pid, member.start_time_marker);
-                        member.resume_on_cleanup = transitioned;
-                        frozen.push(member);
+                        let cleanup = StopCleanup {
+                            rollback_start_time_marker: ops
+                                .rollback_identity_after_stop(pid, info.start_time_marker),
+                            resume_on_cleanup: transitioned,
+                        };
+                        frozen.push(FrozenNode::after_stop(info, depth, cleanup));
                     }
                     TreeStopResult::NotFound => {
-                        vanished.insert(member.pid);
+                        vanished.insert(pid);
                     }
                     TreeStopResult::Failed {
                         cleanup_required: false,
                         rollback_start_time_marker: _,
                         error,
                     } => {
-                        return Err(tree_stop_error_outcome(member.pid, error));
+                        return Err(tree_stop_error_outcome(pid, error));
                     }
                     TreeStopResult::Failed {
                         cleanup_required: true,
                         rollback_start_time_marker,
                         error,
                     } => {
-                        let mut member = member;
-                        let pid = member.pid;
-                        member.rollback_start_time_marker =
-                            rollback_start_time_marker.or_else(|| {
-                                ops.rollback_identity_after_stop(
-                                    member.pid,
-                                    member.start_time_marker,
-                                )
-                            });
-                        member.resume_on_cleanup = true;
-                        frozen.push(member);
+                        let cleanup = StopCleanup {
+                            rollback_start_time_marker: rollback_start_time_marker.or_else(|| {
+                                ops.rollback_identity_after_stop(pid, info.start_time_marker)
+                            }),
+                            resume_on_cleanup: true,
+                        };
+                        frozen.push(FrozenNode::after_stop(info, depth, cleanup));
                         return Err(tree_stop_error_outcome(pid, error));
                     }
                 }
@@ -676,6 +704,18 @@ fn freeze_sweep<Ops: TreeProcessOps>(
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn cancellation_tree_outcome(
+    error: &crate::process::cancellation::KillCheckError,
+) -> TreeKillOutcome {
+    match error {
+        crate::process::cancellation::KillCheckError::Cancelled => TreeKillOutcome::Cancelled,
+        crate::process::cancellation::KillCheckError::Failed(_) => {
+            TreeKillOutcome::CancellationCheckFailed(error.to_string())
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn tree_stop_error_outcome(pid: u32, error: TreeStopError) -> TreeKillOutcome {
     match error {
         TreeStopError::PermissionDenied => TreeKillOutcome::PermissionDenied { pid },
@@ -684,7 +724,10 @@ fn tree_stop_error_outcome(pid: u32, error: TreeStopError) -> TreeKillOutcome {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn unfrozen_children(index: &ProcessTreeIndex<'_>, frozen: &[FrozenNode]) -> Vec<FrozenNode> {
+fn unfrozen_children<'a>(
+    index: &ProcessTreeIndex<'a>,
+    frozen: &[FrozenNode],
+) -> Vec<Candidate<'a>> {
     let frozen_depths: HashMap<u32, usize> =
         frozen.iter().map(|node| (node.pid, node.depth)).collect();
     let mut discovered = Vec::new();
@@ -699,11 +742,11 @@ fn unfrozen_children(index: &ProcessTreeIndex<'_>, frozen: &[FrozenNode]) -> Vec
                 continue;
             }
             let depth = parent_depth + 1;
-            discovered.push(FrozenNode::from_info(info, depth));
+            discovered.push(Candidate { info, depth });
             frontier.push((info.pid, depth));
         }
     }
-    discovered.sort_by_key(|node| node.pid);
+    discovered.sort_by_key(|candidate| candidate.info.pid);
     discovered
 }
 
@@ -711,18 +754,18 @@ fn unfrozen_children(index: &ProcessTreeIndex<'_>, frozen: &[FrozenNode]) -> Vec
 /// before the confirmed root in display and delivery order. The group-specific
 /// final signal step queues every terminating signal before any `SIGCONT`.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn unfrozen_group_members(
-    snapshot: &[TreeProcessInfo],
+fn unfrozen_group_members<'a>(
+    snapshot: &'a [TreeProcessInfo],
     frozen: &[FrozenNode],
     pgid: u32,
-) -> Vec<FrozenNode> {
+) -> Vec<Candidate<'a>> {
     let frozen_pids: HashSet<u32> = frozen.iter().map(|node| node.pid).collect();
-    let mut discovered: Vec<FrozenNode> = snapshot
+    let mut discovered: Vec<Candidate<'a>> = snapshot
         .iter()
         .filter(|info| info.process_group == Some(pgid) && !frozen_pids.contains(&info.pid))
-        .map(|info| FrozenNode::from_info(info, 1))
+        .map(|info| Candidate { info, depth: 1 })
         .collect();
-    discovered.sort_by_key(|node| node.pid);
+    discovered.sort_by_key(|candidate| candidate.info.pid);
     discovered
 }
 
@@ -1014,8 +1057,7 @@ fn signal_group<Ops: TreeProcessOps>(
 pub(super) fn thaw_all<Ops: TreeProcessOps>(frozen: &[FrozenNode], ops: &mut Ops) -> Vec<u32> {
     let mut failed = Vec::new();
     for node in frozen.iter().rev().filter(|node| node.resume_on_cleanup) {
-        ops.prepare_thaw(node.pid, node.rollback_start_time_marker);
-        if ops.cont(node.pid) == TreeSignalResult::Denied {
+        if ops.thaw(node.pid, node.rollback_start_time_marker) == TreeSignalResult::Denied {
             failed.push(node.pid);
         }
     }

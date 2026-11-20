@@ -9,8 +9,8 @@ use super::{
     KillMode, KillTarget, StopFailure, TerminationHandle, TerminationOutcome, TreeDeliveryHandle,
     UNIX_STOP_ACKNOWLEDGEMENT_MAX, UnixProcessState, UnixProcessStatus, check_final_evidence,
     finish_stopped_termination, outcome_after_thaw, outcome_from_errno, refuse_stopped_termination,
-    run_before_stop_deadline, stop_deadline_failure, tree_signal_result_from_errno,
-    tree_stop_error, unix_signal, unsafe_pid_reason,
+    run_before_stop_deadline, stop_deadline_failure, stop_observation_failure,
+    tree_signal_result_from_errno, unix_signal, unsafe_pid_reason,
 };
 
 pub(super) fn prepare_termination_platform(
@@ -102,7 +102,7 @@ pub(super) fn terminate_handle_checked_platform(
         target.process_start_time_marker,
         |_| {
             if let Err(error) = cancellation.check() {
-                return TerminationOutcome::UnknownFailure(error.to_string());
+                return super::cancellation_outcome(&error);
             }
             linux_pidfd_signal(handle, signal)
                 .map_or_else(|outcome| outcome, |()| TerminationOutcome::Success)
@@ -267,12 +267,10 @@ fn linux_stop_pidfd(
                 if std::time::Instant::now() >= deadline {
                     return Err(stop_deadline_failure(transitioned, None));
                 }
-                let outcome = linux_state_failure("reading process state after SIGSTOP", &error);
-                return Err(StopFailure {
-                    cleanup_required: transitioned && outcome != TerminationOutcome::AlreadyExited,
-                    outcome,
-                    rollback_start_time_marker: None,
-                });
+                return Err(stop_observation_failure(
+                    transitioned,
+                    linux_state_failure("reading process state after SIGSTOP", &error),
+                ));
             }
         }
         let now = std::time::Instant::now();
@@ -352,20 +350,12 @@ pub(crate) fn tree_stop_handle(
     handle: &TreeDeliveryHandle,
     deadline: std::time::Instant,
 ) -> crate::tree::TreeStopResult {
-    use crate::tree::TreeStopResult;
-
-    match linux_stop_pidfd(handle.pid, handle.pidfd.as_raw_fd(), None, deadline) {
-        Ok(transitioned) => TreeStopResult::Stopped { transitioned },
-        Err(StopFailure {
-            outcome: TerminationOutcome::AlreadyExited | TerminationOutcome::TargetChanged,
-            ..
-        }) => TreeStopResult::NotFound,
-        Err(failure) => TreeStopResult::Failed {
-            cleanup_required: failure.cleanup_required,
-            rollback_start_time_marker: failure.rollback_start_time_marker,
-            error: tree_stop_error(failure.outcome),
-        },
-    }
+    super::tree_stop_result(linux_stop_pidfd(
+        handle.pid,
+        handle.pidfd.as_raw_fd(),
+        None,
+        deadline,
+    ))
 }
 
 pub(crate) fn tree_cont_handle(handle: &TreeDeliveryHandle) -> crate::tree::TreeSignalResult {

@@ -2,8 +2,6 @@ use crate::model::PortEntryView;
 use crate::model::entry_views;
 use std::net::{IpAddr, Ipv4Addr};
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use super::macos::macos_tree_stop_result;
 #[cfg(windows)]
 use super::windows_api_outcome;
 use super::{
@@ -18,6 +16,8 @@ use super::{
     finish_stopped_termination, macos_cont_if_matches_with, macos_stop_observation_result,
     outcome_after_thaw, refuse_stopped_termination, run_before_stop_deadline,
 };
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use super::{StopFailure, stop_observation_failure, tree_stop_result};
 #[cfg(target_os = "macos")]
 use super::{finish_macos_stopped_process, macos_status_is_exited};
 #[cfg(target_os = "linux")]
@@ -363,7 +363,7 @@ fn macos_pre_stopped_identity_replacement_is_guardedly_thawed_when_observed_stop
     assert!(failure.cleanup_required);
     assert_eq!(failure.rollback_start_time_marker, Some(replacement));
 
-    let stop = macos_tree_stop_result(Err(failure));
+    let stop = tree_stop_result(Err(failure));
 
     assert_eq!(
         stop,
@@ -388,6 +388,76 @@ fn macos_pre_stopped_identity_replacement_is_guardedly_thawed_when_observed_stop
     );
     assert_eq!(thaw, crate::tree::TreeSignalResult::Delivered);
     assert_eq!(continued, [42]);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_pending_termination_signal_is_a_cancellation_not_a_failure() {
+    use super::cancellation::KillCheckError;
+
+    assert_eq!(
+        super::cancellation_outcome(&KillCheckError::Cancelled),
+        TerminationOutcome::Cancelled
+    );
+    assert!(matches!(
+        super::cancellation_outcome(&KillCheckError::Failed(std::io::Error::from_raw_os_error(
+            libc::EINVAL
+        ))),
+        TerminationOutcome::UnknownFailure(_)
+    ));
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_member_that_exits_mid_stop_is_vanished_not_a_failed_stop() {
+    use crate::tree::TreeStopResult;
+
+    let exited = stop_observation_failure(true, TerminationOutcome::AlreadyExited);
+    assert!(!exited.cleanup_required);
+    assert_eq!(tree_stop_result(Err(exited)), TreeStopResult::NotFound);
+
+    let unreadable = stop_observation_failure(true, TerminationOutcome::PermissionDenied);
+    assert!(unreadable.cleanup_required);
+    assert!(matches!(
+        tree_stop_result(Err(unreadable)),
+        TreeStopResult::Failed {
+            cleanup_required: true,
+            ..
+        }
+    ));
+
+    let pre_stopped = stop_observation_failure(false, TerminationOutcome::PermissionDenied);
+    assert!(!pre_stopped.cleanup_required);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn tree_stop_result_drops_only_failures_that_owe_no_cleanup() {
+    use crate::tree::TreeStopResult;
+
+    for outcome in [
+        TerminationOutcome::AlreadyExited,
+        TerminationOutcome::TargetChanged,
+    ] {
+        let failure = |cleanup_required| {
+            Err(StopFailure {
+                outcome: outcome.clone(),
+                cleanup_required,
+                rollback_start_time_marker: None,
+            })
+        };
+        assert_eq!(tree_stop_result(failure(false)), TreeStopResult::NotFound);
+        assert!(
+            matches!(
+                tree_stop_result(failure(true)),
+                TreeStopResult::Failed {
+                    cleanup_required: true,
+                    ..
+                }
+            ),
+            "{outcome:?} that still owes SIGCONT must reach rollback",
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]

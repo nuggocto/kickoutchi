@@ -237,6 +237,77 @@ fn two_ports_of_one_process_signal_it_once() {
 }
 
 #[test]
+fn every_selector_naming_one_process_is_revalidated_before_its_signal() {
+    let snapshot = snapshot_from_test_rows(rows());
+    // PID 103 still owns the first selected port but released the second one
+    // between confirmation and revalidation.
+    let fresh = snapshot_from_test_rows(
+        rows()
+            .into_iter()
+            .filter(|row| row.local_port != 3003)
+            .collect(),
+    );
+
+    let (reason, record) = run(
+        &by_port(&[3002, 3003]),
+        &Config::default(),
+        &snapshot,
+        &fresh,
+        "",
+        |_| panic!("a process whose second confirmed port changed must not be signalled"),
+    );
+
+    assert_eq!(record.prepared, [103]);
+    assert_eq!(record.terminated, [] as [u32; 0]);
+    assert_eq!(reason, ExitReason::NoMatch);
+}
+
+#[test]
+fn a_later_selector_that_fails_revalidation_is_reported_with_its_own_ports() {
+    let snapshot = snapshot_from_test_rows(rows());
+    let fresh = snapshot_from_test_rows(
+        rows()
+            .into_iter()
+            .filter(|row| row.local_port != 3003)
+            .collect(),
+    );
+    let targets = by_port(&[3002, 3003]);
+    let config = Config::default();
+    let mut io = BatchIo {
+        context: &mut no_context,
+        prompt: &mut |_| panic!("delivery must not prompt"),
+        fresh_snapshot: &mut || Ok(fresh.clone()),
+        prepare: &mut |pid| Ok(pid),
+        terminate: &mut |_: &u32, _: &KillTarget, _, _| {
+            panic!("a process whose second confirmed port changed must not be signalled")
+        },
+        settle: settle::SettleProbe {
+            collect_ports: &mut || Ok(Vec::new()),
+            observe_exit: &mut |_| ExitObservation::Exited,
+            sleep: &mut |_| panic!("delivery must not sleep"),
+        },
+    };
+
+    let planned = super::plan(&targets, &config, &snapshot, &mut io)
+        .unwrap_or_else(|_| panic!("both selectors resolve to PID 103"));
+    let Ok((outcomes, _handles)) = super::deliver(&planned, &config, KillMode::Terminate, &mut io)
+    else {
+        panic!("the fresh snapshot is available");
+    };
+
+    let [(_, target, outcome)] = outcomes.as_slice() else {
+        panic!("one process was planned, got {} outcomes", outcomes.len());
+    };
+    assert_ne!(*outcome, TerminationOutcome::Success);
+    let ports = target
+        .ports
+        .iter()
+        .map(|port| port.local_port)
+        .collect::<Vec<_>>();
+    assert_eq!(ports, [3003]);
+}
+
+#[test]
 fn exit_reasons_aggregate_by_severity() {
     use ExitReason::{Failure, KillCancelled, NoMatch, PermissionDenied, Success};
 
@@ -290,7 +361,7 @@ fn summary_counts_outcomes_and_details_only_problems() {
     );
     assert_eq!(
         lines[1],
-        "  failed: PID 102 (api) no longer owns the confirmed port target; no termination was sent"
+        "  failed: PID 102 (api) no longer owns the confirmed port target; no termination was sent; confirmed port(s): TCP 127.0.0.1:3001"
     );
     assert_eq!(
         lines[2],

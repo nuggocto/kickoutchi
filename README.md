@@ -72,7 +72,7 @@ from this repository's flake.
 Linux and macOS:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://kickoutchi.com/install.sh | sh
+curl -fsS https://kickoutchi.com/install.sh | sh
 ```
 
 Windows PowerShell:
@@ -81,8 +81,12 @@ Windows PowerShell:
 powershell -ExecutionPolicy Bypass -NoProfile -Command "irm https://kickoutchi.com/install.ps1 | iex"
 ```
 
-These short URLs redirect to `kickoutchi-installer.sh` and `kickoutchi-installer.ps1`
-on the latest GitHub Release.
+`kickoutchi.com/install.sh` serves an exact copy of the current release's
+`kickoutchi-installer.sh`; the website build refuses any other bytes.
+`install.ps1` redirects to `kickoutchi-installer.ps1` on the latest GitHub
+Release. Both installers place the binaries in `~/.cargo/bin` and add it to
+your PATH, so open a new terminal before running `kick`. Prebuilt Linux
+binaries need glibc 2.31 or newer.
 Installer-based installs include `kickoutchi-update` for later upgrades.
 Release pages also provide direct archives, per-archive `.sha256` files, and a
 release-wide `sha256.sum`. Same-release checksums detect corruption; they are not

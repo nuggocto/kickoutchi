@@ -15,6 +15,23 @@ use crate::collector::{Collector, CollectorError, FakeCollector};
 use crate::config::Config;
 use crate::model::Protocol;
 
+/// The one stderr line written when watch exhausts its failure budget.
+const BUDGET_EXHAUSTED_STDERR: &str =
+    "error: watch stopped after 3 consecutive collection failures\n";
+
+/// Evaluate an event whose caches match its sides, as every production batch
+/// supplies them.
+fn evaluate_event_ok(
+    event: crate::watch::WatchEvent<'_>,
+    options: &WatchOptions,
+    config: &Config,
+    previous_cache: Option<&mut FilterCache>,
+    current_cache: Option<&mut FilterCache>,
+) -> Option<FilterResult> {
+    evaluate_event(event, options, config, previous_cache, current_cache)
+        .expect("test caches match the event sides")
+}
+
 #[test]
 fn watch_signal_reservation_rejects_overlap_and_fails_closed() {
     let slot = std::sync::atomic::AtomicBool::new(false);
@@ -485,7 +502,7 @@ fn event_filter_uses_the_documented_side_and_three_valued_matrix() {
 
     for kind in [EventKind::Baseline, EventKind::Bind] {
         assert_eq!(
-            evaluate_event(
+            evaluate_event_ok(
                 event(kind),
                 &filtered_options("pid:20 beta"),
                 &config,
@@ -497,7 +514,7 @@ fn event_filter_uses_the_documented_side_and_three_valued_matrix() {
         );
     }
     assert_eq!(
-        evaluate_event(
+        evaluate_event_ok(
             event(EventKind::Release),
             &filtered_options("pid:10 alpha"),
             &config,
@@ -508,7 +525,7 @@ fn event_filter_uses_the_documented_side_and_three_valued_matrix() {
     );
     for text in ["pid:10 alpha", "pid:20 beta"] {
         assert_eq!(
-            evaluate_event(
+            evaluate_event_ok(
                 event(EventKind::Replacement),
                 &filtered_options(text),
                 &config,
@@ -523,7 +540,7 @@ fn event_filter_uses_the_documented_side_and_three_valued_matrix() {
     let unknown = owned_snapshot(20, None, MetadataCompleteness::Partial);
     let unknown_event = proven_event(EventSides::Bind(first_side(&unknown)));
     assert_eq!(
-        evaluate_event(
+        evaluate_event_ok(
             unknown_event,
             &filtered_options("missing"),
             &config,
@@ -533,7 +550,7 @@ fn event_filter_uses_the_documented_side_and_three_valued_matrix() {
         Some(FilterResult::Indeterminate)
     );
     assert_eq!(
-        evaluate_event(
+        evaluate_event_ok(
             unknown_event,
             &filtered_options("port:1 missing"),
             &config,
@@ -543,6 +560,33 @@ fn event_filter_uses_the_documented_side_and_three_valued_matrix() {
         None,
         "a definite false term suppresses an otherwise unknown event"
     );
+}
+
+#[test]
+fn previous_side_event_in_a_baseline_batch_is_an_error_not_a_panic() {
+    let previous = owned_snapshot(10, Some("alpha"), MetadataCompleteness::Complete);
+    let current = owned_snapshot(20, Some("beta"), MetadataCompleteness::Complete);
+    let config = Config::default();
+    let event = |kind| proven_event(sides_for(kind, first_side(&previous), first_side(&current)));
+
+    // A baseline batch supplies only the current-side cache. The mismatch must
+    // be reported whether or not a filter would have read the previous side.
+    for options in [options(Duration::from_secs(1)), filtered_options("alpha")] {
+        for kind in [EventKind::Release, EventKind::Replacement] {
+            assert_eq!(
+                evaluate_event(
+                    event(kind),
+                    &options,
+                    &config,
+                    None,
+                    Some(&mut FilterCache::default()),
+                ),
+                Err(super::filter::MissingEventSide),
+                "{kind:?} with filter_active={}",
+                options.filter_active,
+            );
+        }
+    }
 }
 
 #[test]
@@ -637,7 +681,7 @@ fn third_consecutive_failure_flushes_three_gaps_and_stops_collection() {
     assert_eq!(values[0]["data"]["evidence_gaps"], serde_json::json!([]));
     assert_eq!(values[0]["data"]["omitted_evidence_gap_count"], 0);
     assert_eq!(values[2]["data"]["consecutive_failures"], 3);
-    assert_eq!(String::from_utf8_lossy(&stderr), "");
+    assert_eq!(String::from_utf8_lossy(&stderr), BUDGET_EXHAUSTED_STDERR);
 }
 
 #[test]
@@ -669,7 +713,7 @@ fn failed_collection_waits_a_full_interval_after_slow_completion() {
 
     assert_eq!(result, ExitReason::Failure);
     assert_eq!(runtime.monotonic, Duration::from_millis(500));
-    assert_eq!(String::from_utf8_lossy(&stderr), "");
+    assert_eq!(String::from_utf8_lossy(&stderr), BUDGET_EXHAUSTED_STDERR);
 }
 
 #[test]
@@ -1180,7 +1224,7 @@ fn third_failed_poll_crossing_duration_exhausts_the_failure_budget() {
     assert_eq!(result, ExitReason::Failure);
     assert_eq!(runtime.collect_count, 4);
     assert_eq!(String::from_utf8(stdout).unwrap().lines().count(), 3);
-    assert_eq!(String::from_utf8_lossy(&stderr), "");
+    assert_eq!(String::from_utf8_lossy(&stderr), BUDGET_EXHAUSTED_STDERR);
 }
 
 #[test]
@@ -1213,7 +1257,7 @@ fn cancellation_during_third_failed_poll_does_not_mask_budget_exhaustion() {
     assert_eq!(result, ExitReason::Failure);
     assert_eq!(runtime.collect_count, 4);
     assert_eq!(String::from_utf8(stdout).unwrap().lines().count(), 3);
-    assert_eq!(String::from_utf8_lossy(&stderr), "");
+    assert_eq!(String::from_utf8_lossy(&stderr), BUDGET_EXHAUSTED_STDERR);
 }
 
 #[test]
@@ -1513,7 +1557,7 @@ fn pid_scoped_ownership_gap_is_indeterminate_and_emitted_for_hidden_owner() {
     let event = proven_event(EventSides::Baseline(first_side(&snapshot)));
 
     assert_eq!(
-        evaluate_event(
+        evaluate_event_ok(
             event,
             &filter,
             &Config::default(),
@@ -1523,7 +1567,7 @@ fn pid_scoped_ownership_gap_is_indeterminate_and_emitted_for_hidden_owner() {
         Some(FilterResult::Indeterminate)
     );
     assert_eq!(
-        evaluate_event(
+        evaluate_event_ok(
             event,
             &filtered_options("pid:9999"),
             &Config::default(),
@@ -1584,7 +1628,7 @@ fn omitted_ownership_gap_keeps_pid_filter_indeterminate_and_counts_the_gap() {
     let event = proven_event(EventSides::Baseline(first_side(&snapshot)));
 
     assert_eq!(
-        evaluate_event(
+        evaluate_event_ok(
             event,
             &filter,
             &Config::default(),
@@ -2354,6 +2398,12 @@ fn gap_index_and_record_writer_enforce_exact_bounds() {
     assert_eq!(record.write(&vec![0; 65_536]).unwrap(), 65_536);
     assert!(record.write(&[0]).is_err());
     assert_eq!(record.bytes.len(), 65_536);
+
+    // An overflowed record stays refused even for a write that would fit.
+    let mut record = BoundedRecord::new();
+    assert!(record.write(&vec![0; 65_537]).is_err());
+    assert!(record.write(&[0]).is_err());
+    assert_eq!(record.bytes, Vec::<u8>::new());
 }
 
 #[test]
@@ -2403,7 +2453,7 @@ fn matched_only_drops_possible_matches_but_keeps_definite_ones() {
     ));
     let hidden_event = proven_event(EventSides::Bind(first_side(&hidden)));
     assert_eq!(
-        evaluate_event(
+        evaluate_event_ok(
             hidden_event,
             &filtered_options("pid:4242"),
             &config,
@@ -2414,7 +2464,7 @@ fn matched_only_drops_possible_matches_but_keeps_definite_ones() {
         "the default still reports a possible match"
     );
     assert_eq!(
-        evaluate_event(
+        evaluate_event_ok(
             hidden_event,
             &matched_only,
             &config,
@@ -2428,7 +2478,7 @@ fn matched_only_drops_possible_matches_but_keeps_definite_ones() {
     let owned = owned_snapshot(4_242, Some("node"), MetadataCompleteness::Complete);
     let owned_event = proven_event(EventSides::Bind(first_side(&owned)));
     assert_eq!(
-        evaluate_event(
+        evaluate_event_ok(
             owned_event,
             &matched_only,
             &config,

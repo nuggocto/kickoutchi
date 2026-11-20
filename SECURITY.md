@@ -147,9 +147,15 @@ public Scoop bucket's scheduled Excavator workflow, which regenerates and commit
 its manifest URL and hash; Kickoutchi's release workflow does not hold a Scoop
 write token. Either package repository can lag a new release or fail independently.
 
-The documented Unix and PowerShell installer commands execute content from the
-mutable GitHub Release `latest` URL. TLS and the GitHub repository are therefore
-part of the trust decision before the installer can be inspected locally.
+The documented Unix installer command executes `kickoutchi.com/install.sh`, a copy
+of the current release's `kickoutchi-installer.sh` that the website build checks
+against a recorded SHA-256 and version; the website's hosting is therefore part
+of the trust decision. That installer downloads archives from the pinned release
+and checks each against an embedded SHA-256. The PowerShell command executes
+content from the mutable GitHub Release `latest` URL, and the generated
+PowerShell installer does not verify archive checksums. TLS and the GitHub
+repository are part of the trust decision for both before the installer can be
+inspected locally.
 The cargo-dist-generated standalone `kickoutchi-update` uses the same release
 authority. An unqualified `cargo install --git` or `github:nuggocto/kickoutchi`
 Linux Nix flake reference follows the repository's default branch and can select unreleased code; `--locked` pins

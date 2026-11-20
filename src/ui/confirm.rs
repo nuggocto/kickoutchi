@@ -275,7 +275,7 @@ fn tree_instruction_line(confirmation: &TreeKillConfirmation, theme: Theme) -> L
             ]);
             Line::from(spans)
         }
-        TreeConfirmStage::Word => Line::from(vec![
+        TreeConfirmStage::Word | TreeConfirmStage::ProtectedRootConfirmedWord => Line::from(vec![
             Span::raw("Type "),
             Span::styled(confirmation.scope_word(), theme.key()),
             Span::raw(" and press "),

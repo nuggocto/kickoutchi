@@ -35,9 +35,17 @@ pub(crate) const BATCH_TARGETS_MAX: usize = 128;
 struct Planned<'a> {
     args: &'a KillArgs,
     target: KillTarget,
-    /// Ports of later selectors that resolved to the same process. They are
-    /// polled after delivery but are not part of revalidation.
-    extra_ports: Vec<KillTargetPort>,
+    /// Later selectors that resolved to the same process, with the target each
+    /// one confirmed. Every one is revalidated before the single delivery, and
+    /// their ports are polled after it.
+    also_named: Vec<(&'a KillArgs, KillTarget)>,
+}
+
+impl Planned<'_> {
+    /// Ports confirmed by the later selectors for this process.
+    fn extra_ports(&self) -> impl Iterator<Item = &KillTargetPort> {
+        self.also_named.iter().flat_map(|(_, target)| &target.ports)
+    }
 }
 
 /// A target refused before any signal was sent.
@@ -151,7 +159,7 @@ pub(super) fn run_batch_kill_with<Handle>(
         .collect::<Vec<_>>();
     let mut ports = delivered
         .iter()
-        .flat_map(|(planned, target)| target.ports.iter().chain(&planned.extra_ports))
+        .flat_map(|(planned, target)| target.ports.iter().chain(planned.extra_ports()))
         .copied()
         .collect::<Vec<_>>();
     ports.sort_unstable();
@@ -211,26 +219,32 @@ fn deliver<Handle>(
     })?;
     for (index, handle) in &handles {
         let planned = &planned[*index];
-        let args = planned.args;
-        let revalidated = revalidate_single_cli_target(
-            args,
-            config,
-            &planned.target,
-            &mut io.context,
-            &mut || {
+        let mut revalidate = |args: &KillArgs, confirmed: &KillTarget| {
+            revalidate_single_cli_target(args, config, confirmed, &mut io.context, &mut || {
                 collector::kill_ports_from_snapshot(
                     &fresh,
                     args.selector.pid(),
                     args.selector.port(),
                 )
-            },
-        );
+            })
+        };
+        // Every selector that named this process must still hold, not only the
+        // first: the confirmation covered all of them. A refusal is reported
+        // against the selector that failed, so its ports appear in the summary.
+        let revalidated = revalidate(planned.args, &planned.target)
+            .map_err(|outcome| (&planned.target, outcome))
+            .and_then(|target| {
+                for (args, confirmed) in &planned.also_named {
+                    revalidate(args, confirmed).map_err(|outcome| (confirmed, outcome))?;
+                }
+                Ok(target)
+            });
         let (target, outcome) = match revalidated {
             Ok(target) => {
                 let outcome = (io.terminate)(handle, &target, &config.protected_processes, mode);
                 (target, outcome)
             }
-            Err(outcome) => (planned.target.clone(), outcome),
+            Err((failed, outcome)) => (failed.clone(), outcome),
         };
         outcomes.push((*index, target, outcome));
     }
@@ -296,13 +310,13 @@ fn plan<'a, Handle>(
             .iter_mut()
             .find(|existing| existing.target.pid == target.pid)
         {
-            existing.extra_ports.extend(target.ports);
+            existing.also_named.push((args, target));
             continue;
         }
         planned.push(Planned {
             args,
             target,
-            extra_ports: Vec::new(),
+            also_named: Vec::new(),
         });
     }
     if refusals.is_empty() {
@@ -340,7 +354,7 @@ fn print_banner(planned: &[Planned<'_>], mode: KillMode) {
     eprintln!("{} {} processes:", mode.action_label(), planned.len());
     for planned in planned {
         let mut ports = planned.target.ports.clone();
-        ports.extend(&planned.extra_ports);
+        ports.extend(planned.extra_ports());
         ports.sort_unstable();
         ports.dedup();
         let ports = if ports.is_empty() {
@@ -469,6 +483,19 @@ fn summary_lines(summary: &Summary<'_>) -> Vec<String> {
     };
     for (target, outcome) in failures {
         let mut line = format!("  failed: {}", outcome.status_description(target, mode));
+        // Several selectors can name one process, so say which ports this
+        // refusal confirmed.
+        if **outcome == TerminationOutcome::TargetChanged && !target.ports.is_empty() {
+            line.push_str("; confirmed port(s): ");
+            line.push_str(&sanitize(
+                &target
+                    .ports
+                    .iter()
+                    .map(KillTargetPort::label)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ));
+        }
         if **outcome == TerminationOutcome::PermissionDenied {
             line.push_str("; ");
             line.push_str(process::permission_denied_hint(target.platform));

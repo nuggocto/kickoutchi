@@ -4,7 +4,7 @@ use crate::model::Platform;
 use crate::process::{KillMode, KillTarget};
 use crate::tree::{self, TreeProcessOps};
 
-use super::{TreeKillConfirmation, TreePreviewResult};
+use super::TreePreviewResult;
 
 /// Result of one Enter press, computed before mutating confirmation state.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,15 +56,14 @@ pub(super) fn collect_tree_preview(
 /// fresh snapshot and re-run the preflight and root-protection rules, mapped
 /// into the shared outcome vocabulary.
 ///
-/// `confirmation.target.protected` is true only when the protected-root stage
-/// was actually walked (set at request time or upgraded by the preview); a
+/// `authorization` comes from the confirmation stage the user completed. A
 /// root the fresh scan newly classifies as protected, such as one that exec'd
 /// into a protected name with the same PID and start marker, must be refused
 /// unless protected-root confirmation was completed.
 pub(super) fn fresh_tree_gates<Ops: TreeProcessOps>(
     fresh_root: &KillTarget,
     protected_processes: &[String],
-    confirmation: &TreeKillConfirmation,
+    authorization: tree::ScopeAuthorization,
     ops: &mut Ops,
 ) -> Result<(), tree::TreeKillOutcome> {
     ops.set_snapshot_scope(tree::TreeSnapshotScope::Tree {
@@ -82,7 +81,7 @@ pub(super) fn fresh_tree_gates<Ops: TreeProcessOps>(
     )
     .map_err(tree::plan_error_outcome)?;
     tree::preflight_outcome(&fresh_preview)?;
-    tree::root_protection_outcome(&fresh_preview, confirmation.target.protected)?;
+    tree::root_protection_outcome(&fresh_preview, authorization.protected_root_confirmed())?;
     Ok(())
 }
 
@@ -143,7 +142,8 @@ pub(super) fn tree_kill_status_line(
         ),
         TreeKillOutcome::PermissionDenied { .. }
         | TreeKillOutcome::TargetChanged { .. }
-        | TreeKillOutcome::SweepPassLimit { .. } => format!(
+        | TreeKillOutcome::SweepPassLimit { .. }
+        | TreeKillOutcome::CancellationCheckFailed(_) => format!(
             "{}; the tree was thawed and no termination was sent",
             sanitize(&outcome.failure_cause_text()),
         ),
@@ -169,6 +169,9 @@ pub(super) fn tree_kill_status_line(
             "{} during tree verification; the tree was thawed and no termination was sent",
             sanitize(&outcome.failure_cause_text()),
         ),
+        TreeKillOutcome::Cancelled => {
+            "tree kill cancelled; the tree was thawed and no termination was sent".to_owned()
+        }
         TreeKillOutcome::SnapshotFailed(_) => format!(
             "enumerating the process tree during termination failed: {}; no termination was sent",
             sanitize(&outcome.failure_cause_text()),

@@ -59,6 +59,19 @@ fn stop_deadline_failure(
     }
 }
 
+/// A failed state read after `SIGSTOP`. Cleanup is owed only if this kill
+/// moved the process into the stopped state and it may still exist: a process
+/// that already exited cannot be left stopped, so a tree sweep treats it as a
+/// vanished member.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn stop_observation_failure(transitioned: bool, outcome: TerminationOutcome) -> StopFailure {
+    StopFailure {
+        cleanup_required: transitioned && outcome != TerminationOutcome::AlreadyExited,
+        outcome,
+        rollback_start_time_marker: None,
+    }
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn run_before_stop_deadline<T>(
     deadline: std::time::Instant,
@@ -69,6 +82,31 @@ fn run_before_stop_deadline<T>(
         Err(stop_deadline_failure(false, None))
     } else {
         Ok(operation())
+    }
+}
+
+/// Classify a stop attempt's `Result` into the tree stop outcome, shared by
+/// Linux and macOS so cleanup ownership is mapped in one place.
+///
+/// A clean stop maps to `Delivered`/`Stopped`; a process that already exited
+/// or changed identity without needing cleanup maps to `NotFound`; every other
+/// failure maps to `Denied`/`Failed` with its cleanup requirements preserved.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn tree_stop_result(result: Result<bool, StopFailure>) -> crate::tree::TreeStopResult {
+    use crate::tree::TreeStopResult;
+
+    match result {
+        Ok(transitioned) => TreeStopResult::Stopped { transitioned },
+        Err(StopFailure {
+            outcome: TerminationOutcome::AlreadyExited | TerminationOutcome::TargetChanged,
+            cleanup_required: false,
+            ..
+        }) => TreeStopResult::NotFound,
+        Err(failure) => TreeStopResult::Failed {
+            cleanup_required: failure.cleanup_required,
+            rollback_start_time_marker: failure.rollback_start_time_marker,
+            error: tree_stop_error(failure.outcome),
+        },
     }
 }
 
@@ -880,6 +918,18 @@ fn check_final_evidence(
     Ok(())
 }
 
+/// A pending termination signal stops the kill as a cancellation; an
+/// unreadable signal set is an operational failure.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn cancellation_outcome(error: &cancellation::KillCheckError) -> TerminationOutcome {
+    match error {
+        cancellation::KillCheckError::Cancelled => TerminationOutcome::Cancelled,
+        cancellation::KillCheckError::Failed(_) => {
+            TerminationOutcome::UnknownFailure(error.to_string())
+        }
+    }
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn outcome_after_thaw(
     pid: u32,
@@ -984,16 +1034,16 @@ pub(crate) use linux::{
     tree_cont_handle, tree_deliver_handle, tree_open_delivery_handle, tree_stop_handle,
 };
 
-/// Send `SIGCONT` to a PID. Used to resume a process after its terminating
-/// signal and to thaw the tree on any abort. `NotFound` means the process
-/// already exited and nothing is left stopped; callers report only `Denied` as
-/// a cleanup failure.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+/// Send `SIGCONT` to a PID. macOS has no pidfd, so its tree ops resume
+/// members by PID after re-checking the start marker; Linux continues only
+/// through retained pidfds. `NotFound` means the process already exited and
+/// nothing is left stopped; callers report only `Denied` as a cleanup failure.
+#[cfg(target_os = "macos")]
 pub(crate) fn tree_cont(pid: u32) -> crate::tree::TreeSignalResult {
     tree_send_signal(pid, libc::SIGCONT)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "macos")]
 fn tree_send_signal(pid: u32, signal: libc::c_int) -> crate::tree::TreeSignalResult {
     use crate::tree::TreeSignalResult;
 

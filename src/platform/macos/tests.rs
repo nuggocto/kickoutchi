@@ -19,7 +19,6 @@ use crate::observation::{
     SocketState,
 };
 use crate::process_evidence::ProcessEvidenceError;
-use crate::tree::TreeProcessOps;
 
 fn zeroed_socket_fdinfo() -> SocketFdinfo {
     unsafe {
@@ -37,11 +36,11 @@ fn grouped_record(socket: super::SocketRecord, owner_pids: &[u32]) -> super::Gro
 }
 
 #[test]
-fn prepare_thaw_records_the_identity_used_by_production_continuation() {
+fn rollback_marker_records_the_identity_used_by_production_continuation() {
     let marker = crate::observation::ProcessStartMarker::macos(1, 0).expect("test marker is valid");
     let mut ops = super::MacosTreeOps::new();
 
-    ops.prepare_thaw(42, Some(marker));
+    ops.record_rollback_marker(42, Some(marker));
 
     assert_eq!(ops.verified_markers.get(&42), Some(&marker));
 }
@@ -81,9 +80,9 @@ fn continuation_guard_refuses_a_pid_without_a_verified_marker() {
 fn rollback_without_observed_marker_clears_prior_authorization() {
     let marker = crate::observation::ProcessStartMarker::macos(1, 0).expect("test marker is valid");
     let mut ops = super::MacosTreeOps::new();
-    ops.prepare_thaw(42, Some(marker));
+    ops.record_rollback_marker(42, Some(marker));
 
-    ops.prepare_thaw(42, None);
+    ops.record_rollback_marker(42, None);
 
     assert!(!ops.verified_markers.contains_key(&42));
     assert_eq!(
@@ -99,8 +98,8 @@ fn rollback_continuation_accepts_stopped_root_and_descendant_replacements() {
     let descendant_replacement =
         crate::observation::ProcessStartMarker::macos(3, 0).expect("test marker is valid");
     let mut ops = super::MacosTreeOps::new();
-    ops.prepare_thaw(42, Some(root_replacement));
-    ops.prepare_thaw(43, Some(descendant_replacement));
+    ops.record_rollback_marker(42, Some(root_replacement));
+    ops.record_rollback_marker(43, Some(descendant_replacement));
 
     assert_eq!(
         ops.recheck_marker_with(42, |_| Ok(Some(root_replacement))),
@@ -119,7 +118,7 @@ fn rollback_continuation_refuses_when_identity_changes_again() {
     let later_replacement =
         crate::observation::ProcessStartMarker::macos(3, 0).expect("test marker is valid");
     let mut ops = super::MacosTreeOps::new();
-    ops.prepare_thaw(42, Some(stopped_replacement));
+    ops.record_rollback_marker(42, Some(stopped_replacement));
 
     assert_eq!(
         ops.recheck_marker_with(42, |_| Ok(Some(later_replacement))),

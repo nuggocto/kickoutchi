@@ -579,6 +579,65 @@ fn confirmed_kill_refuses_stale_process_identity_without_signalling() {
 }
 
 #[test]
+fn target_that_became_protected_requires_protected_confirmation_before_signals() {
+    let mut app = app_with_rows(vec![entry(3000, Some("node"))]);
+    app.apply_action(Action::RequestTerminate);
+    finish_selected_context(&mut app, context(55));
+    // Simulate a target that became protected after `y` was chosen as the
+    // requirement, bypassing the escalation in the context path.
+    app.kill_confirmation_mut()
+        .expect("confirmation is open")
+        .target
+        .protected = true;
+
+    app.execute_kill_confirmation_with(
+        || panic!("an unauthorized protected target must not collect ports"),
+        |_| panic!("an unauthorized protected target must not refresh"),
+        |_| panic!("an unauthorized protected target must not read context"),
+        |_pid| -> Result<u32, TerminationOutcome> { panic!("no handle may be prepared") },
+        |_handle: &u32, _target, _protected, _mode| -> TerminationOutcome {
+            panic!("no signal may be sent")
+        },
+    );
+
+    let confirmation = app.kill_confirmation().expect("confirmation stays open");
+    assert_eq!(
+        confirmation.requirement,
+        ConfirmationRequirement::ProtectedProcess
+    );
+    assert_eq!(confirmation.input, "");
+    assert!(
+        confirmation
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("process is protected")),
+        "{:?}",
+        confirmation.error,
+    );
+}
+
+#[test]
+fn context_that_marks_the_target_protected_escalates_the_open_confirmation() {
+    let mut app = app_with_rows(vec![entry(3000, Some("node"))]);
+    app.apply_action(Action::RequestTerminate);
+    let mut protected = app
+        .kill_confirmation()
+        .expect("confirmation is open")
+        .target
+        .clone();
+    protected.protected = true;
+
+    app.apply_context_target_to_confirmations(&protected);
+
+    let confirmation = app.kill_confirmation().expect("confirmation stays open");
+    assert!(confirmation.target.protected);
+    assert_eq!(
+        confirmation.requirement,
+        ConfirmationRequirement::ProtectedProcess
+    );
+}
+
+#[test]
 fn prepare_already_exited_refreshes_snapshot_so_freed_port_drops() {
     // The target exits between confirmation and pidfd_open, so prepare reports
     // AlreadyExited before any signal is attempted. The status only says the
@@ -1374,6 +1433,97 @@ mod tree_kill {
         );
     }
 
+    fn open_loaded_tree_confirmation(row: crate::model::PortEntry, root_name: &str) -> App {
+        let mut app = app_with_rows(vec![row]);
+        app.apply_action(Action::RequestTreeTerminate);
+        set_tree_confirmation_start_time(&mut app, 55);
+        let infos = vec![tree_info(3000, Some(500), root_name, 55)];
+        app.finish_tree_preview_for_test(Ok(preview_of(&infos, 3000)));
+        app
+    }
+
+    #[test]
+    fn context_that_marks_the_root_protected_restarts_at_the_protected_stage() {
+        let mut app = open_loaded_tree_confirmation(entry(3000, Some("node")), "node");
+        for ch in "tre".chars() {
+            app.apply_action(Action::KillInputAppend(ch));
+        }
+        let mut protected = app
+            .tree_confirmation()
+            .expect("confirmation is open")
+            .target
+            .clone();
+        protected.protected = true;
+
+        app.apply_context_target_to_confirmations(&protected);
+
+        let confirmation = app.tree_confirmation().expect("confirmation stays open");
+        assert_eq!(confirmation.stage, TreeConfirmStage::ProtectedRoot);
+        assert_eq!(confirmation.input, "", "word input must be discarded");
+        assert!(
+            confirmation
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("process is protected")),
+            "{:?}",
+            confirmation.error,
+        );
+    }
+
+    #[test]
+    fn scope_word_alone_never_executes_for_a_protected_root() {
+        let mut app = open_loaded_tree_confirmation(entry(3000, Some("node")), "node");
+        // Bypass every escalation path: the flag is set while the stage still
+        // waits for the bare scope word.
+        app.tree_confirmation_mut()
+            .expect("confirmation is open")
+            .target
+            .protected = true;
+        let mut ops = FakeTreeOps::new(vec![tree_info(3000, Some(500), "node", 55)]);
+
+        app.execute_tree_kill_confirmation_with(
+            || panic!("an unauthorized protected root must not collect ports"),
+            |_| panic!("an unauthorized protected root must not refresh"),
+            |_| panic!("an unauthorized protected root must not read context"),
+            &mut ops,
+        );
+
+        assert!(ops.stops.is_empty(), "no process may be stopped");
+        assert!(ops.delivered.is_empty(), "no signal may be sent");
+        let confirmation = app.tree_confirmation().expect("confirmation reopens");
+        assert_eq!(confirmation.stage, TreeConfirmStage::ProtectedRoot);
+    }
+
+    #[test]
+    fn completed_protected_root_stage_authorizes_the_protected_tree() {
+        let mut app = open_loaded_tree_confirmation(entry(3000, Some("postgres")), "postgres");
+        assert_eq!(
+            app.tree_confirmation()
+                .map(|confirmation| confirmation.stage),
+            Some(TreeConfirmStage::ProtectedRoot),
+        );
+        for ch in "3000".chars() {
+            app.apply_action(Action::KillInputAppend(ch));
+        }
+        app.apply_action(Action::SubmitKillConfirmation);
+        assert_eq!(
+            app.tree_confirmation()
+                .map(|confirmation| confirmation.stage),
+            Some(TreeConfirmStage::ProtectedRootConfirmedWord),
+        );
+        let fresh_rows = vec![entry(3000, Some("postgres"))];
+        let mut ops = FakeTreeOps::new(vec![tree_info(3000, Some(500), "postgres", 55)]);
+
+        app.execute_tree_kill_confirmation_with(
+            || Ok(fresh_rows.clone()),
+            |_| {},
+            |_| context(55),
+            &mut ops,
+        );
+
+        assert_eq!(ops.delivered, [3000], "{:?}", app.kill_status());
+    }
+
     #[test]
     fn cancel_discards_confirmation_and_late_preview_results() {
         let mut app = app_with_rows(vec![entry(3000, Some("node"))]);
@@ -1512,6 +1662,25 @@ fn redraw_requests_follow_input_and_worker_completion_without_poll_churn() {
     assert_eq!(app.rows().len(), 0);
     app.poll_refresh();
     assert!(!app.take_redraw_request());
+}
+
+#[test]
+fn layout_cancellation_during_draw_requests_the_next_frame() {
+    let mut app = app_with_rows(vec![entry(3000, Some("node"))]);
+    app.apply_action(Action::RequestTerminate);
+    assert!(app.take_redraw_request());
+
+    app.cancel_confirmation_for_layout();
+
+    assert!(
+        app.take_redraw_request(),
+        "the cancellation status must not wait for unrelated input"
+    );
+    assert_eq!(app.modal(), ModalKind::None);
+    assert!(
+        app.kill_status()
+            .is_some_and(|status| status.contains("cannot show all mandatory safety text")),
+    );
 }
 
 #[test]

@@ -146,18 +146,53 @@ impl KillConfirmation {
             error: None,
         }
     }
+
+    /// Restart the prompt at the protected-process requirement, discarding any
+    /// input typed against a weaker requirement.
+    fn require_protected_confirmation(&mut self) {
+        self.target.protected = true;
+        self.requirement = ConfirmationRequirement::ProtectedProcess;
+        self.input.clear();
+        self.error = Some(protected_prompt_error(&self.target));
+    }
+}
+
+/// Prompt error shown when an open confirmation must restart at the
+/// protected-process requirement.
+fn protected_prompt_error(target: &KillTarget) -> String {
+    format!(
+        "process is protected; type {} to confirm",
+        target.protected_confirmation_choices(),
+    )
 }
 
 /// Which fact the tree confirmation is currently asking the user to type.
 ///
 /// A protected root completes two stages: its PID or name, then the scope word.
 /// This matches the CLI prompt so the TUI cannot authorize a protected tree on
-/// less evidence than the CLI would.
+/// less evidence than the CLI would. The stage, not `target.protected`, is the
+/// record of what the user confirmed: only `ProtectedRootConfirmedWord` can be
+/// reached through a completed protected-root step.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TreeConfirmStage {
+    /// Waiting for the protected root's PID or name.
     ProtectedRoot,
+    /// Waiting for the scope word; the root was not protected.
     Word,
+    /// Waiting for the scope word after the protected root was confirmed.
+    ProtectedRootConfirmedWord,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl TreeConfirmStage {
+    pub(crate) const fn awaits_word(self) -> bool {
+        matches!(self, Self::Word | Self::ProtectedRootConfirmedWord)
+    }
+
+    const fn protected_root_confirmed(self) -> bool {
+        matches!(self, Self::ProtectedRootConfirmedWord)
+    }
 }
 
 /// State of the tree-kill confirmation modal.
@@ -197,6 +232,15 @@ impl TreeKillConfirmation {
 
     pub(crate) fn scope_word(&self) -> &'static str {
         tree::tree_scope_word(self.mode)
+    }
+
+    /// Restart the prompt at the protected-root stage, discarding any input
+    /// typed against the scope word alone.
+    fn require_protected_root_confirmation(&mut self, error: Option<String>) {
+        self.target.protected = true;
+        self.stage = TreeConfirmStage::ProtectedRoot;
+        self.input.clear();
+        self.error = error;
     }
 }
 
@@ -368,7 +412,10 @@ impl App {
         let result = match worker.receiver.try_recv() {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => {
+                // A worker panic ends the session; drop any queued restart so
+                // no slot state outlives the worker it belonged to.
                 self.refresh_worker = None;
+                self.refresh_after_kill = false;
                 self.worker_failure = Some(error);
                 return;
             }
@@ -433,7 +480,7 @@ impl App {
                 self.selected_process_context = Some(result.clone());
             }
             if let Some(target) = updated_target {
-                self.apply_context_target_to_confirmations(target);
+                self.apply_context_target_to_confirmations(&target);
             }
         }
         self.start_pending_process_context_request();
@@ -678,7 +725,10 @@ impl App {
         self.modal_scroll = rows;
     }
 
+    /// Called from drawing, so request the next frame explicitly: the status
+    /// line must show the cancellation without waiting for unrelated input.
     pub(crate) fn cancel_confirmation_for_layout(&mut self) {
+        self.redraw_needed = true;
         self.cancel_confirmation();
         self.kill_status = Some(
             "confirmation cancelled: terminal cannot show all mandatory safety text".to_owned(),
@@ -1080,8 +1130,7 @@ impl App {
                     if preview.root().is_some_and(|node| node.protected)
                         && !confirmation.target.protected
                     {
-                        confirmation.target.protected = true;
-                        confirmation.stage = TreeConfirmStage::ProtectedRoot;
+                        confirmation.require_protected_root_confirmation(None);
                     }
                     confirmation.preview = Some(preview);
                     self.modal = Modal::ConfirmTreeKill(confirmation);
@@ -1170,7 +1219,7 @@ impl App {
                     ))
                 }
             }
-            TreeConfirmStage::Word => {
+            TreeConfirmStage::Word | TreeConfirmStage::ProtectedRootConfirmedWord => {
                 let word = confirmation.scope_word();
                 if tree::word_confirmation_matches(&confirmation.input, word) {
                     TreeSubmitVerdict::Execute
@@ -1195,7 +1244,7 @@ impl App {
             TreeSubmitVerdict::Execute => self.execute_tree_kill_confirmation(),
             TreeSubmitVerdict::AdvanceToWord => {
                 if let Some(confirmation) = self.tree_confirmation_mut() {
-                    confirmation.stage = TreeConfirmStage::Word;
+                    confirmation.stage = TreeConfirmStage::ProtectedRootConfirmedWord;
                     confirmation.input.clear();
                     confirmation.error = None;
                 }
@@ -1225,6 +1274,42 @@ impl App {
         );
     }
 
+    /// Take the tree confirmation if it may execute now, with the
+    /// authorization its completed stage grants. Otherwise leave the modal open
+    /// with the reason and return `None`.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn take_authorized_tree_confirmation(
+        &mut self,
+    ) -> Option<(TreeKillConfirmation, tree::ScopeAuthorization)> {
+        let mut confirmation = self.take_tree_confirmation()?;
+        if confirmation.target.process_start_time_marker.is_none()
+            && self.process_context_loading_for_pid(confirmation.target.pid)
+        {
+            confirmation.error =
+                Some("still reading process metadata; retry once it finishes".to_owned());
+            self.modal = Modal::ConfirmTreeKill(confirmation);
+            return None;
+        }
+        debug_assert!(
+            confirmation.stage.awaits_word(),
+            "execution is only reachable from a scope-word stage"
+        );
+        if confirmation.target.protected && !confirmation.stage.protected_root_confirmed() {
+            // The root became protected after the stage was chosen. Ask for the
+            // stronger confirmation instead of executing on the scope word alone.
+            let error = protected_prompt_error(&confirmation.target);
+            confirmation.require_protected_root_confirmation(Some(error));
+            self.modal = Modal::ConfirmTreeKill(confirmation);
+            return None;
+        }
+        let authorization = if confirmation.stage.protected_root_confirmed() {
+            tree::ScopeAuthorization::ProtectedRootAndWordConfirmed
+        } else {
+            tree::ScopeAuthorization::TypedWordConfirmed
+        };
+        Some((confirmation, authorization))
+    }
+
     /// Run the confirmed tree kill: fresh root revalidation, fresh bounded
     /// preflight, then the freeze-first pipeline. The preview the user saw is
     /// not trusted for execution. Membership may change between confirmation
@@ -1243,18 +1328,9 @@ impl App {
         CollectContext: FnMut(u32) -> ProcessContext,
         Ops: tree::TreeProcessOps,
     {
-        let Some(confirmation) = self.take_tree_confirmation() else {
+        let Some((confirmation, authorization)) = self.take_authorized_tree_confirmation() else {
             return;
         };
-        if confirmation.target.process_start_time_marker.is_none()
-            && self.process_context_loading_for_pid(confirmation.target.pid)
-        {
-            self.modal = Modal::ConfirmTreeKill(TreeKillConfirmation {
-                error: Some("still reading process metadata; retry once it finishes".to_owned()),
-                ..confirmation
-            });
-            return;
-        }
         self.tree_preview_worker = None;
         self.modal = Modal::None;
 
@@ -1303,7 +1379,7 @@ impl App {
         };
 
         if let Err(outcome) =
-            fresh_tree_gates(&fresh_root, &self.protected_processes, &confirmation, ops)
+            fresh_tree_gates(&fresh_root, &self.protected_processes, authorization, ops)
         {
             self.kill_status = Some(tree_kill_status_line(
                 &fresh_root,
@@ -1317,11 +1393,6 @@ impl App {
         }
 
         // The TUI never skips the typed-word modal.
-        let authorization = if confirmation.target.protected {
-            tree::ScopeAuthorization::ProtectedRootAndWordConfirmed
-        } else {
-            tree::ScopeAuthorization::TypedWordConfirmed
-        };
         let outcome = tree::execute_tree_kill(
             &fresh_root,
             confirmation.mode,
@@ -1402,6 +1473,16 @@ impl App {
                 error: Some("still reading process metadata; retry once it finishes".to_owned()),
                 ..confirmation
             });
+            return;
+        }
+        if confirmation.target.protected
+            && confirmation.requirement != ConfirmationRequirement::ProtectedProcess
+        {
+            // The target became protected after the requirement was chosen. A
+            // `y` or `force` answer does not authorize a protected process.
+            let mut confirmation = confirmation;
+            confirmation.require_protected_confirmation();
+            self.modal = Modal::ConfirmKill(confirmation);
             return;
         }
         self.modal = Modal::None;
@@ -1691,20 +1772,34 @@ impl App {
         Some(KillTarget::from_entries(pid, rows, context))
     }
 
-    fn apply_context_target_to_confirmations(&mut self, mut target: KillTarget) {
+    /// Refresh an open confirmation's target facts. Protection only becomes
+    /// stricter, and a newly protected target restarts the prompt at the
+    /// protected requirement so the earlier, weaker answer cannot authorize it.
+    fn apply_context_target_to_confirmations(&mut self, target: &KillTarget) {
         if let Some(confirmation) = self.kill_confirmation_mut()
             && confirmation.target.pid == target.pid
         {
-            target.protected |= confirmation.target.protected;
+            let newly_protected = target.protected && !confirmation.target.protected;
+            let was_protected = confirmation.target.protected;
             confirmation.target = target.clone();
+            confirmation.target.protected |= was_protected;
+            if newly_protected {
+                confirmation.require_protected_confirmation();
+            }
         }
 
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Some(confirmation) = self.tree_confirmation_mut()
             && confirmation.target.pid == target.pid
         {
-            target.protected |= confirmation.target.protected;
-            confirmation.target = target;
+            let newly_protected = target.protected && !confirmation.target.protected;
+            let was_protected = confirmation.target.protected;
+            confirmation.target = target.clone();
+            confirmation.target.protected |= was_protected;
+            if newly_protected {
+                let error = protected_prompt_error(&confirmation.target);
+                confirmation.require_protected_root_confirmation(Some(error));
+            }
         }
     }
 

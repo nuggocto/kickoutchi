@@ -924,6 +924,21 @@ impl MacosTreeOps {
         }
     }
 
+    /// Replace the guard marker for `pid` with the identity observed after its
+    /// `SIGSTOP`, which can differ from the identity authorized for termination
+    /// after PID reuse. Missing rollback evidence clears any earlier delivery
+    /// marker, so the continue that follows is refused.
+    fn record_rollback_marker(&mut self, pid: u32, marker: Option<ProcessStartMarker>) {
+        match marker {
+            Some(marker) => {
+                self.verified_markers.insert(pid, marker);
+            }
+            None => {
+                self.verified_markers.remove(&pid);
+            }
+        }
+    }
+
     fn rollback_identity_after_stop_with<Read>(
         pid: u32,
         read_marker: Read,
@@ -968,18 +983,9 @@ impl TreeProcessOps for MacosTreeOps {
         }
     }
 
-    fn prepare_thaw(&mut self, pid: u32, marker: Option<ProcessStartMarker>) {
-        // This is the identity observed after SIGSTOP, which can differ from
-        // the identity authorized for termination after PID reuse. Missing
-        // rollback evidence must also clear any earlier delivery marker.
-        match marker {
-            Some(marker) => {
-                self.verified_markers.insert(pid, marker);
-            }
-            None => {
-                self.verified_markers.remove(&pid);
-            }
-        }
+    fn thaw(&mut self, pid: u32, rollback_marker: Option<ProcessStartMarker>) -> TreeSignalResult {
+        self.record_rollback_marker(pid, rollback_marker);
+        self.cont(pid)
     }
 
     fn prepare_delivery(

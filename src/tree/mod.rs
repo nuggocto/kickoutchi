@@ -46,7 +46,7 @@ pub(crate) use plan::{
 };
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
-use execute::{FrozenNode, SweepScope, thaw_all, verify_frozen_identities};
+use execute::{FrozenNode, StopCleanup, SweepScope, thaw_all, verify_frozen_identities};
 
 /// Hard cap on the number of processes a single tree kill will touch.
 ///
@@ -248,8 +248,15 @@ pub(crate) trait TreeProcessOps {
     /// caller classifies on `Denied` alone; see the executor's thaw cleanup.
     fn cont(&mut self, pid: u32) -> TreeSignalResult;
 
-    /// Retain the verified identity needed to make a raw-PID thaw safe.
-    fn prepare_thaw(&mut self, _pid: u32, _marker: Option<ProcessStartMarker>) {}
+    /// Resume a process Kickoutchi stopped, during rollback.
+    ///
+    /// `rollback_marker` is the identity observed after its `SIGSTOP`. Pinned
+    /// platforms ignore it; raw-PID platforms must check it before continuing,
+    /// so the marker travels with the call instead of through earlier state.
+    fn thaw(&mut self, pid: u32, rollback_marker: Option<ProcessStartMarker>) -> TreeSignalResult {
+        let _ = rollback_marker;
+        self.cont(pid)
+    }
     /// Prepare reuse-proof delivery for a stopped, verified process.
     ///
     /// `verified_start_marker` is the start marker the post-stop verification

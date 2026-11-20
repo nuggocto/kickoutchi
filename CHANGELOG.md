@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A TUI kill or tree-kill confirmation whose target becomes protected while it
+  is open now restarts at the PID-or-name prompt and discards what you typed.
+  A protected tree is authorized only by completing the protected-root step,
+  not by the target's protection flag. No current path could raise that flag
+  without the step, so this closes a latent gap rather than a reachable one.
+- On Linux, a tree or group kill never resumes a process by raw PID. A
+  continue without the pidfd kept since the process was stopped is reported
+  as a cleanup failure instead of signalling a PID that may have been reused.
+- On Linux, a stop attempt that fails after it may have stopped the process
+  is always rolled back with `SIGCONT`, matching macOS. Linux and macOS now
+  share one mapping from stop results to cleanup.
+- On macOS, a tree or group kill no longer aborts when a member exits between
+  `SIGSTOP` and the state check. The member is skipped as already gone, as on
+  Linux, and the kill continues.
+- A Linux or macOS tree or group kill that cannot block or read pending
+  termination signals now names that cause. It used to report that
+  enumerating the process tree had failed, though no enumeration ran.
+- `kick watch` stops with an internal-error message instead of panicking if
+  an event ever reaches a batch without the snapshot it refers to. No current
+  input triggers this.
+- An oversized `kick watch` NDJSON record stays refused even if a later write
+  would fit, so a truncated record can never be extended.
+- A multi-target `kick kill` that names one process through several selectors
+  revalidates every selector before signalling it, not only the first. If any
+  confirmed port changed, that process is skipped and reported.
+- A multi-target `kick kill` summary now lists the confirmed ports of a target
+  that no longer owns them. When several selectors name one process, the line
+  names the port that changed rather than the first selector's port.
+- A SIGINT, SIGTERM, or SIGHUP that arrives during a Linux or macOS kill is
+  reported as a cancellation (`kill cancelled`, exit `5`) when Kickoutchi
+  survives to report it, instead of as an unknown or snapshot failure. Tree
+  and group kills still thaw every process they stopped first.
+- When the terminal is too small to show a whole TUI confirmation, the
+  "confirmation cancelled" status appears at once instead of after the next
+  key press or clock tick.
+
+### Changed
+
+- When `kick watch` stops after three consecutive collection failures, it now
+  prints `error: watch stopped after 3 consecutive collection failures` to
+  stderr after flushing the third `collection_gap` record. The exit code is
+  still `1`.
+
+- The tree-kill pipeline records whether to resume each process only once its
+  stop result is known, instead of defaulting to "resume" and relying on every
+  caller to override it. Behavior is unchanged and covered by the existing
+  already-stopped tests.
+
 ## [1.7.0] - 2026-11-13
 
 ### Changed

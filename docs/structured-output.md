@@ -73,7 +73,7 @@ These limits bound collection, retention, and serialization. A lower native-plat
 | Watch events per poll | 524,288; excess or overflow fails with `event_limit_exceeded`. |
 | Retained watch event batch | 4,096; later events start another streamed batch. |
 | Evidence and gaps per watch event | Eight of each, with separate omitted counts. |
-| Consecutive watch collection failures | Three; the third gap is flushed before exit `1`. |
+| Consecutive watch collection failures | Three; the third gap is flushed, then one stderr line explains the stop before exit `1`. |
 | Watch interval | `100ms..=60s`, default `1s`. |
 | Explicit watch duration | `100ms..=7d`. |
 | Watch NDJSON record | 64 KiB including newline; an oversized record is refused without a partial line. |
@@ -702,7 +702,7 @@ Each compact NDJSON record is built in a fresh buffer capped at 64 KiB, includin
 - Initial collection failure, an initial raced snapshot, or an initial snapshot with a `socket_set` gap emits no baseline or NDJSON record, writes a sanitized diagnostic to stderr, and exits `1`.
 - After a valid baseline, each failed collection or unusable raced/partial-socket-set snapshot emits and flushes one `collection_gap`, retains the last valid snapshot, and waits before retrying. Recovery therefore cannot fabricate releases from a failed snapshot.
 - A partial snapshot containing only metadata, scope, or ownership gaps may advance the baseline and reset the failure counter. Replacement still requires complete global and local ownership evidence.
-- The third consecutive collection failure flushes its gap and exits `1`. A fourth attempt is not made. Exhaustion takes precedence over cancellation or duration expiry observed during the third failed poll.
+- The third consecutive collection failure flushes its gap, writes `error: watch stopped after 3 consecutive collection failures` to stderr, and exits `1`. A fourth attempt is not made. Exhaustion takes precedence over cancellation or duration expiry observed during the third failed poll.
 - A wall-clock failure cannot produce conforming timestamps. It writes a diagnostic, emits no record for that attempt, and exits `1` immediately without consuming the three-failure budget.
 - Ctrl-C, duration expiry, and a broken stdout pipe exit `0`.
 - Intervals are `100ms..=60s`, default `1s`; explicit durations are `100ms..=7d`. Invalid values exit `2` before collection.

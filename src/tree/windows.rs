@@ -387,7 +387,7 @@ fn reconcile_final_containment<Api: WindowsTreeApi>(
                 TreeRefusal::TargetChanged { pid },
             ));
         }
-        let old_name = process.verified_name.clone();
+        let previously_verified_name = process.verified_name.clone();
         let fresh_name = api
             .process_name(&process.handle)
             .map_err(|error| windows_evidence_outcome(windows_api_evidence_error(pid, &error)))?
@@ -395,7 +395,7 @@ fn reconcile_final_containment<Api: WindowsTreeApi>(
                 TreeRefusal::PartialMetadata { pid },
             ))?;
         let mut evidence = ProcessEvidenceScope::new(1).map_err(windows_evidence_outcome)?;
-        process.verified_name = evidence
+        let verified_name = evidence
             .observe(
                 &ExpectedProcessEvidence {
                     pid,
@@ -412,12 +412,16 @@ fn reconcile_final_containment<Api: WindowsTreeApi>(
             .map_err(windows_evidence_outcome)?
             .name;
         evidence.finish().map_err(windows_evidence_outcome)?;
+        process.verified_name = Some(verified_name.clone());
         let protected =
-            is_protected_process_name(Platform::Windows, &process.verified_name, protected_names);
-        if !old_name.is_empty() && old_name != process.verified_name {
+            is_protected_process_name(Platform::Windows, &verified_name, protected_names);
+        if previously_verified_name
+            .as_ref()
+            .is_some_and(|previous| *previous != verified_name)
+        {
             report.termination_state.withhold();
             if protected {
-                return Err(protected_outcome(pid, root_pid, &process.verified_name));
+                return Err(protected_outcome(pid, root_pid, &verified_name));
             }
             return Err(WindowsTreeKillOutcome::Refused(
                 TreeRefusal::TargetChanged { pid },
@@ -425,14 +429,14 @@ fn reconcile_final_containment<Api: WindowsTreeApi>(
         }
         if protected && (pid != root_pid || !authorization.protected_root_confirmed()) {
             report.termination_state.withhold();
-            return Err(protected_outcome(pid, root_pid, &process.verified_name));
+            return Err(protected_outcome(pid, root_pid, &verified_name));
         }
         if authorization.prompt_skipped()
             && (crate::model::SystemProcessCheck {
                 platform: Platform::Windows,
                 pid: Some(pid),
                 parent_pid: info.parent_pid,
-                process_name: Some(&process.verified_name),
+                process_name: Some(&verified_name),
                 parent_process_name: info.parent_process_name.as_deref(),
             })
             .is_system_process()
@@ -793,7 +797,7 @@ fn pin_preview_members<Api: WindowsTreeApi>(
                 }),
             )
             .map_err(windows_evidence_outcome)?;
-        process.verified_name = fresh.name;
+        process.verified_name = Some(fresh.name);
     }
     evidence_scope.finish().map_err(windows_evidence_outcome)?;
     Ok(members)
@@ -808,7 +812,13 @@ fn check_pinned_protection<Handle>(
     let mut pids = members.keys().copied().collect::<Vec<_>>();
     pids.sort_unstable();
     for pid in pids {
-        let name = &members[&pid].verified_name;
+        // Every pinned member was name-verified before this check; a member
+        // without a verified name cannot be cleared for protection.
+        let Some(name) = members[&pid].verified_name.as_ref() else {
+            return Err(WindowsTreeKillOutcome::Refused(
+                TreeRefusal::PartialMetadata { pid },
+            ));
+        };
         if !is_protected_process_name(Platform::Windows, name, protected_names) {
             continue;
         }
@@ -1081,9 +1091,10 @@ fn sweep_committed_tree<Api: WindowsTreeApi>(
                     ));
                 }
             };
-            process.verified_name = fresh.name;
-            if is_protected_process_name(Platform::Windows, &process.verified_name, protected_names)
-            {
+            let protected =
+                is_protected_process_name(Platform::Windows, &fresh.name, protected_names);
+            process.verified_name = Some(fresh.name);
+            if protected {
                 return Err(handle_protected_post_commit_child(
                     api, job, info.pid, process, members, assigned, report,
                 ));
@@ -1137,10 +1148,7 @@ fn handle_protected_post_commit_child<Api: WindowsTreeApi>(
             report.not_terminated.push(pid);
         }
     }
-    WindowsTreeKillOutcome::Refused(TreeRefusal::ProtectedDescendant {
-        pid,
-        name: Some(name),
-    })
+    WindowsTreeKillOutcome::Refused(TreeRefusal::ProtectedDescendant { pid, name })
 }
 
 #[expect(
@@ -1321,7 +1329,7 @@ fn open_verified_process<Api: WindowsTreeApi>(
         Some(marker) if marker == expected_marker => Ok(PinnedProcess {
             handle,
             start_marker: expected_marker,
-            verified_name: String::new(),
+            verified_name: None,
             status: PinnedProcessStatus::Pending,
         }),
         Some(_) => Err(OpenVerifiedError::NotFound),
@@ -1332,7 +1340,9 @@ fn open_verified_process<Api: WindowsTreeApi>(
 struct PinnedProcess<Handle> {
     handle: Handle,
     start_marker: ProcessStartMarker,
-    verified_name: String,
+    /// The name proven by the most recent bounded evidence read, or `None`
+    /// before the first read of a newly opened handle.
+    verified_name: Option<String>,
     status: PinnedProcessStatus,
 }
 

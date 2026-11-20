@@ -52,7 +52,10 @@ fn partial_socket_set_after_baseline(
     if status.code() != Some(1) {
         return None;
     }
-    assert!(stderr.is_empty(), "{}", String::from_utf8_lossy(stderr));
+    assert_eq!(
+        String::from_utf8_lossy(stderr),
+        "error: watch stopped after 3 consecutive collection failures\n"
+    );
     assert!(records.len() >= 4, "{records:#?}");
     assert_eq!(records[0]["event"], "baseline");
     for (index, record) in records.iter().enumerate() {

@@ -46,27 +46,43 @@ impl KillCancellationGuard {
         clippy::unused_self,
         reason = "checking cancellation requires a live thread-bound signal mask owner"
     )]
-    pub(crate) fn check(&self) -> io::Result<()> {
+    pub(crate) fn check(&self) -> Result<(), KillCheckError> {
         // SAFETY: sigpending initializes the set before sigismember reads it.
         unsafe {
             let mut pending: libc::sigset_t = std::mem::zeroed();
             if libc::sigpending(&raw mut pending) != 0 {
-                return Err(io::Error::last_os_error());
+                return Err(KillCheckError::Failed(io::Error::last_os_error()));
             }
             for signal in SIGNALS {
                 match libc::sigismember(&raw const pending, signal) {
                     0 => {}
-                    1 => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Interrupted,
-                            "kill interrupted",
-                        ));
-                    }
-                    _ => return Err(io::Error::last_os_error()),
+                    1 => return Err(KillCheckError::Cancelled),
+                    _ => return Err(KillCheckError::Failed(io::Error::last_os_error())),
                 }
             }
         }
         Ok(())
+    }
+}
+
+/// Why a kill stopped at a cancellation checkpoint.
+#[derive(Debug)]
+pub(crate) enum KillCheckError {
+    /// SIGINT, SIGTERM, or SIGHUP is pending: the user or the session asked
+    /// Kickoutchi to stop. Nothing further is signalled.
+    Cancelled,
+    /// The pending-signal set could not be read, so cancellation is unknown.
+    Failed(io::Error),
+}
+
+impl std::fmt::Display for KillCheckError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cancelled => formatter.write_str("kill interrupted by a termination signal"),
+            Self::Failed(error) => {
+                write!(formatter, "checking for kill cancellation failed: {error}")
+            }
+        }
     }
 }
 
@@ -145,10 +161,7 @@ mod tests {
                 let guard = KillCancellationGuard::block().unwrap();
                 assert!(guard.check().is_ok());
                 assert_eq!(libc::pthread_kill(libc::pthread_self(), signal), 0);
-                assert_eq!(
-                    guard.check().unwrap_err().kind(),
-                    io::ErrorKind::Interrupted
-                );
+                assert!(matches!(guard.check(), Err(KillCheckError::Cancelled)));
                 assert_eq!(DELIVERED_SIGNAL.load(Ordering::Relaxed), 0);
                 drop(guard);
                 assert_eq!(DELIVERED_SIGNAL.load(Ordering::Relaxed), signal);
