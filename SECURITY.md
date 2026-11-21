@@ -152,10 +152,12 @@ of the current release's `kickoutchi-installer.sh` that the website build checks
 against a recorded SHA-256 and version; the website's hosting is therefore part
 of the trust decision. That installer downloads archives from the pinned release
 and checks each against an embedded SHA-256. The PowerShell command executes
-content from the mutable GitHub Release `latest` URL, and the generated
-PowerShell installer does not verify archive checksums. TLS and the GitHub
-repository are part of the trust decision for both before the installer can be
-inspected locally.
+content from the mutable GitHub Release `latest` URL. The release workflow embeds
+SHA-256 digests of the same-run Windows ZIP and updater in the generated
+installer before validation and publication. The installer checks the ZIP before
+unpacking and checks the updater before writing any installed files. These
+checks do not authenticate the installer itself: TLS and the GitHub repository
+remain part of the trust decision.
 The cargo-dist-generated standalone `kickoutchi-update` uses the same release
 authority. An unqualified `cargo install --git` or `github:nuggocto/kickoutchi`
 Linux Nix flake reference follows the repository's default branch and can select unreleased code; `--locked` pins

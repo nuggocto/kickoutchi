@@ -252,6 +252,9 @@ jobs:
           jq --raw-output '.upload_files[]' dist-manifest.json >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      - name: Embed release checksums in the Windows installer
+        shell: pwsh
+        run: ./packaging/windows/protect-installer.ps1 -Distrib target/distrib
       - name: Upload global artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

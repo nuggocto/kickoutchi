@@ -88,6 +88,8 @@ Release. Both installers place the binaries in `~/.cargo/bin` and add it to
 your PATH, so open a new terminal before running `kick`. Prebuilt Linux
 binaries need glibc 2.31 or newer.
 Installer-based installs include `kickoutchi-update` for later upgrades.
+The Windows installer checks the ZIP and updater against embedded release
+checksums before installing them.
 Release pages also provide direct archives, per-archive `.sha256` files, and a
 release-wide `sha256.sum`. Same-release checksums detect corruption; they are not
 an independent signature.

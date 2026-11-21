@@ -81,10 +81,7 @@ fn sha256(path: &Path) -> ValidationResult<String> {
     };
     let description = format!("SHA-256 of {}", path.display());
     let output = run_command(&mut command, &description, BINARY_COMMAND_WAIT)?;
-    match str::from_utf8(&output.stdout)
-        .ok()
-        .and_then(parse_sha256_output)
-    {
+    match parse_sha256_output(&output.stdout) {
         Some(digest) if output.status.success() => Ok(digest),
         _ => Err(format!(
             "could not compute {description}: status={}, stdout={:?}, stderr={:?}",
@@ -97,10 +94,11 @@ fn sha256(path: &Path) -> ValidationResult<String> {
 
 /// The digest from `sha256sum`/`shasum` (`HEX  FILE`) or `certutil` (a
 /// header line, the hex digest, possibly space-separated, then a status line).
-fn parse_sha256_output(stdout: &str) -> Option<String> {
+/// Only the hex is needed; localized tool output is not always UTF-8.
+fn parse_sha256_output(stdout: &[u8]) -> Option<String> {
     let is_digest =
         |text: &str| text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit());
-    stdout.lines().find_map(|line| {
+    String::from_utf8_lossy(stdout).lines().find_map(|line| {
         let first = line.split_ascii_whitespace().next()?;
         if is_digest(first) {
             return Some(first.to_ascii_lowercase());
@@ -691,13 +689,13 @@ fn configure_installer_environment(
         .env("XDG_CONFIG_HOME", temporary.join("config"))
         .env("KICKOUTCHI_INSTALL_DIR", install_root)
         .env("KICKOUTCHI_NO_MODIFY_PATH", "1")
-        .env("KICKOUTCHI_PRINT_QUIET", "1");
+        .env("KICKOUTCHI_PRINT_QUIET", "1")
+        .env("TEMP", temporary.join("tmp"))
+        .env("TMP", temporary.join("tmp"));
     if !cfg!(windows) {
         command
             .env("HOME", temporary.join("home"))
-            .env("TMPDIR", temporary.join("tmp"))
-            .env("TEMP", temporary.join("tmp"))
-            .env("TMP", temporary.join("tmp"));
+            .env("TMPDIR", temporary.join("tmp"));
     }
     if let Some(download_url) = download_url {
         command.env("KICKOUTCHI_DOWNLOAD_URL", download_url);
@@ -736,6 +734,107 @@ fn validate_installer_receipt(
         return Err(format!(
             "installer receipt has unexpected contents: {receipt}"
         ));
+    }
+    Ok(())
+}
+
+fn run_generated_installer(
+    shell: &str,
+    installer: &Path,
+    temporary: &Path,
+    install_root: &Path,
+    artifact_url: &str,
+) -> ValidationResult<Output> {
+    let mut command = Command::new(shell);
+    if shell != "sh" {
+        command.args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ]);
+    }
+    if shell == "powershell.exe" {
+        // A PowerShell 7 runner's module path is not safe to reuse in 5.1.
+        command.env_remove("PSModulePath");
+    }
+    command.arg(installer);
+    configure_installer_environment(&mut command, temporary, install_root, Some(artifact_url));
+    run_command(
+        &mut command,
+        "generated release installer",
+        RELEASE_COMMAND_WAIT,
+    )
+}
+
+fn validate_windows_checksum_refusals(
+    installer: &Path,
+    temporary: &Path,
+    artifact_source: &Path,
+    archive_name: &str,
+    updater_name: &str,
+) -> ValidationResult<()> {
+    let install_root = temporary.join("previous-install");
+    let bin = install_root.join("bin");
+    fs::create_dir_all(&bin).map_err(|error| format!("could not seed install: {error}"))?;
+    let receipt = temporary.join("config/kickoutchi/kickoutchi-receipt.json");
+    let previous_files = [
+        (bin.join("kick.exe"), b"previous short binary".as_slice()),
+        (bin.join("kickoutchi.exe"), b"previous binary".as_slice()),
+        (
+            bin.join("kickoutchi-update.exe"),
+            b"previous updater".as_slice(),
+        ),
+        (receipt, b"previous receipt".as_slice()),
+    ];
+    for (path, contents) in &previous_files {
+        fs::write(path, contents).map_err(|error| format!("could not seed {path:?}: {error}"))?;
+    }
+
+    let artifact_url = percent_encode_file_path(artifact_source, true)?;
+    for name in [archive_name, updater_name] {
+        // Appending a byte changes the digest but leaves the ZIP readable.
+        let valid = artifact_source.join(name);
+        let backup = valid.with_extension("original");
+        fs::rename(&valid, &backup)
+            .map_err(|error| format!("could not save valid {name}: {error}"))?;
+        copy_exact_file(&backup, &valid)?;
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&valid)
+            .and_then(|mut file| file.write_all(b"\0"))
+            .map_err(|error| format!("could not alter local copy of {name}: {error}"))?;
+
+        let output = run_generated_installer(
+            "powershell.exe",
+            installer,
+            temporary,
+            &install_root,
+            &artifact_url,
+        )?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let diagnostic = format!("SHA-256 mismatch for {name}");
+        if output.status.success()
+            || !(stdout.contains(&diagnostic) || stderr.contains(&diagnostic))
+        {
+            return Err(format!(
+                "expected a checksum refusal for {name}: status={}, stdout={stdout:?}, stderr={stderr:?}",
+                output.status
+            ));
+        }
+        for (path, expected) in &previous_files {
+            let actual =
+                fs::read(path).map_err(|error| format!("could not read {path:?}: {error}"))?;
+            if actual != *expected {
+                return Err(format!("refusing {name} changed installed file {path:?}"));
+            }
+        }
+        fs::remove_file(&valid)
+            .and_then(|()| fs::rename(&backup, &valid))
+            .map_err(|error| format!("could not restore local copy of {name}: {error}"))?;
     }
     Ok(())
 }
@@ -795,28 +894,12 @@ fn validate_generated_installer(
     }
     let local_url = percent_encode_file_path(&artifact_source, target.windows)?;
 
-    let mut command = Command::new(if target.windows { "pwsh.exe" } else { "sh" });
-    if target.windows {
-        command.args([
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-        ]);
-    }
-    command.arg(&installer);
-    configure_installer_environment(
-        &mut command,
+    let output = run_generated_installer(
+        if target.windows { "pwsh.exe" } else { "sh" },
+        &installer,
         &temporary.path,
         &install_root,
-        Some(&local_url),
-    );
-    let output = run_command(
-        &mut command,
-        "generated release installer",
-        RELEASE_COMMAND_WAIT,
+        &local_url,
     )?;
     if !output.status.success() {
         return Err(format!(
@@ -842,6 +925,16 @@ fn validate_generated_installer(
         .path
         .join("config/kickoutchi/kickoutchi-receipt.json");
     validate_installer_receipt(&receipt, &install_root, env!("CARGO_PKG_VERSION"))?;
+
+    if target.windows {
+        validate_windows_checksum_refusals(
+            &installer,
+            &temporary.path,
+            &artifact_source,
+            &archive_name,
+            &updater_name,
+        )?;
+    }
 
     println!(
         "validated generated release installer: target={}, installer={}",
@@ -1151,7 +1244,7 @@ mod tests {
     fn hash_output_parser_reads_unix_and_certutil_formats() {
         let digest = "ab".repeat(32);
         assert_eq!(
-            parse_sha256_output(&format!("{digest}  artifact.zip\n")).as_deref(),
+            parse_sha256_output(format!("{digest}  artifact.zip\n").as_bytes()).as_deref(),
             Some(digest.as_str())
         );
         let certutil = format!(
@@ -1159,7 +1252,7 @@ mod tests {
             digest.to_ascii_uppercase()
         );
         assert_eq!(
-            parse_sha256_output(&certutil).as_deref(),
+            parse_sha256_output(certutil.as_bytes()).as_deref(),
             Some(digest.as_str())
         );
         let spaced = format!(
@@ -1172,10 +1265,22 @@ mod tests {
                 .join(" ")
         );
         assert_eq!(
-            parse_sha256_output(&spaced).as_deref(),
+            parse_sha256_output(spaced.as_bytes()).as_deref(),
             Some(digest.as_str())
         );
-        assert_eq!(parse_sha256_output("CertUtil: error\n"), None);
+        assert_eq!(parse_sha256_output(b"CertUtil: error\n"), None);
+    }
+
+    #[test]
+    fn hash_output_parser_accepts_localized_non_utf8_certutil_output() {
+        let digest = "ab".repeat(32);
+        let mut output = b"Hachage SHA256 de artifact.zip\xa0:\r\n".to_vec();
+        output.extend(digest.as_bytes());
+        output.extend(b"\r\nCertUtil: La commande s'est termin\x82e.\r\n");
+        assert_eq!(
+            parse_sha256_output(&output).as_deref(),
+            Some(digest.as_str())
+        );
     }
 
     #[test]

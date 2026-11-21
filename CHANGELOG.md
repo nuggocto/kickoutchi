@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Windows release installer verifies the SHA-256 of its ZIP and updater
+  before replacing any installed files. It also checks the ZIP before unpacking.
 - A TUI kill or tree-kill confirmation whose target becomes protected while it
   is open now restarts at the PID-or-name prompt and discards what you typed.
   A protected tree is authorized only by completing the protected-root step,
