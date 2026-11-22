@@ -870,7 +870,7 @@ fn validate_unix_missing_verifier_refusal(
     for tool in [
         "sh", "uname", "mktemp", "chmod", "mkdir", "rm", "tar", "grep", "cat", "sed", "awk", "tr",
         "curl", "wget", "cp", "mv", "env", "dirname", "basename", "head", "tail", "cut", "id",
-        "sysctl", "file", "od",
+        "sysctl", "sw_vers", "file", "od", "dd", "ldd", "getconf", "getent", "sort", "tput",
     ] {
         if let Some(found) = search_dirs
             .iter()
@@ -1444,8 +1444,8 @@ INSTALL_UPDATER=1
 ARTIFACT_DOWNLOAD_URLS="${{KICKOUTCHI_DOWNLOAD_URL}}"
 INSTALL_DIR="${{KICKOUTCHI_INSTALL_DIR}}/bin"
 RECEIPT_HOME="${{XDG_CONFIG_HOME}}/kickoutchi"
-say() {{ printf '%s\n' "$1"; }}
-err() {{ printf 'ERROR: %s\n' "$1" >&2; exit 1; }}
+say() {{ [ "${{KICKOUTCHI_PRINT_QUIET:-0}}" = "0" ] && printf '%s\n' "$1"; }}
+err() {{ [ "${{KICKOUTCHI_PRINT_QUIET:-0}}" = "0" ] && printf 'ERROR: %s\n' "$1" >&2; exit 1; }}
 check_cmd() {{ command -v "$1" > /dev/null 2>&1; }}
 ensure() {{ "$@" || err "command failed: $*"; }}
 downloader() {{
