@@ -1754,7 +1754,7 @@ fn unreadable_and_raced_children_preserve_unverified_parent_edges_for_tree_prefl
         &mut api,
         MetadataProfile::Display,
         ProcessSelection::All,
-        super::PROCESS_METADATA_BUDGET_BYTES,
+        super::OPTIONAL_METADATA_MAX_BYTES,
     )
     .expect("snapshot with mixed child failures collects");
     let rows = super::tree_process_infos_from_snapshot(&snapshot);

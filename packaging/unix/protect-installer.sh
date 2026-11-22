@@ -175,7 +175,7 @@ fi
 
 # Pass 2: make archive verification mandatory, add updater verification before
 # unpacking/installing, and replace verify_checksum with a fail-closed verifier.
-awk '
+awk -v q="'" '
 BEGIN {
     archive_patched = 0
     updater_patched = 0
@@ -250,16 +250,16 @@ END {
             print "    local _digest"
             print ""
             print "    if check_cmd sha256sum; then"
-            print "        _digest=\"$(sha256sum < \"$_file\" | awk \x27{print $1}\x27)\" || err \"failed to compute SHA-256 for $_artifact using sha256sum\""
+            print "        _digest=\"$(sha256sum < \"$_file\" | awk " q "{print $1}" q ")\" || err \"failed to compute SHA-256 for $_artifact using sha256sum\""
             print "    elif check_cmd shasum; then"
-            print "        _digest=\"$(shasum -a 256 < \"$_file\" | awk \x27{print $1}\x27)\" || err \"failed to compute SHA-256 for $_artifact using shasum\""
+            print "        _digest=\"$(shasum -a 256 < \"$_file\" | awk " q "{print $1}" q ")\" || err \"failed to compute SHA-256 for $_artifact using shasum\""
             print "    elif check_cmd openssl; then"
-            print "        _digest=\"$(openssl dgst -sha256 < \"$_file\" | awk \x27{print $NF}\x27)\" || err \"failed to compute SHA-256 for $_artifact using openssl\""
+            print "        _digest=\"$(openssl dgst -sha256 < \"$_file\" | awk " q "{print $NF}" q ")\" || err \"failed to compute SHA-256 for $_artifact using openssl\""
             print "    else"
             print "        err \"cannot verify SHA-256 checksum for $_artifact: install sha256sum, shasum, or openssl\""
             print "    fi"
             print ""
-            print "    RETVAL=\"$(printf \x27%s\x27 \"$_digest\" | tr \x27A-F\x27 \x27a-f\x27)\""
+            print "    RETVAL=\"$(printf " q "%s" q " \"$_digest\" | tr " q "A-F" q " " q "a-f" q ")\""
             print "}"
             print ""
             print "verify_checksum() {"
@@ -273,7 +273,7 @@ END {
             print "    if [ \"$_checksum_style\" != \"sha256\" ]; then"
             print "        err \"unsupported checksum style for $_artifact: $_checksum_style\""
             print "    fi"
-            print "    _expected_checksum=\"$(printf \x27%s\x27 \"$_checksum_value\" | tr \x27A-F\x27 \x27a-f\x27)\""
+            print "    _expected_checksum=\"$(printf " q "%s" q " \"$_checksum_value\" | tr " q "A-F" q " " q "a-f" q ")\""
             print "    case \"$_expected_checksum\" in"
             print "        [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])"
             print "            ;;"
