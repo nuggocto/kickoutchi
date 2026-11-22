@@ -7,6 +7,7 @@ use super::{
     ProcessIdentity, snapshot_platform,
 };
 
+#[cfg(test)]
 pub(crate) fn project_legacy(
     snapshot: &NetworkSnapshot,
 ) -> Result<Vec<PortEntry>, ObservationError> {

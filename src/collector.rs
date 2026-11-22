@@ -20,7 +20,7 @@ use crate::observation::{
     EvidenceGapCode, EvidenceImpact, MetadataProfile, NativeObservationPass, NetworkSnapshot,
     ObservationError, ObservationScope, ObservationSource, OwnerCompleteness, ProcessReadBatch,
     SnapshotCompleteness, SocketState as ObservationSocketState, collect_consistent,
-    project_legacy, project_legacy_target,
+    project_legacy_target,
 };
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::observation::{ProcessRead, process_read_metadata_bytes};
@@ -90,23 +90,20 @@ pub(crate) fn collect_snapshot(
     }
 }
 
-/// Collect one snapshot and return owned legacy rows that outlive it.
-///
-/// Kill seams return after dropping the snapshot. Callers that retain their
-/// snapshot should borrow `PortEntryView` instead.
-pub(crate) fn collect_ports_with_profile(
-    profile: MetadataProfile,
-) -> Result<Vec<PortEntry>, CollectorError> {
-    let snapshot = collect_snapshot(profile)?;
-    project_legacy(&snapshot).map_err(CollectorError::from)
-}
-
 pub(crate) fn collect_kill_ports(
     pid: Option<u32>,
     port: Option<u16>,
 ) -> Result<Vec<PortEntry>, CollectorError> {
     let snapshot = collect_snapshot(MetadataProfile::Display)?;
     kill_ports_from_snapshot(&snapshot, pid, port)
+}
+
+pub(crate) fn collect_kill_ports_for_verified_port_owner(
+    port: u16,
+    pid: u32,
+) -> Result<Vec<PortEntry>, CollectorError> {
+    let snapshot = collect_snapshot(MetadataProfile::Display)?;
+    kill_ports_for_verified_port_owner(&snapshot, port, pid)
 }
 
 /// Project the rows a destructive command is allowed to act on, or refuse.
@@ -124,7 +121,30 @@ pub(crate) fn kill_ports_from_snapshot(
         (None, Some(port)) => DestructiveTargetMode::Port(port),
         _ => return Err(ObservationError::NativeDataMalformed.into()),
     };
+    kill_ports_from_snapshot_mode(snapshot, target_mode)
+}
 
+/// Project all rows on `port` for a `--port` kill redirected to its verified
+/// owner `pid`.
+///
+/// Unrelated process-permission gaps elsewhere on the host are tolerated (as in
+/// PID mode), while every socket on `port` and every gap naming `pid` or `port`
+/// still participates in authority and ambiguity checks.
+pub(crate) fn kill_ports_for_verified_port_owner(
+    snapshot: &NetworkSnapshot,
+    port: u16,
+    pid: u32,
+) -> Result<Vec<PortEntry>, CollectorError> {
+    kill_ports_from_snapshot_mode(
+        snapshot,
+        DestructiveTargetMode::VerifiedPortOwner { port, pid },
+    )
+}
+
+fn kill_ports_from_snapshot_mode(
+    snapshot: &NetworkSnapshot,
+    target_mode: DestructiveTargetMode,
+) -> Result<Vec<PortEntry>, CollectorError> {
     // An omitted gap is evidence we never got to inspect, so it is partial
     // before any socket is examined. Races stay distinct because a raced
     // observation cannot support a permission diagnosis from the same read.
@@ -171,7 +191,12 @@ pub(crate) fn kill_ports_from_snapshot(
         Authority::Partial => return Err(ObservationError::PartialSocketSet.into()),
         Authority::Complete => {}
     }
-    project_legacy_target(snapshot, pid, port).map_err(CollectorError::from)
+    let (project_pid, project_port) = match target_mode {
+        DestructiveTargetMode::Pid(pid) => (Some(pid), None),
+        DestructiveTargetMode::Port(port)
+        | DestructiveTargetMode::VerifiedPortOwner { port, .. } => (None, Some(port)),
+    };
+    project_legacy_target(snapshot, project_pid, project_port).map_err(CollectorError::from)
 }
 
 /// Strongest reason a destructive command may not act on a snapshot.
@@ -220,6 +245,21 @@ fn destructive_socket_match(
         DestructiveTargetMode::Port(target_port) => {
             (socket.local_endpoint.port.get() == target_port).then_some(DestructiveSocketMatch {
                 unverified_target_reason: None,
+            })
+        }
+        DestructiveTargetMode::VerifiedPortOwner {
+            port: target_port,
+            pid: target_pid,
+        } => {
+            let unverified_target_reason = socket.owners.iter().find_map(|owner| match owner {
+                crate::observation::OwnerObservation::UnverifiedPid {
+                    pid: owner_pid,
+                    reason,
+                } if *owner_pid == target_pid => Some(*reason),
+                _ => None,
+            });
+            (socket.local_endpoint.port.get() == target_port).then_some(DestructiveSocketMatch {
+                unverified_target_reason,
             })
         }
         DestructiveTargetMode::Pid(target_pid) => {
@@ -277,7 +317,10 @@ fn socket_authority(
         authority.merge(Authority::Raced);
     }
 
-    if matches!(target_mode, DestructiveTargetMode::Port(_)) {
+    if matches!(
+        target_mode,
+        DestructiveTargetMode::Port(_) | DestructiveTargetMode::VerifiedPortOwner { .. }
+    ) {
         // No owner at all, or any owner we could not tie to a start identity,
         // means the port's holder set is unproven.
         if socket.owners.is_empty()
@@ -335,6 +378,35 @@ fn gap_applies_to_target(
         (DestructiveTargetMode::Pid(target_pid), EvidenceImpact::Ownership) => {
             names_matched_endpoint() || (gap.endpoint.is_none() && gap.pid == Some(target_pid))
         }
+        (
+            DestructiveTargetMode::VerifiedPortOwner {
+                port: target_port,
+                pid: target_pid,
+            },
+            EvidenceImpact::SocketSet,
+        ) => {
+            gap.pid == Some(target_pid)
+                || names_matched_endpoint()
+                || gap
+                    .endpoint
+                    .as_ref()
+                    .is_some_and(|endpoint| endpoint.port.get() == target_port)
+                || (gap.endpoint.is_none() && gap.pid.is_none())
+        }
+        (
+            DestructiveTargetMode::VerifiedPortOwner {
+                port: target_port,
+                pid: target_pid,
+            },
+            EvidenceImpact::Ownership,
+        ) => {
+            names_matched_endpoint()
+                || gap
+                    .endpoint
+                    .as_ref()
+                    .is_some_and(|endpoint| endpoint.port.get() == target_port)
+                || (gap.endpoint.is_none() && gap.pid == Some(target_pid))
+        }
         // Any socket-set or ownership loss that is not provably about another
         // port could have hidden a co-holder of this one.
         (
@@ -351,6 +423,7 @@ fn gap_applies_to_target(
 enum DestructiveTargetMode {
     Pid(u32),
     Port(u16),
+    VerifiedPortOwner { port: u16, pid: u32 },
 }
 
 impl CollectorError {

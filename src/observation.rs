@@ -255,7 +255,7 @@ impl SocketState {
     }
 
     /// The port row state, for the only states that become port rows.
-    const fn port_row_state(self) -> Option<LegacySocketState> {
+    pub(crate) const fn port_row_state(self) -> Option<LegacySocketState> {
         match self {
             Self::Listen => Some(LegacySocketState::Listen),
             Self::Bound => Some(LegacySocketState::Bound),
@@ -1756,8 +1756,10 @@ mod legacy;
 
 use legacy::owner_pid;
 #[cfg(test)]
+pub(crate) use legacy::project_legacy;
+#[cfg(test)]
 use legacy::project_legacy_with_limit;
-pub(crate) use legacy::{project_legacy, project_legacy_identities, project_legacy_target};
+pub(crate) use legacy::{project_legacy_identities, project_legacy_target};
 
 fn materialize_sockets(
     pass: &CollectedPass,

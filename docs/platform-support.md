@@ -89,8 +89,11 @@ and metadata reads is retained as an explicit gap where possible.
 An ownership gap with no endpoint provenance means an unobserved process could
 share any socket, so `kill --port` cannot prove that a port has a single owner.
 When the port has one verified owner, the CLI prints a note and targets that
-owner by PID, under the same checks as `kill --pid`. When the owner itself
-cannot be read, the CLI refuses before the confirmation prompt and says why.
+owner while retaining the original port selector for revalidation: unrelated
+permission gaps elsewhere on the host are tolerated, but a second visible owner
+or a port-specific gap appearing before delivery is refused. When the owner
+itself cannot be read, the CLI refuses before the confirmation prompt and says
+why.
 
 Linux socket rows also report the UID that created each socket. Human output
 uses it to explain an owner-less row, for example "the socket belongs to root

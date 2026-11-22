@@ -27,9 +27,9 @@ use crate::public_output::{
 };
 use crate::query::{FilterTerm, QueryCapabilities};
 use crate::watch::{
-    Certainty, DiffError, EventKind, WATCH_EVENT_BATCH_MAX, WATCH_EVENT_EVIDENCE_MAX,
-    WATCH_EVENT_GAPS_MAX, WATCH_FAILURES_MAX, WATCH_RECORD_MAX_BYTES, WatchEvent, baseline_events,
-    compare_event_prefix, diff_snapshots,
+    Certainty, DiffError, EventKind, PreparedSnapshot, WATCH_EVENT_BATCH_MAX,
+    WATCH_EVENT_EVIDENCE_MAX, WATCH_EVENT_GAPS_MAX, WATCH_FAILURES_MAX, WATCH_RECORD_MAX_BYTES,
+    WatchEvent, baseline_events_prepared, compare_event_prefix, diff_prepared_snapshots,
 };
 
 use super::ExitReason;
@@ -286,7 +286,13 @@ fn run_watch_loop(
         diagnostics,
         sequence: 0,
     };
-    let mut previous_index = SnapshotIndex::new(&previous);
+    let mut previous_index = match SnapshotIndex::new(&previous) {
+        Ok(index) => index,
+        Err(error) => {
+            write_diagnostic(writer.diagnostics, &error.to_string());
+            return ExitReason::Failure;
+        }
+    };
     let initial_times = match observation_times(
         None,
         previous.capture_started_at,
@@ -295,13 +301,7 @@ fn run_watch_loop(
         Ok(times) => times,
         Err(error) => return output_failure(writer.diagnostics, &error),
     };
-    let baseline = match baseline_events(&previous) {
-        Ok(events) => events,
-        Err(error) => {
-            write_diagnostic(writer.diagnostics, &error.to_string());
-            return ExitReason::Failure;
-        }
-    };
+    let baseline = baseline_events_prepared(&previous, &previous_index.prepared);
     if let Some(reason) = write_ordered_events(
         baseline.map(baseline_event_result),
         options,
@@ -430,7 +430,13 @@ fn run_watch_loop(
         }
 
         consecutive_failures = 0;
-        let mut current_index = SnapshotIndex::new(&current);
+        let mut current_index = match SnapshotIndex::new(&current) {
+            Ok(index) => index,
+            Err(error) => {
+                write_diagnostic(writer.diagnostics, &error.to_string());
+                return ExitReason::Failure;
+            }
+        };
         let event_times = match observation_times(
             Some(previous.capture_completed_at),
             current.capture_started_at,
@@ -439,13 +445,12 @@ fn run_watch_loop(
             Ok(times) => times,
             Err(error) => return output_failure(writer.diagnostics, &error),
         };
-        let diff = match diff_snapshots(&previous, &current) {
-            Ok(diff) => diff,
-            Err(error) => {
-                write_diagnostic(writer.diagnostics, &error.to_string());
-                return ExitReason::Failure;
-            }
-        };
+        let diff = diff_prepared_snapshots(
+            &previous,
+            &previous_index.prepared,
+            &current,
+            &current_index.prepared,
+        );
         if let Some(reason) = write_ordered_events(
             diff,
             options,
@@ -546,16 +551,18 @@ const fn baseline_event_result(event: WatchEvent<'_>) -> Result<WatchEvent<'_>, 
 }
 
 struct SnapshotIndex {
+    prepared: PreparedSnapshot,
     filter: FilterCache,
     gaps: GapIndex,
 }
 
 impl SnapshotIndex {
-    fn new(snapshot: &NetworkSnapshot) -> Self {
-        Self {
+    fn new(snapshot: &NetworkSnapshot) -> Result<Self, DiffError> {
+        Ok(Self {
+            prepared: PreparedSnapshot::new(snapshot)?,
             filter: FilterCache::default(),
             gaps: GapIndex::new(snapshot),
-        }
+        })
     }
 }
 

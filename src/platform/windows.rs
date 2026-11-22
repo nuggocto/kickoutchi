@@ -366,12 +366,15 @@ impl ProcessSnapshot {
             api.observe_retained_handle_count(handles.len());
             let retained_chunk_handles = handles.len();
             for &pid in chunk {
+                let recorded_parent_pid = unverified_parent_from_relations(pid, &relations);
                 let handle = match handles.remove(&pid) {
                     Some(Ok(handle)) => handle,
                     Some(Err(error)) => {
                         snapshot.processes.insert(
                             pid,
                             ProcessMetadata {
+                                unverified_parent_pid: recorded_parent_pid
+                                    .filter(|_| error != ProcessOpenError::Disappeared),
                                 identity_reason: Some(unverified_reason_for_open(error)),
                                 partial: true,
                                 ..ProcessMetadata::default()
@@ -389,6 +392,7 @@ impl ProcessSnapshot {
                     snapshot.processes.insert(
                         pid,
                         ProcessMetadata {
+                            unverified_parent_pid: recorded_parent_pid,
                             identity_reason: Some(UnverifiedOwnerReason::IdentityUnavailable),
                             partial: true,
                             ..ProcessMetadata::default()
@@ -401,6 +405,7 @@ impl ProcessSnapshot {
                     snapshot.processes.insert(
                         pid,
                         ProcessMetadata {
+                            unverified_parent_pid: recorded_parent_pid,
                             identity_reason: Some(UnverifiedOwnerReason::Raced),
                             partial: true,
                             ..ProcessMetadata::default()
@@ -437,7 +442,6 @@ impl ProcessSnapshot {
                     .flatten();
                 // Only the latest relation can be reported as unverified. A
                 // parent seen solely in the first snapshot may already be stale.
-                let recorded_parent_pid = second_parent_pid;
                 let parent_name_budget = metadata_budget.saturating_sub(retained_bytes);
                 let (parent_pid, parent_process_name) = parent_pid
                     .and_then(|parent_pid| {
@@ -583,6 +587,17 @@ const fn unverified_reason_for_open(error: ProcessOpenError) -> UnverifiedOwnerR
     }
 }
 
+fn unverified_parent_from_relations(
+    pid: u32,
+    relations: &HashMap<u32, Option<u32>>,
+) -> Option<u32> {
+    relations
+        .get(&pid)
+        .copied()
+        .flatten()
+        .filter(|&parent_pid| parent_pid != pid)
+}
+
 fn finish_bracketed_metadata(
     metadata: ProcessMetadata,
     before: ProcessStartMarker,
@@ -593,6 +608,7 @@ fn finish_bracketed_metadata(
         metadata
     } else {
         ProcessMetadata {
+            unverified_parent_pid: metadata.unverified_parent_pid.or(metadata.parent_pid),
             identity_reason: Some(UnverifiedOwnerReason::Raced),
             partial: true,
             ..ProcessMetadata::default()

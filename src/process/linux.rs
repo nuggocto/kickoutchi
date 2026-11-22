@@ -16,6 +16,8 @@ use super::{
 pub(super) fn prepare_termination_platform(
     pid: u32,
 ) -> Result<TerminationHandle, TerminationOutcome> {
+    crate::platform::linux::verify_proc_matches_pid_namespace()
+        .map_err(TerminationOutcome::UnknownFailure)?;
     let Ok(pid) = libc::pid_t::try_from(pid) else {
         return Err(TerminationOutcome::UnknownFailure(
             "PID does not fit platform pid_t".to_owned(),
@@ -320,7 +322,9 @@ pub(crate) fn tree_open_delivery_handle(
 ) -> Result<TreeDeliveryHandle, crate::tree::TreeSignalResult> {
     use crate::tree::TreeSignalResult;
 
-    if unsafe_pid_reason(pid).is_some() {
+    if unsafe_pid_reason(pid).is_some()
+        || crate::platform::linux::verify_proc_matches_pid_namespace().is_err()
+    {
         return Err(TreeSignalResult::Denied);
     }
     let Ok(platform_pid) = libc::pid_t::try_from(pid) else {

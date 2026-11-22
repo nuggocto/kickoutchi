@@ -140,7 +140,7 @@ fn windows_tree_authority_refusal_precedes_job_assignment() {
             collect_kill_ports: &mut || {
                 crate::collector::kill_ports_from_snapshot(&snapshot, Some(18_422), None)
             },
-            collect_ports: &mut || panic!("refusal must not visibility-poll ports"),
+            collect_snapshot: &mut || panic!("refusal must not visibility-poll ports"),
             prepare_root: &mut |_pid| -> Result<u32, TerminationOutcome> {
                 panic!("PID mode must preserve its existing preparation path")
             },
@@ -184,9 +184,9 @@ fn windows_port_tree_root_exit_during_preparation_is_no_match() {
             collect_kill_ports: &mut || {
                 panic!("root preparation refusal must precede final endpoint collection")
             },
-            collect_ports: &mut || {
+            collect_snapshot: &mut || {
                 events.borrow_mut().push("visibility");
-                Ok(Vec::new())
+                Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
             },
             prepare_root: &mut |pid| -> Result<u32, TerminationOutcome> {
                 assert_eq!(pid, 18_422);
@@ -246,7 +246,7 @@ fn windows_port_owner_move_after_root_prepare_never_commits_job() {
                 events.borrow_mut().push("collect");
                 Ok(moved.clone())
             },
-            collect_ports: &mut || panic!("refusal must not visibility-poll ports"),
+            collect_snapshot: &mut || panic!("refusal must not visibility-poll ports"),
             prepare_root: &mut |pid| {
                 assert_eq!(pid, 18_422);
                 events.borrow_mut().push("prepare");
@@ -306,9 +306,9 @@ fn windows_post_commit_protected_issue_exits_with_protected_code() {
             },
         ),
     };
-    let mut collect_ports = || Ok(Vec::new());
+    let mut collect_snapshot = || Ok(crate::observation::snapshot_from_test_rows(Vec::new()));
 
-    let reason = super::map_windows_tree_completed_outcome(&root, &report, &mut collect_ports);
+    let reason = super::map_windows_tree_completed_outcome(&root, &report, &mut collect_snapshot);
 
     assert_eq!(reason, ExitReason::ProtectedNeedsConfirmation);
 }
@@ -372,12 +372,12 @@ fn windows_tree_success_polls_post_kill_visibility() {
         cleanup_issue: None,
     };
     let mut visibility_polls = 0;
-    let mut collect_ports = || {
+    let mut collect_snapshot = || {
         visibility_polls += 1;
-        Ok(Vec::new())
+        Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
     };
 
-    let reason = super::map_windows_tree_completed_outcome(&root, &report, &mut collect_ports);
+    let reason = super::map_windows_tree_completed_outcome(&root, &report, &mut collect_snapshot);
 
     assert_eq!(reason, ExitReason::Success);
     assert_eq!(visibility_polls, 1);
@@ -485,14 +485,14 @@ fn failed_windows_job_mapping_prints_partial_report_and_refreshes_ports() {
         }),
     };
     let mut refreshes = 0;
-    let mut collect_ports = || {
+    let mut collect_snapshot = || {
         refreshes += 1;
-        Ok(Vec::new())
+        Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
     };
     let mut stderr = Vec::new();
 
     let reason =
-        super::map_windows_tree_system_failure(&root, &outcome, &mut collect_ports, &mut stderr);
+        super::map_windows_tree_system_failure(&root, &outcome, &mut collect_snapshot, &mut stderr);
     let text = String::from_utf8(stderr).expect("diagnostic must be UTF-8");
 
     assert_eq!(reason, ExitReason::Failure);
@@ -649,7 +649,7 @@ fn tree_kill_of_missing_pid_reports_no_match_without_touching_processes() {
             },
             collect_kill_ports: &mut || panic!("unresolved root must not re-collect ports"),
             post_kill: super::report::PostKillIo {
-                collect_ports: &mut || panic!("unresolved root must not re-collect ports"),
+                collect_snapshot: &mut || panic!("unresolved root must not re-collect ports"),
                 observe_exit: &mut |_| ExitObservation::Exited,
             },
         },
@@ -859,7 +859,9 @@ fn port_selected_tree_pins_old_root_before_endpoint_move_and_sends_no_signal() {
                 Ok(fresh_rows.clone())
             },
             post_kill: super::report::PostKillIo {
-                collect_ports: &mut || Ok(Vec::new()),
+                collect_snapshot: &mut || {
+                    Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
+                },
                 observe_exit: &mut |_| ExitObservation::Exited,
             },
         },
@@ -906,7 +908,9 @@ fn tree_losing_readable_owner_during_revalidation_exits_permission_denied() {
                 Ok(fresh_rows.clone())
             },
             post_kill: super::report::PostKillIo {
-                collect_ports: &mut || Ok(Vec::new()),
+                collect_snapshot: &mut || {
+                    Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
+                },
                 observe_exit: &mut |_| ExitObservation::Exited,
             },
         },
@@ -944,7 +948,7 @@ fn tree_authority_refusal_has_zero_stop_or_delivery() {
                 crate::collector::kill_ports_from_snapshot(&snapshot, Some(18_422), None)
             },
             post_kill: super::report::PostKillIo {
-                collect_ports: &mut || panic!("refusal must not visibility-poll ports"),
+                collect_snapshot: &mut || panic!("refusal must not visibility-poll ports"),
                 observe_exit: &mut |_| ExitObservation::Exited,
             },
         },
@@ -991,7 +995,7 @@ fn fresh_tree_warning_after_yes_skip_refuses_before_any_stop() {
             prompt: &mut panic_tree_prompt,
             collect_kill_ports: &mut || panic!("portless tree root must not re-collect ports"),
             post_kill: super::report::PostKillIo {
-                collect_ports: &mut || panic!("portless tree root must not re-collect ports"),
+                collect_snapshot: &mut || panic!("portless tree root must not re-collect ports"),
                 observe_exit: &mut |_| ExitObservation::Exited,
             },
         },
@@ -1031,7 +1035,7 @@ fn protected_tree_descendant_refuses_before_prompt_or_stop_even_with_yes() {
             prompt: &mut panic_tree_prompt,
             collect_kill_ports: &mut || panic!("protected descendant must not re-collect ports"),
             post_kill: super::report::PostKillIo {
-                collect_ports: &mut || panic!("protected descendant must not re-collect ports"),
+                collect_snapshot: &mut || panic!("protected descendant must not re-collect ports"),
                 observe_exit: &mut |_| ExitObservation::Exited,
             },
         },
@@ -1110,7 +1114,9 @@ fn root_turning_protected_between_confirmation_and_freeze_refuses_with_exit_6() 
             prompt: &mut confirm_tree_prompt,
             collect_kill_ports: &mut || Ok(rows.clone()),
             post_kill: super::report::PostKillIo {
-                collect_ports: &mut || Ok(rows.clone()),
+                collect_snapshot: &mut || {
+                    Ok(crate::observation::snapshot_from_test_rows(rows.clone()))
+                },
                 observe_exit: &mut |_| ExitObservation::Exited,
             },
         },
@@ -1178,9 +1184,9 @@ fn completed_protected_confirmation_passes_the_root_protection_gate() {
                 Ok(rows.clone())
             },
             post_kill: super::report::PostKillIo {
-                collect_ports: &mut || {
+                collect_snapshot: &mut || {
                     visibility_polls += 1;
-                    Ok(Vec::new())
+                    Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
                 },
                 observe_exit: &mut |_| ExitObservation::Exited,
             },
@@ -1342,7 +1348,7 @@ fn group_kill_refuses_kernel_domain_roots_without_touching_processes() {
             prompt: &mut panic_tree_prompt,
             collect_kill_ports: &mut || panic!("untargetable group must not re-collect ports"),
             post_kill: super::report::PostKillIo {
-                collect_ports: &mut || panic!("untargetable group must not re-collect ports"),
+                collect_snapshot: &mut || panic!("untargetable group must not re-collect ports"),
                 observe_exit: &mut |_| ExitObservation::Exited,
             },
         },
@@ -1380,7 +1386,9 @@ fn group_losing_readable_owner_during_revalidation_exits_permission_denied() {
                 Ok(fresh_rows.clone())
             },
             post_kill: super::report::PostKillIo {
-                collect_ports: &mut || Ok(Vec::new()),
+                collect_snapshot: &mut || {
+                    Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
+                },
                 observe_exit: &mut |_| ExitObservation::Exited,
             },
         },
@@ -1432,9 +1440,9 @@ fn port_selected_group_success_separates_authority_from_visibility_polling() {
                 Ok(rows.clone())
             },
             post_kill: super::report::PostKillIo {
-                collect_ports: &mut || {
+                collect_snapshot: &mut || {
                     visibility_polls += 1;
-                    Ok(Vec::new())
+                    Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
                 },
                 observe_exit: &mut |_| ExitObservation::Exited,
             },

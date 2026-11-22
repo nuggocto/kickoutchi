@@ -83,7 +83,7 @@ fn run(
                 outcome(*pid)
             },
             settle: settle::SettleProbe {
-                collect_ports: &mut || Ok(Vec::new()),
+                collect_snapshot: &mut || Ok(snapshot_from_test_rows(Vec::new())),
                 observe_exit: &mut |_| ExitObservation::Exited,
                 sleep: &mut |_| panic!("settled facts must not sleep"),
             },
@@ -282,7 +282,7 @@ fn a_later_selector_that_fails_revalidation_is_reported_with_its_own_ports() {
             panic!("a process whose second confirmed port changed must not be signalled")
         },
         settle: settle::SettleProbe {
-            collect_ports: &mut || Ok(Vec::new()),
+            collect_snapshot: &mut || Ok(snapshot_from_test_rows(Vec::new())),
             observe_exit: &mut |_| ExitObservation::Exited,
             sleep: &mut |_| panic!("delivery must not sleep"),
         },
@@ -343,6 +343,7 @@ fn summary_counts_outcomes_and_details_only_problems() {
         unknown: Vec::new(),
         ports: settle::PortsStatus::StillVisible,
         visible_ports: docs.ports.clone(),
+        survivors_with_visible_ports: Vec::new(),
     };
 
     let lines = super::summary_lines(&super::Summary {
@@ -388,6 +389,7 @@ fn a_clean_batch_summary_is_one_line() {
         unknown: Vec::new(),
         ports: settle::PortsStatus::Cleared,
         visible_ports: Vec::new(),
+        survivors_with_visible_ports: Vec::new(),
     };
 
     let lines = super::summary_lines(&super::Summary {
@@ -406,4 +408,43 @@ fn a_clean_batch_summary_is_one_line() {
             "summary: sent SIGTERM to 1 of 1 process(es); 1 exited; 1 of 1 confirmed port(s) no longer visible; 0 failed"
         ]
     );
+}
+
+#[test]
+fn verified_port_owners_for_two_ports_of_one_pid_revalidate_every_port() {
+    let snapshot = snapshot_from_test_rows(rows());
+    let targets = [3002, 3003]
+        .into_iter()
+        .map(|port| KillArgs {
+            selector: KillSelector::VerifiedPortOwner { port, pid: 103 },
+            force: false,
+            yes: true,
+            tree: false,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            group: false,
+        })
+        .collect::<Vec<_>>();
+
+    // When both ports stay solely owned by PID 103, it is signalled once.
+    let (reason, record) = run(
+        &targets,
+        &Config::default(),
+        &snapshot,
+        &snapshot,
+        "",
+        |_| TerminationOutcome::Success,
+    );
+    assert_eq!(reason, ExitReason::Success);
+    assert_eq!(record.terminated, [103]);
+
+    // When a second visible process binds the second port (3003) before
+    // revalidation, the preserved port selector refuses before signalling.
+    let mut fresh_rows = rows();
+    fresh_rows.push(entry_with_pid(3003, Some(204), Protocol::Udp, "coholder"));
+    let fresh = snapshot_from_test_rows(fresh_rows);
+    let (reason, record) = run(&targets, &Config::default(), &snapshot, &fresh, "", |_| {
+        panic!("second visible owner on the second redirected port must block delivery")
+    });
+    assert_eq!(reason, ExitReason::NoMatch);
+    assert_eq!(record.terminated, [] as [u32; 0]);
 }

@@ -10,7 +10,7 @@ use crate::command;
 use crate::config::Config;
 use crate::display::{human_endpoint_text, sanitize};
 use crate::model::{PortEntry, PortEntryView, ProcessContext};
-use crate::observation::{MetadataProfile, ProcessIdentity};
+use crate::observation::{MetadataProfile, NetworkSnapshot, ProcessIdentity};
 use crate::platform;
 use crate::process::{
     self, CONFIRMATION_INPUT_MAX_BYTES, ConfirmationRequirement, ExitObservation, KillMode,
@@ -45,12 +45,8 @@ pub(super) fn run_kill(
         entries,
         KillCollectors {
             context: &mut platform::collect_process_context,
-            kill_ports: &mut || {
-                collector::collect_kill_ports(args.selector.pid(), args.selector.port())
-            },
-            visibility_ports: &mut || {
-                collector::collect_ports_with_profile(POST_KILL_VISIBILITY_PROFILE)
-            },
+            kill_ports: &mut || collect_kill_ports_for_selector(args.selector),
+            visibility_snapshot: &mut || collector::collect_snapshot(POST_KILL_VISIBILITY_PROFILE),
             observe_exit: &mut process::observe_exit,
             sleep: &mut std::thread::sleep,
         },
@@ -60,10 +56,22 @@ pub(super) fn run_kill(
     )
 }
 
+pub(super) fn collect_kill_ports_for_selector(
+    selector: KillSelector,
+) -> Result<Vec<PortEntry>, collector::CollectorError> {
+    match selector {
+        KillSelector::Pid(pid) => collector::collect_kill_ports(Some(pid), None),
+        KillSelector::Port(port) => collector::collect_kill_ports(None, Some(port)),
+        KillSelector::VerifiedPortOwner { port, pid } => {
+            collector::collect_kill_ports_for_verified_port_owner(port, pid)
+        }
+    }
+}
+
 struct KillCollectors<'a> {
     context: &'a mut dyn FnMut(u32) -> ProcessContext,
     kill_ports: &'a mut dyn FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
-    visibility_ports: &'a mut dyn FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
+    visibility_snapshot: &'a mut dyn FnMut() -> Result<NetworkSnapshot, collector::CollectorError>,
     observe_exit: &'a mut dyn FnMut(ProcessIdentity) -> ExitObservation,
     sleep: &'a mut dyn FnMut(Duration),
 }
@@ -162,9 +170,9 @@ const POST_KILL_VISIBILITY_PROFILE: MetadataProfile = MetadataProfile::IdentityO
 /// its own, and print the result.
 pub(super) fn print_post_kill_refresh_status(
     target: &KillTarget,
-    collect_ports: &mut dyn FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
+    collect_snapshot: &mut dyn FnMut() -> Result<NetworkSnapshot, collector::CollectorError>,
 ) {
-    if let Some(message) = settle::ports_only_status_message(target, collect_ports) {
+    if let Some(message) = settle::ports_only_status_message(target, collect_snapshot) {
         eprintln!("{message}");
     }
 }
@@ -186,7 +194,7 @@ fn print_single_settle_report(
         identity.as_slice(),
         &target.ports,
         &mut settle::SettleProbe {
-            collect_ports: collectors.visibility_ports,
+            collect_snapshot: collectors.visibility_snapshot,
             observe_exit: collectors.observe_exit,
             sleep: collectors.sleep,
         },
@@ -326,7 +334,31 @@ where
     match args.selector {
         KillSelector::Pid(pid) => resolve_pid_target(pid, entries, collect_context),
         KillSelector::Port(port) => resolve_port_target(port, entries, collect_context),
+        KillSelector::VerifiedPortOwner { port, pid } => {
+            resolve_verified_port_owner_target(port, pid, entries, collect_context)
+        }
     }
+}
+
+fn resolve_verified_port_owner_target<CollectContext>(
+    port: u16,
+    expected_pid: u32,
+    entries: &[PortEntryView<'_>],
+    mut collect_context: CollectContext,
+) -> Result<KillTarget, KillTargetError>
+where
+    CollectContext: FnMut(u32) -> ProcessContext,
+{
+    let (pid, rows) = resolve_single_port_owner(port, entries)?;
+    if pid != expected_pid {
+        return Err(KillTargetError::NoMatch);
+    }
+    if let Some(reason) = process::unsafe_pid_reason(pid) {
+        return Err(KillTargetError::UnsafePid(reason));
+    }
+
+    let context = collect_context(pid);
+    Ok(KillTarget::from_entries(pid, rows, Some(&context)))
 }
 
 fn resolve_pid_target<CollectContext>(

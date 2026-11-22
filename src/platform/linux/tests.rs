@@ -771,18 +771,29 @@ fn legacy_command_line_retains_exact_one_mib_and_rejects_max_plus_one() {
 #[test]
 fn parent_pid_is_read_from_status_text() {
     assert_eq!(
-        parse_process_status("Name:\tnode\nPPid:\t42\n")
+        parse_process_status(b"Name:\tnode\nPPid:\t42\n")
             .expect("valid status text must parse")
             .parent_pid,
         Some(42),
     );
     assert_eq!(
-        parse_process_status("Name:\tnode\n")
+        parse_process_status(b"Name:\tnode\n")
             .expect("missing PPid is not malformed")
             .parent_pid,
         None,
     );
-    assert!(parse_process_status("PPid:\tnot-a-pid\n").is_err());
+    assert!(parse_process_status(b"PPid:\tnot-a-pid\n").is_err());
+    assert!(parse_process_status(b"PPid:\t\xff\n").is_err());
+}
+
+#[test]
+fn process_status_accepts_non_utf8_name_and_reads_numeric_fields() {
+    let status =
+        parse_process_status(b"Name:\tworker-\xff\xfe\nPPid:\t42\nUid:\t1000\t1001\t1002\t1003\n")
+            .expect("non-UTF-8 Name must not reject numeric status fields");
+
+    assert_eq!(status.parent_pid, Some(42));
+    assert_eq!(status.owner_uid, Some(1000));
 }
 
 #[test]
@@ -798,7 +809,7 @@ fn saved_proc_parser_corpus_remains_bounded_and_panic_free() {
 
 #[test]
 fn process_status_reads_parent_and_owner_uid() {
-    let status = parse_process_status("Name:\tnode\nPPid:\t42\nUid:\t1000\t1001\t1002\t1003\n")
+    let status = parse_process_status(b"Name:\tnode\nPPid:\t42\nUid:\t1000\t1001\t1002\t1003\n")
         .expect("valid status text must parse");
 
     assert_eq!(status.parent_pid, Some(42));
@@ -1871,6 +1882,140 @@ fn tree_snapshot_accepts_exact_max_name_and_rejects_max_plus_one() {
     );
 
     fs::remove_dir_all(proc_root).expect("test proc root must clean up");
+}
+
+#[test]
+fn tree_snapshot_accepts_non_utf8_status_name() {
+    let proc_root = temp_proc_root("tree-non-utf8-status-name");
+    write_process(&proc_root, 100, "root", 1);
+    write_process(&proc_root, 101, "child", 100);
+    fs::write(
+        proc_root.join("101/status"),
+        b"Name:\tchild-\xe2\x9c\nPPid:\t100\nUid:\t1000\t1000\t1000\t1000\n",
+    )
+    .expect("non-UTF-8 status fixture must be written");
+
+    let infos = collect_tree_process_infos(&proc_root)
+        .expect("a non-UTF-8 Name in /proc/<pid>/status must not abort tree scans");
+    let child = infos
+        .iter()
+        .find(|info| info.pid == 101)
+        .expect("child process must remain in tree snapshot");
+    assert_eq!(child.parent_pid, Some(100));
+    assert_eq!(child.owner_uid, Some(1000));
+    fs::remove_dir_all(proc_root).expect("test proc root must clean up");
+}
+
+#[test]
+fn tree_snapshot_refuses_hidepid_restricted_procfs() {
+    let proc_root = temp_proc_root("tree-proc-visibility");
+    write_process(&proc_root, 100, "root", 1);
+    for options in [
+        "rw,nosuid,nodev,hidepid=2",
+        "rw,hidepid=invisible",
+        "rw,hidepid=1",
+    ] {
+        fs::write(
+            proc_root.join("mounts"),
+            format!("proc {} proc {options} 0 0\n", proc_root.display()),
+        )
+        .expect("restricted mounts fixture must be written");
+        let error = collect_tree_process_infos(&proc_root)
+            .expect_err("hidepid procfs must refuse scoped tree snapshots");
+        assert!(
+            error.to_string().contains("hidepid"),
+            "expected hidepid diagnostic for {options}, got: {error}"
+        );
+    }
+
+    fs::write(proc_root.join("mounts"), "malformed-line\n")
+        .expect("malformed mounts fixture must be written");
+    let malformed = collect_tree_process_infos(&proc_root)
+        .expect_err("malformed /proc/mounts must fail closed for scoped tree snapshots");
+    assert!(
+        malformed
+            .to_string()
+            .contains("cannot verify /proc visibility"),
+        "expected mount-verification diagnostic, got: {malformed}"
+    );
+    assert!(
+        !malformed.to_string().contains("hidepid"),
+        "malformed /proc/mounts must not blame hidepid: {malformed}"
+    );
+
+    fs::remove_file(proc_root.join("mounts")).expect("remove mounts");
+    let missing = collect_tree_process_infos(&proc_root)
+        .expect_err("unreadable /proc/mounts must fail closed for scoped tree snapshots");
+    assert!(
+        !missing.to_string().contains("hidepid"),
+        "missing /proc/mounts must report the read error rather than hidepid: {missing}"
+    );
+    // Read-only inspect path remains usable without complete mount visibility.
+    assert_eq!(
+        super::collect_tree_process_infos_with_visibility(&proc_root, false)
+            .expect("read-only tree snapshot must still succeed")
+            .len(),
+        1
+    );
+    fs::remove_dir_all(proc_root).expect("test proc root must clean up");
+}
+
+#[test]
+fn proc_pid_namespace_guard_requires_matching_self_link_and_single_nspid() {
+    let make_root = |label: &str, self_target: Option<&str>, status: Option<&[u8]>| {
+        let root = std::env::temp_dir().join(format!(
+            "kickoutchi-pidns-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).expect("pidns temp dir");
+        if let Some(target) = self_target {
+            let target_dir = root.join(target);
+            fs::create_dir_all(&target_dir).expect("self target dir");
+            if let Some(status_bytes) = status {
+                fs::write(target_dir.join("status"), status_bytes).expect("self status");
+            }
+            std::os::unix::fs::symlink(target, root.join("self")).expect("self symlink");
+        }
+        root
+    };
+
+    let matching = make_root("match", Some("42"), Some(b"Name:\tkick-\xff\nNSpid:\t42\n"));
+    assert!(super::verify_proc_matches_pid_namespace_at(&matching, 42).is_ok());
+    fs::remove_dir_all(matching).expect("cleanup");
+
+    let wrong_link = make_root(
+        "wrong-link",
+        Some("999"),
+        Some(b"Name:\tkick\nNSpid:\t999\t42\n"),
+    );
+    assert!(super::verify_proc_matches_pid_namespace_at(&wrong_link, 42).is_err());
+    fs::remove_dir_all(wrong_link).expect("cleanup");
+
+    // Even if outer and inner PID numbers coincide, multi-entry NSpid proves a
+    // nested namespace sharing an ancestor /proc mount.
+    let coincident = make_root(
+        "coincident-nested",
+        Some("42"),
+        Some(b"Name:\tkick\nNSpid:\t42\t42\n"),
+    );
+    assert!(super::verify_proc_matches_pid_namespace_at(&coincident, 42).is_err());
+    fs::remove_dir_all(coincident).expect("cleanup");
+
+    let missing_nspid = make_root(
+        "missing-nspid",
+        Some("42"),
+        Some(b"Name:\tkick\nPPid:\t1\n"),
+    );
+    assert!(super::verify_proc_matches_pid_namespace_at(&missing_nspid, 42).is_err());
+    fs::remove_dir_all(missing_nspid).expect("cleanup");
+
+    let missing_self = make_root("missing-self", None, None);
+    assert!(super::verify_proc_matches_pid_namespace_at(&missing_self, 42).is_err());
+    fs::remove_dir_all(missing_self).expect("cleanup");
 }
 
 #[test]

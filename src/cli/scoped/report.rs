@@ -5,7 +5,7 @@ use std::io::{self, Write};
 
 use crate::collector;
 use crate::display::sanitize;
-use crate::model::PortEntry;
+use crate::observation::NetworkSnapshot;
 use crate::process::{self, KillMode, KillTarget};
 use crate::tree;
 #[cfg(windows)]
@@ -42,8 +42,8 @@ pub(super) fn map_group_outcome(
 /// The reads a Unix scoped kill performs after delivery.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) struct PostKillIo<'a> {
-    pub(super) collect_ports:
-        &'a mut dyn FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
+    pub(super) collect_snapshot:
+        &'a mut dyn FnMut() -> Result<NetworkSnapshot, collector::CollectorError>,
     pub(super) observe_exit:
         &'a mut dyn FnMut(crate::observation::ProcessIdentity) -> process::ExitObservation,
 }
@@ -63,7 +63,7 @@ fn print_scoped_settle_report(
         &report.delivered_identities,
         ports,
         &mut settle::SettleProbe {
-            collect_ports: post_kill.collect_ports,
+            collect_snapshot: post_kill.collect_snapshot,
             observe_exit: post_kill.observe_exit,
             sleep: &mut std::thread::sleep,
         },
@@ -74,33 +74,33 @@ fn print_scoped_settle_report(
 }
 
 #[cfg(windows)]
-pub(super) fn map_windows_tree_outcome<CollectPorts>(
+pub(super) fn map_windows_tree_outcome<CollectSnapshot>(
     root: &KillTarget,
     _mode: KillMode,
     outcome: &crate::tree::windows::WindowsTreeKillOutcome,
-    collect_ports: &mut CollectPorts,
+    collect_snapshot: &mut CollectSnapshot,
 ) -> ExitReason
 where
-    CollectPorts: FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
+    CollectSnapshot: FnMut() -> Result<NetworkSnapshot, collector::CollectorError>,
 {
     use crate::tree::windows::WindowsTreeKillOutcome;
 
     match outcome {
         WindowsTreeKillOutcome::Completed(report) => {
-            map_windows_tree_completed_outcome(root, report, collect_ports)
+            map_windows_tree_completed_outcome(root, report, collect_snapshot)
         }
-        _ => map_windows_tree_refusal_outcome(root, outcome, collect_ports),
+        _ => map_windows_tree_refusal_outcome(root, outcome, collect_snapshot),
     }
 }
 
 #[cfg(windows)]
-pub(super) fn map_windows_tree_completed_outcome<CollectPorts>(
+pub(super) fn map_windows_tree_completed_outcome<CollectSnapshot>(
     root: &KillTarget,
     report: &crate::tree::windows::WindowsTreeKillReport,
-    collect_ports: &mut CollectPorts,
+    collect_snapshot: &mut CollectSnapshot,
 ) -> ExitReason
 where
-    CollectPorts: FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
+    CollectSnapshot: FnMut() -> Result<NetworkSnapshot, collector::CollectorError>,
 {
     if report.termination_state.is_complete() && report.not_terminated.is_empty() {
         eprintln!(
@@ -108,7 +108,7 @@ where
             report.job_terminated_pids.len(),
             root.identity(),
         );
-        print_post_kill_refresh_status(root, collect_ports);
+        print_post_kill_refresh_status(root, collect_snapshot);
         return ExitReason::Success;
     }
 
@@ -297,25 +297,25 @@ pub(super) fn windows_post_commit_issue_exit_reason(
 }
 
 #[cfg(windows)]
-fn map_windows_tree_refusal_outcome<CollectPorts>(
+fn map_windows_tree_refusal_outcome<CollectSnapshot>(
     root: &KillTarget,
     outcome: &crate::tree::windows::WindowsTreeKillOutcome,
-    collect_ports: &mut CollectPorts,
+    collect_snapshot: &mut CollectSnapshot,
 ) -> ExitReason
 where
-    CollectPorts: FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
+    CollectSnapshot: FnMut() -> Result<NetworkSnapshot, collector::CollectorError>,
 {
     use crate::tree::windows::WindowsTreeKillOutcome;
 
     match outcome {
         WindowsTreeKillOutcome::Completed(_) => unreachable!("completed outcome handled above"),
         WindowsTreeKillOutcome::Refused(refusal) => {
-            map_windows_tree_refusal(root, refusal, collect_ports)
+            map_windows_tree_refusal(root, refusal, collect_snapshot)
         }
         WindowsTreeKillOutcome::CommitFailed { .. }
         | WindowsTreeKillOutcome::JobTerminateFailed { .. } => {
             let mut stderr = io::stderr().lock();
-            map_windows_tree_system_failure(root, outcome, collect_ports, &mut stderr)
+            map_windows_tree_system_failure(root, outcome, collect_snapshot, &mut stderr)
         }
     }
 }
@@ -324,7 +324,7 @@ where
 fn map_windows_tree_refusal(
     root: &KillTarget,
     refusal: &TreeRefusal,
-    collect_ports: &mut impl FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
+    collect_snapshot: &mut impl FnMut() -> Result<NetworkSnapshot, collector::CollectorError>,
 ) -> ExitReason {
     let cause = sanitize(&refusal.failure_cause_text());
     match refusal {
@@ -333,7 +333,7 @@ fn map_windows_tree_refusal(
                 "{} already exited before containment was committed",
                 root.identity(),
             );
-            print_post_kill_refresh_status(root, collect_ports);
+            print_post_kill_refresh_status(root, collect_snapshot);
         }
         TreeRefusal::PermissionDenied { .. } => {
             eprintln!(
@@ -377,7 +377,7 @@ fn map_windows_tree_refusal(
 pub(super) fn map_windows_tree_system_failure(
     root: &KillTarget,
     outcome: &crate::tree::windows::WindowsTreeKillOutcome,
-    collect_ports: &mut impl FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
+    collect_snapshot: &mut impl FnMut() -> Result<NetworkSnapshot, collector::CollectorError>,
     stderr: &mut impl Write,
 ) -> ExitReason {
     use crate::tree::windows::WindowsTreeKillOutcome;
@@ -399,7 +399,7 @@ pub(super) fn map_windows_tree_system_failure(
             );
             let _ = writeln!(stderr, "{}", windows_tree_partial_report_text(root, report));
             if let Some(message) =
-                crate::cli::settle::ports_only_status_message(root, collect_ports)
+                crate::cli::settle::ports_only_status_message(root, collect_snapshot)
             {
                 let _ = writeln!(stderr, "{message}");
             }
@@ -510,7 +510,7 @@ fn map_scoped_outcome(
                 "{} already exited before termination was sent",
                 root.identity(),
             );
-            print_post_kill_refresh_status(root, post_kill.collect_ports);
+            print_post_kill_refresh_status(root, post_kill.collect_snapshot);
             tree_refusal_exit_reason(outcome)
         }
         TreeKillOutcome::PermissionDenied { .. } => {

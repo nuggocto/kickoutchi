@@ -11,6 +11,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The Windows release installer verifies the SHA-256 of its ZIP and updater
   before replacing any installed files. It also checks the ZIP before unpacking.
+- The Unix release installer (`kickoutchi-installer.sh`) now verifies the
+  SHA-256 of both the archive and the updater against embedded release digests
+  before replacing installed files, supporting `sha256sum`, `shasum`, and
+  `openssl` and refusing installation when verification is unavailable.
+- On Linux, `kill` verifies that `/proc` resolves PIDs in Kickoutchi's own PID
+  namespace (`/proc/self` symlink and single-entry `NSpid:`) before opening any
+  `pidfd` or taking a scoped-kill snapshot, preventing `SIGSTOP` from hitting
+  the wrong process in a nested PID namespace sharing an ancestor `/proc`.
+- On Linux, `--tree` and `--group` snapshots fail closed when `/proc` visibility
+  is restricted by `hidepid` or cannot be verified from `/proc/mounts`,
+  reporting the specific mount or `hidepid` cause while keeping read-only
+  `inspect` usable.
+- On Linux, `/proc/<pid>/status` is parsed as raw bytes so an unrelated process
+  with a non-UTF-8 `Name:` no longer aborts `--tree` or `--group` scans.
+- On Windows, `ProcessSnapshot` preserves unverified parent edges when child
+  metadata cannot be opened or races, and pre-commit tree gates check them
+  before Job Object commit. An unreadable or elevated child of a preview member
+  now refuses the tree kill instead of being dropped silently and surviving.
+- Redirected `kill --port` (on hosts with unrelated process-visibility gaps) now
+  retains the original port selector alongside the verified owner PID through
+  confirmation, revalidation, and multi-target deduplication, refusing if a
+  second visible owner or a port-specific gap appears before delivery.
+- Post-kill port verification now inspects the `NetworkSnapshot` directly:
+  incomplete or raced snapshots report an unconfirmed warning instead of
+  claiming ports cleared, exit polling that outlasts an early empty port check
+  takes a final port observation to catch supervisors rebinding the port, and
+  plain `kick kill --pid PID --force` retry hints are suggested only when the
+  surviving process identity is verified as still owning a visible port.
+- Invalid `kill` requests (such as multi-target `--tree`/`--group` or over-cap
+  target lists) are rejected before collecting a native network snapshot.
 - A TUI kill or tree-kill confirmation whose target becomes protected while it
   is open now restarts at the PID-or-name prompt and discards what you typed.
   A protected tree is authorized only by completing the protected-root step,
@@ -58,6 +88,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stop result is known, instead of defaulting to "resume" and relying on every
   caller to override it. Behavior is unchanged and covered by the existing
   already-stopped tests.
+- `kick watch` reuses each snapshot's sorted socket index and
+  replacement-readiness table across consecutive polls instead of rebuilding
+  them on the next tick.
+- The GitHub Actions release workflow sets `concurrency.queue: max` alongside
+  `cancel-in-progress: false` so queued releases execute in order without
+  displacing intermediate runs.
 
 ## [1.7.0] - 2026-11-13
 

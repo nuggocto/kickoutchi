@@ -769,22 +769,30 @@ fn run_generated_installer(
     )
 }
 
-fn validate_windows_checksum_refusals(
+fn validate_installer_checksum_refusals(
     installer: &Path,
     temporary: &Path,
     artifact_source: &Path,
     archive_name: &str,
     updater_name: &str,
+    windows: bool,
 ) -> ValidationResult<()> {
     let install_root = temporary.join("previous-install");
     let bin = install_root.join("bin");
     fs::create_dir_all(&bin).map_err(|error| format!("could not seed install: {error}"))?;
     let receipt = temporary.join("config/kickoutchi/kickoutchi-receipt.json");
+    let suffix = if windows { ".exe" } else { "" };
     let previous_files = [
-        (bin.join("kick.exe"), b"previous short binary".as_slice()),
-        (bin.join("kickoutchi.exe"), b"previous binary".as_slice()),
         (
-            bin.join("kickoutchi-update.exe"),
+            bin.join(format!("kick{suffix}")),
+            b"previous short binary".as_slice(),
+        ),
+        (
+            bin.join(format!("kickoutchi{suffix}")),
+            b"previous binary".as_slice(),
+        ),
+        (
+            bin.join(format!("kickoutchi-update{suffix}")),
             b"previous updater".as_slice(),
         ),
         (receipt, b"previous receipt".as_slice()),
@@ -793,9 +801,11 @@ fn validate_windows_checksum_refusals(
         fs::write(path, contents).map_err(|error| format!("could not seed {path:?}: {error}"))?;
     }
 
-    let artifact_url = percent_encode_file_path(artifact_source, true)?;
+    let artifact_url = percent_encode_file_path(artifact_source, windows)?;
+    let shell = if windows { "powershell.exe" } else { "sh" };
     for name in [archive_name, updater_name] {
-        // Appending a byte changes the digest but leaves the ZIP readable.
+        // Appending a byte changes the digest while leaving the archive/binary
+        // downloadable and parseable enough to prove the hash gate caught it.
         let valid = artifact_source.join(name);
         let backup = valid.with_extension("original");
         fs::rename(&valid, &backup)
@@ -807,13 +817,8 @@ fn validate_windows_checksum_refusals(
             .and_then(|mut file| file.write_all(b"\0"))
             .map_err(|error| format!("could not alter local copy of {name}: {error}"))?;
 
-        let output = run_generated_installer(
-            "powershell.exe",
-            installer,
-            temporary,
-            &install_root,
-            &artifact_url,
-        )?;
+        let output =
+            run_generated_installer(shell, installer, temporary, &install_root, &artifact_url)?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let diagnostic = format!("SHA-256 mismatch for {name}");
@@ -835,6 +840,76 @@ fn validate_windows_checksum_refusals(
         fs::remove_file(&valid)
             .and_then(|()| fs::rename(&backup, &valid))
             .map_err(|error| format!("could not restore local copy of {name}: {error}"))?;
+    }
+    #[cfg(unix)]
+    if !windows {
+        validate_unix_missing_verifier_refusal(
+            installer,
+            temporary,
+            &install_root,
+            &artifact_url,
+            &previous_files,
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_unix_missing_verifier_refusal(
+    installer: &Path,
+    temporary: &Path,
+    install_root: &Path,
+    artifact_url: &str,
+    previous_files: &[(PathBuf, &[u8])],
+) -> ValidationResult<()> {
+    let restricted_bin = temporary.join("no-sha256-bin");
+    fs::create_dir_all(&restricted_bin)
+        .map_err(|error| format!("could not create restricted PATH dir: {error}"))?;
+    let host_path = std::env::var_os("PATH").unwrap_or_default();
+    let search_dirs: Vec<PathBuf> = std::env::split_paths(&host_path).collect();
+    for tool in [
+        "sh", "uname", "mktemp", "chmod", "mkdir", "rm", "tar", "grep", "cat", "sed", "awk", "tr",
+        "curl", "wget", "cp", "mv", "env", "dirname", "basename", "head", "tail", "cut", "id",
+        "sysctl", "file", "od",
+    ] {
+        if let Some(found) = search_dirs
+            .iter()
+            .map(|dir| dir.join(tool))
+            .find(|candidate| candidate.is_file())
+        {
+            let link = restricted_bin.join(tool);
+            if !link.exists() {
+                std::os::unix::fs::symlink(&found, &link).map_err(|error| {
+                    format!("could not link {tool} into restricted PATH: {error}")
+                })?;
+            }
+        }
+    }
+    let mut command = Command::new("sh");
+    command.arg(installer);
+    configure_installer_environment(&mut command, temporary, install_root, Some(artifact_url));
+    command.env("PATH", &restricted_bin);
+    let output = run_command(
+        &mut command,
+        "generated Unix installer without SHA-256 tool",
+        RELEASE_COMMAND_WAIT,
+    )?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let diagnostic = "cannot verify SHA-256 checksum";
+    if output.status.success() || !(stdout.contains(diagnostic) || stderr.contains(diagnostic)) {
+        return Err(format!(
+            "expected a fail-closed refusal when no SHA-256 tool is on PATH: status={}, stdout={stdout:?}, stderr={stderr:?}",
+            output.status
+        ));
+    }
+    for (path, expected) in previous_files {
+        let actual = fs::read(path).map_err(|error| format!("could not read {path:?}: {error}"))?;
+        if actual != *expected {
+            return Err(format!(
+                "refusing missing SHA-256 verifier changed installed file {path:?}"
+            ));
+        }
     }
     Ok(())
 }
@@ -926,15 +1001,14 @@ fn validate_generated_installer(
         .join("config/kickoutchi/kickoutchi-receipt.json");
     validate_installer_receipt(&receipt, &install_root, env!("CARGO_PKG_VERSION"))?;
 
-    if target.windows {
-        validate_windows_checksum_refusals(
-            &installer,
-            &temporary.path,
-            &artifact_source,
-            &archive_name,
-            &updater_name,
-        )?;
-    }
+    validate_installer_checksum_refusals(
+        &installer,
+        &temporary.path,
+        &artifact_source,
+        &archive_name,
+        &updater_name,
+        target.windows,
+    )?;
 
     println!(
         "validated generated release installer: target={}, installer={}",
@@ -1351,5 +1425,194 @@ mod tests {
         );
         assert!(native_target("Windows", "ARM64").is_err());
         assert!(native_target("unknown", "X64").is_err());
+    }
+
+    #[cfg(unix)]
+    fn unix_installer_template(
+        archive_name: &str,
+        archive_hash: &str,
+        updater_name: &str,
+    ) -> String {
+        // cargo-dist 0.34.0 emits a trailing space after `in` in the case header;
+        // build it here so source files stay clean under `git diff --check`.
+        let case_header = "case \"$_artifact_name\" in ";
+        format!(
+            r#"#!/bin/sh
+set -u
+APP_NAME="kickoutchi"
+INSTALL_UPDATER=1
+ARTIFACT_DOWNLOAD_URLS="${{KICKOUTCHI_DOWNLOAD_URL}}"
+INSTALL_DIR="${{KICKOUTCHI_INSTALL_DIR}}/bin"
+RECEIPT_HOME="${{XDG_CONFIG_HOME}}/kickoutchi"
+say() {{ printf '%s\n' "$1"; }}
+err() {{ printf 'ERROR: %s\n' "$1" >&2; exit 1; }}
+check_cmd() {{ command -v "$1" > /dev/null 2>&1; }}
+ensure() {{ "$@" || err "command failed: $*"; }}
+downloader() {{
+    local _src="${{1#file://}}"
+    cp "$_src" "$2"
+}}
+download_binary_and_run_installer() {{
+    local _artifact_name="{archive_name}"
+    local _bins
+    local _zip_ext
+    local _arch
+    local _checksum_style
+    local _checksum_value
+
+    {case_header}
+        "{archive_name}")
+            _arch="x86_64-unknown-linux-gnu"
+            _zip_ext=".tar.xz"
+            _checksum_style="sha256"
+            _checksum_value="{archive_hash}"
+            _bins="kick kickoutchi"
+            _updater_name="{updater_name}"
+            _updater_bin="{updater_name}"
+            ;;
+        *)
+            err "unknown artifact"
+            ;;
+    esac
+
+    local _dir
+    local _download_result=0
+    for _base_url in $ARTIFACT_DOWNLOAD_URLS; do
+        local _url="$_base_url/$_artifact_name"
+        _dir="$(ensure mktemp -d)" || return 1
+        local _file="$_dir/input$_zip_ext"
+        if ! downloader "$_url" "$_file"; then
+            say "failed to download $_url" 1>&2
+            continue
+        fi
+
+        if [ -n "${{_checksum_style:-}}" ]; then
+            verify_checksum "$_file" "$_checksum_style" "$_checksum_value"
+        else
+            say "no checksums to verify" 1>&2
+        fi
+
+        if [ -n "$_updater_name" ] && [ "$INSTALL_UPDATER" = "1" ]; then
+            local _updater_url="$_base_url/$_updater_name"
+            local _updater_file="$_dir/$APP_NAME-update"
+
+            if ! downloader "$_updater_url" "$_updater_file"; then
+                say "failed to download $_updater_url"
+                continue
+            fi
+
+            # Add the updater to the list of binaries to install
+            _bins="$_bins $APP_NAME-update"
+        fi
+
+        _download_result=1
+        break
+    done
+    [ "$_download_result" = "1" ] || exit 1
+    mkdir -p "$INSTALL_DIR" "$RECEIPT_HOME"
+    printf 'installed' > "$INSTALL_DIR/kick"
+    printf 'installed' > "$INSTALL_DIR/kickoutchi"
+    printf 'installed' > "$INSTALL_DIR/kickoutchi-update"
+    printf 'receipt' > "$RECEIPT_HOME/kickoutchi-receipt.json"
+    rm -rf "$_dir"
+}}
+
+verify_checksum() {{
+    local _file="$1"
+    local _checksum_style="$2"
+    local _checksum_value="$3"
+    if [ -z "$_checksum_value" ]; then
+        return 0
+    fi
+    return 0
+}}
+
+download_binary_and_run_installer "$@" || exit 1
+"#
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_protect_installer_hardens_archive_and_updater_checksum_verification() {
+        let dir = temporary_directory("kickoutchi-protect-unix");
+        let distrib = dir.path.join("distrib");
+        let source = dir.path.join("source");
+        let install_root = dir.path.join("install");
+        fs::create_dir_all(&distrib).expect("distrib dir");
+        fs::create_dir_all(&source).expect("source dir");
+        fs::create_dir_all(dir.path.join("home")).expect("home dir");
+        fs::create_dir_all(dir.path.join("config")).expect("config dir");
+        fs::create_dir_all(dir.path.join("tmp")).expect("tmp dir");
+
+        let archive_name = "kickoutchi-x86_64-unknown-linux-gnu.tar.xz";
+        let updater_name = "kickoutchi-x86_64-unknown-linux-gnu-update";
+        let archive_path = distrib.join(archive_name);
+        let updater_path = distrib.join(updater_name);
+        fs::write(&archive_path, b"fake release archive payload").expect("write archive");
+        fs::write(&updater_path, b"fake release updater payload").expect("write updater");
+        let archive_hash = sha256(&archive_path).expect("hash archive");
+
+        let installer_path = distrib.join("kickoutchi-installer.sh");
+        fs::write(
+            &installer_path,
+            unix_installer_template(archive_name, &archive_hash, updater_name),
+        )
+        .expect("write installer template");
+
+        let protect_script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging/unix/protect-installer.sh");
+        let mut protect = Command::new("bash");
+        protect
+            .arg(&protect_script)
+            .args(["--distrib"])
+            .arg(&distrib);
+        let protect_output = run_command(&mut protect, "protect-installer.sh", BINARY_COMMAND_WAIT)
+            .expect("protect-installer.sh runs");
+        assert!(
+            protect_output.status.success(),
+            "protect-installer.sh failed: stderr={}",
+            String::from_utf8_lossy(&protect_output.stderr)
+        );
+
+        // Running protect-installer.sh a second time must fail closed.
+        let mut protect_again = Command::new("bash");
+        protect_again
+            .arg(&protect_script)
+            .args(["--distrib"])
+            .arg(&distrib);
+        let again_output = run_command(
+            &mut protect_again,
+            "protect-installer.sh rerun",
+            BINARY_COMMAND_WAIT,
+        )
+        .expect("second run executes");
+        assert!(!again_output.status.success());
+
+        for name in [archive_name, updater_name] {
+            copy_exact_file(&distrib.join(name), &source.join(name)).expect("stage artifact");
+        }
+        let url = percent_encode_file_path(&source, false).expect("file url");
+
+        // Valid archive + valid updater installs cleanly.
+        let valid = run_generated_installer("sh", &installer_path, &dir.path, &install_root, &url)
+            .expect("valid installer runs");
+        assert!(
+            valid.status.success(),
+            "hardened installer rejected valid artifacts: stderr={}",
+            String::from_utf8_lossy(&valid.stderr)
+        );
+
+        // Corrupted archive, corrupted updater, and missing SHA-256 tool must
+        // all fail closed without modifying pre-existing installed files.
+        validate_installer_checksum_refusals(
+            &installer_path,
+            &dir.path,
+            &source,
+            archive_name,
+            updater_name,
+            false,
+        )
+        .expect("Unix checksum refusals must hold");
     }
 }

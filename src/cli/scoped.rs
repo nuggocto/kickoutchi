@@ -12,6 +12,8 @@ use crate::model::{
     PermissionStatus, Platform, PortEntry, PortEntryView, ProcessContext, SystemProcessCheck,
 };
 use crate::observation::MetadataProfile;
+#[cfg(windows)]
+use crate::observation::NetworkSnapshot;
 use crate::platform;
 use crate::process::{
     self, CONFIRMATION_INPUT_MAX_BYTES, ConfirmationRequirement, KillMode, KillTarget,
@@ -22,8 +24,8 @@ use crate::tree;
 use crate::tree::TreeKillOutcome as TreeRefusal;
 
 use super::kill::{
-    KillTargetError, deleted_executable_note, print_target_error, read_confirmation_line,
-    resolve_kill_target, revalidate_cli_target,
+    KillTargetError, collect_kill_ports_for_selector, deleted_executable_note, print_target_error,
+    read_confirmation_line, resolve_kill_target, revalidate_cli_target,
 };
 use super::{ExitReason, KillArgs, TREE_HOST_PLATFORM};
 
@@ -90,12 +92,10 @@ pub(super) fn run_tree_kill(
         TreeKillIo {
             collect_context: &mut platform::collect_process_context,
             prompt: &mut prompt_tree_confirmation,
-            collect_kill_ports: &mut || {
-                collector::collect_kill_ports(args.selector.pid(), args.selector.port())
-            },
+            collect_kill_ports: &mut || collect_kill_ports_for_selector(args.selector),
             post_kill: report::PostKillIo {
-                collect_ports: &mut || {
-                    collector::collect_ports_with_profile(MetadataProfile::IdentityOnly)
+                collect_snapshot: &mut || {
+                    collector::collect_snapshot(MetadataProfile::IdentityOnly)
                 },
                 observe_exit: &mut process::observe_exit,
             },
@@ -205,12 +205,8 @@ fn run_windows_tree_kill(
             collect_tree: &mut crate::platform::windows::collect_tree_process_infos,
             collect_context: &mut platform::collect_process_context,
             prompt: &mut prompt_tree_confirmation,
-            collect_kill_ports: &mut || {
-                collector::collect_kill_ports(args.selector.pid(), args.selector.port())
-            },
-            collect_ports: &mut || {
-                collector::collect_ports_with_profile(MetadataProfile::IdentityOnly)
-            },
+            collect_kill_ports: &mut || collect_kill_ports_for_selector(args.selector),
+            collect_snapshot: &mut || collector::collect_snapshot(MetadataProfile::IdentityOnly),
             prepare_root: &mut process::prepare_termination,
             execute: &mut crate::tree::windows::execute_tree_kill,
         },
@@ -228,7 +224,7 @@ struct WindowsTreeKillIo<'a, RootHandle> {
         TreeConfirmation,
     ) -> std::io::Result<bool>,
     collect_kill_ports: &'a mut dyn FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
-    collect_ports: &'a mut dyn FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
+    collect_snapshot: &'a mut dyn FnMut() -> Result<NetworkSnapshot, collector::CollectorError>,
     prepare_root: &'a mut dyn FnMut(u32) -> Result<RootHandle, TerminationOutcome>,
     execute: &'a mut dyn FnMut(
         &KillTarget,
@@ -280,7 +276,7 @@ fn run_windows_tree_kill_with<RootHandle>(
                 let outcome = crate::tree::windows::WindowsTreeKillOutcome::from_precommit_outcome(
                     tree_outcome_from_termination(&root, outcome),
                 );
-                return map_windows_tree_outcome(&root, mode, &outcome, &mut io.collect_ports);
+                return map_windows_tree_outcome(&root, mode, &outcome, &mut io.collect_snapshot);
             }
         }
     } else {
@@ -298,13 +294,13 @@ fn run_windows_tree_kill_with<RootHandle>(
     ) {
         Ok(root) => root,
         Err(outcome) => {
-            return map_windows_tree_outcome(&root, mode, &outcome, &mut io.collect_ports);
+            return map_windows_tree_outcome(&root, mode, &outcome, &mut io.collect_snapshot);
         }
     };
 
     let outcome = (io.execute)(&fresh_root, &config.protected_processes, confirmation);
     drop(prepared_root);
-    map_windows_tree_outcome(&fresh_root, mode, &outcome, &mut io.collect_ports)
+    map_windows_tree_outcome(&fresh_root, mode, &outcome, &mut io.collect_snapshot)
 }
 
 #[cfg(windows)]
@@ -367,13 +363,28 @@ fn windows_fresh_tree_gates(
         .map_err(crate::tree::windows::WindowsTreeKillOutcome::from_precommit_outcome)?;
     fresh_tree_yes_outcome(root, &preview, confirmation)
         .map_err(crate::tree::windows::WindowsTreeKillOutcome::from_precommit_outcome)?;
-    if let Some(pid) = preview
-        .preview_nodes(preview.len())
+    let preview_nodes = preview.preview_nodes(preview.len());
+    let preview_pids = preview_nodes
         .iter()
-        .find_map(|node| {
-            let info = snapshot.iter().find(|info| info.pid == node.pid)?;
-            (info.process_name.is_none() || info.start_time_marker.is_none()).then_some(info.pid)
+        .map(|node| node.pid)
+        .collect::<std::collections::HashSet<_>>();
+    if let Some(pid) = preview_nodes.iter().find_map(|node| {
+        let info = snapshot.iter().find(|info| info.pid == node.pid)?;
+        (info.process_name.is_none() || info.start_time_marker.is_none()).then_some(info.pid)
+    }) {
+        return Err(crate::tree::windows::WindowsTreeKillOutcome::Refused(
+            TreeRefusal::PartialMetadata { pid },
+        ));
+    }
+    if let Some(pid) = snapshot
+        .iter()
+        .filter(|info| !preview_pids.contains(&info.pid))
+        .filter(|info| {
+            info.unverified_parent_pid
+                .is_some_and(|parent_pid| preview_pids.contains(&parent_pid))
         })
+        .map(|info| info.pid)
+        .min()
     {
         return Err(crate::tree::windows::WindowsTreeKillOutcome::Refused(
             TreeRefusal::PartialMetadata { pid },
@@ -939,12 +950,10 @@ pub(super) fn run_group_kill(
         TreeKillIo {
             collect_context: &mut platform::collect_process_context,
             prompt: &mut prompt_group_confirmation,
-            collect_kill_ports: &mut || {
-                collector::collect_kill_ports(args.selector.pid(), args.selector.port())
-            },
+            collect_kill_ports: &mut || collect_kill_ports_for_selector(args.selector),
             post_kill: report::PostKillIo {
-                collect_ports: &mut || {
-                    collector::collect_ports_with_profile(MetadataProfile::IdentityOnly)
+                collect_snapshot: &mut || {
+                    collector::collect_snapshot(MetadataProfile::IdentityOnly)
                 },
                 observe_exit: &mut process::observe_exit,
             },

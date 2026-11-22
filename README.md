@@ -88,8 +88,9 @@ Release. Both installers place the binaries in `~/.cargo/bin` and add it to
 your PATH, so open a new terminal before running `kick`. Prebuilt Linux
 binaries need glibc 2.31 or newer.
 Installer-based installs include `kickoutchi-update` for later upgrades.
-The Windows installer checks the ZIP and updater against embedded release
-checksums before installing them.
+The Unix and Windows installers verify both the archive and the updater against
+embedded release SHA-256 checksums before installing them, refusing installation
+if verification is unavailable or mismatched.
 Release pages also provide direct archives, per-archive `.sha256` files, and a
 release-wide `sha256.sum`. Same-release checksums detect corruption; they are not
 an independent signature.
@@ -215,11 +216,13 @@ instead of reporting that nothing matched.
 
 On a normal desktop, many root and service processes cannot be read, so Kickoutchi
 cannot prove that nobody else shares a port's socket. When the port has one
-verified owner, `kill --port` prints a note and targets that owner by PID, with
-the same checks as `kick kill --pid PID`. If a hidden process does share the
-socket, the after-kill report says the port is still visible. A port whose owner
-is itself unreadable is refused with the reason, for example that the socket
-belongs to another user.
+verified owner, `kill --port` prints a note and targets that owner while keeping
+the original port selector for revalidation: unrelated permission gaps elsewhere
+on the host are still tolerated, but a second visible owner or a port-specific
+ownership gap appearing before delivery is refused. If a hidden process does
+share the socket, the after-kill report says the port is still visible. A port
+whose owner is itself unreadable is refused with the reason, for example that
+the socket belongs to another user.
 
 Treat `--yes` as authorization for exactly the resolved target or scope. It
 skips the prompt, but it does not broaden target resolution or bypass safety

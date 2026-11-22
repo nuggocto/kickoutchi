@@ -6,10 +6,13 @@ use super::{
     PortsStatus, SETTLE_ATTEMPTS_MAX, SettleProbe, SettleReport, settle, settle_window_text,
     single_report_lines,
 };
-use crate::cli::test_support::entry;
+use crate::cli::test_support::{entry, entry_with_pid};
 use crate::collector::CollectorError;
-use crate::model::{Platform, PortEntry, PortEntryView};
-use crate::observation::{ProcessIdentity, ProcessStartMarker};
+use crate::model::{Platform, PortEntry, PortEntryView, Protocol};
+use crate::observation::{
+    EvidenceGap, EvidenceGapCode, EvidenceImpact, NetworkSnapshot, ProcessIdentity,
+    ProcessStartMarker, SnapshotCompleteness, snapshot_from_test_rows,
+};
 use crate::process::{ExitObservation, KillMode, KillTarget};
 
 fn identity(pid: u32) -> ProcessIdentity {
@@ -47,6 +50,20 @@ impl Script {
         identities: &[ProcessIdentity],
         target: &KillTarget,
         mut ports: impl FnMut(usize) -> Result<Vec<PortEntry>, CollectorError>,
+        exit: impl FnMut(usize, ProcessIdentity) -> ExitObservation,
+    ) -> (SettleReport, Self) {
+        Self::run_snapshots(
+            identities,
+            target,
+            move |poll| ports(poll).map(snapshot_from_test_rows),
+            exit,
+        )
+    }
+
+    fn run_snapshots(
+        identities: &[ProcessIdentity],
+        target: &KillTarget,
+        mut snapshots: impl FnMut(usize) -> Result<NetworkSnapshot, CollectorError>,
         mut exit: impl FnMut(usize, ProcessIdentity) -> ExitObservation,
     ) -> (SettleReport, Self) {
         let mut script = Self {
@@ -58,9 +75,9 @@ impl Script {
             identities,
             &target.ports,
             &mut SettleProbe {
-                collect_ports: &mut || {
+                collect_snapshot: &mut || {
                     script.port_polls += 1;
-                    ports(script.port_polls)
+                    snapshots(script.port_polls)
                 },
                 observe_exit: &mut |identity| {
                     script.exit_polls += 1;
@@ -158,8 +175,136 @@ fn closed_ports_do_not_end_the_wait_for_a_running_process() {
     assert_eq!(report.exited, [] as [u32; 0]);
     assert_eq!(report.running, vec![18_422]);
     assert_eq!(script.exit_polls, SETTLE_ATTEMPTS_MAX);
-    // Ports cleared on the first poll and are not polled again.
+    // Ports cleared on the first poll, then took one final confirmation at the
+    // end of the exit-polling window instead of polling on every intermediate tick.
+    assert_eq!(script.port_polls, 2);
+}
+
+#[test]
+fn incomplete_snapshot_never_claims_ports_cleared() {
+    let target = target_on(&[3000]);
+    let (report, script) = Script::run_snapshots(
+        &[identity(18_422)],
+        &target,
+        |_| {
+            let mut snapshot = snapshot_from_test_rows(Vec::new());
+            snapshot.completeness = SnapshotCompleteness::Partial;
+            snapshot.evidence_gaps.push(EvidenceGap::new(
+                EvidenceImpact::SocketSet,
+                EvidenceGapCode::OwnerPermissionDenied,
+                None,
+                Some(999),
+                "permission denied",
+            ));
+            Ok(snapshot)
+        },
+        |_, _| ExitObservation::Exited,
+    );
+
+    assert_eq!(report.ports, PortsStatus::Unconfirmed);
     assert_eq!(script.port_polls, 1);
+    assert_eq!(script.sleeps, 0);
+    let lines = single_report_lines(&target, KillMode::Terminate, true, &report);
+    assert!(
+        lines[1].contains("post-kill snapshot was incomplete"),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn raced_snapshot_retries_until_complete_snapshot_proves_cleared() {
+    let target = target_on(&[3000]);
+    let (report, script) = Script::run_snapshots(
+        &[identity(18_422)],
+        &target,
+        |poll| {
+            let mut snapshot = snapshot_from_test_rows(Vec::new());
+            if poll == 1 {
+                snapshot.completeness = SnapshotCompleteness::Raced;
+            }
+            Ok(snapshot)
+        },
+        |_, _| ExitObservation::Exited,
+    );
+
+    assert_eq!(report.ports, PortsStatus::Cleared);
+    assert_eq!(script.port_polls, 2);
+    assert_eq!(script.sleeps, 1);
+}
+
+#[test]
+fn supervisor_rebinding_during_exit_polling_reports_still_visible() {
+    let target = target_on(&[3000]);
+    let (report, script) = Script::run(
+        &[identity(18_422)],
+        &target,
+        |poll| {
+            // Port is empty on poll 1, then a supervisor rebinds port 3000
+            // before exit polling finishes.
+            if poll == 1 {
+                Ok(Vec::new())
+            } else {
+                Ok(vec![entry_with_pid(
+                    3000,
+                    Some(29_999),
+                    Protocol::Tcp,
+                    "new",
+                )])
+            }
+        },
+        |_, _| ExitObservation::Running,
+    );
+
+    assert_eq!(report.ports, PortsStatus::StillVisible);
+    assert_eq!(report.running, vec![18_422]);
+    assert!(
+        report.survivors_with_visible_ports.is_empty(),
+        "a replacement PID owning port 3000 must not mark PID 18422 as owning a visible port"
+    );
+    assert_eq!(script.port_polls, 2);
+    let lines = single_report_lines(&target, KillMode::Terminate, true, &report);
+    assert!(
+        lines[0].contains("--tree --force"),
+        "a survivor that no longer owns a visible port must not get the plain --pid retry: {lines:?}"
+    );
+}
+
+#[test]
+fn survivor_hint_uses_plain_retry_only_when_verified_identity_still_owns_a_port() {
+    let target = target_on(&[3000]);
+    let (owned_report, _) = Script::run(
+        &[identity(18_422)],
+        &target,
+        |_| Ok(vec![entry(3000)]),
+        |_, _| ExitObservation::Running,
+    );
+    assert_eq!(owned_report.survivors_with_visible_ports, vec![18_422]);
+    let owned_lines = single_report_lines(&target, KillMode::Terminate, true, &owned_report);
+    assert!(
+        owned_lines[0].ends_with("; rerun `kick kill --pid 18422 --force` to send SIGKILL"),
+        "{owned_lines:?}"
+    );
+
+    let (hijacked_report, _) = Script::run(
+        &[identity(18_422)],
+        &target,
+        |_| {
+            Ok(vec![entry_with_pid(
+                3000,
+                Some(99_999),
+                Protocol::Tcp,
+                "other",
+            )])
+        },
+        |_, _| ExitObservation::Running,
+    );
+    assert_eq!(hijacked_report.ports, PortsStatus::StillVisible);
+    assert_eq!(hijacked_report.survivors_with_visible_ports, [] as [u32; 0]);
+    let hijacked_lines = single_report_lines(&target, KillMode::Terminate, true, &hijacked_report);
+    assert!(
+        hijacked_lines[0].contains("--tree --force"),
+        "{hijacked_lines:?}"
+    );
 }
 
 #[test]
@@ -211,6 +356,7 @@ fn report(exited: &[u32], running: &[u32], ports: PortsStatus) -> SettleReport {
         unknown: Vec::new(),
         ports,
         visible_ports: Vec::new(),
+        survivors_with_visible_ports: Vec::new(),
     }
 }
 
@@ -259,13 +405,10 @@ fn single_report_warns_when_the_process_outlives_sigterm() {
 #[test]
 fn a_survivor_that_still_owns_its_port_gets_the_plain_retry() {
     let target = target_on(&[3000]);
+    let mut settled = report(&[], &[18_422], PortsStatus::StillVisible);
+    settled.survivors_with_visible_ports = vec![18_422];
 
-    let lines = single_report_lines(
-        &target,
-        KillMode::Terminate,
-        true,
-        &report(&[], &[18_422], PortsStatus::StillVisible),
-    );
+    let lines = single_report_lines(&target, KillMode::Terminate, true, &settled);
 
     assert!(
         lines[0].ends_with("; rerun `kick kill --pid 18422 --force` to send SIGKILL"),
@@ -279,6 +422,7 @@ fn retry_hints_cover_several_survivors_and_unknown_ports() {
 
     for ports in [
         PortsStatus::NotChecked,
+        PortsStatus::Unconfirmed,
         PortsStatus::RefreshFailed("boom".to_owned()),
     ] {
         let lines = single_report_lines(

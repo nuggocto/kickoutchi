@@ -11,8 +11,9 @@ use std::time::Duration;
 
 use crate::collector;
 use crate::display::sanitize;
-use crate::model::{PortEntry, PortEntryView};
-use crate::observation::ProcessIdentity;
+use crate::observation::{
+    NetworkSnapshot, OwnerObservation, ProcessIdentity, SnapshotCompleteness, SocketObservation,
+};
 use crate::process::{self, ExitObservation, KillMode, KillTarget, KillTargetPort};
 
 /// How many times the settle loop polls, and the pause between polls.
@@ -27,7 +28,11 @@ pub(super) const SETTLE_RETRY_DELAY: Duration = Duration::from_millis(100);
 pub(super) enum PortsStatus {
     /// No confirmed ports were given, so nothing was polled.
     NotChecked,
+    /// Confirmed ports were absent in a socket-set-complete snapshot.
     Cleared,
+    /// Confirmed ports were not seen, but the snapshot had socket-set gaps or
+    /// raced so disappearance could not be proven.
+    Unconfirmed,
     StillVisible,
     RefreshFailed(String),
 }
@@ -43,12 +48,15 @@ pub(super) struct SettleReport {
     /// The confirmed ports seen on the last poll when `ports` is
     /// `StillVisible`; empty otherwise.
     pub(super) visible_ports: Vec<KillTargetPort>,
+    /// Surviving identities verified as still owning at least one visible
+    /// listening TCP or bound UDP socket in the last usable snapshot.
+    pub(super) survivors_with_visible_ports: Vec<u32>,
 }
 
 /// The reads the settle loop performs. Tests inject all three.
 pub(super) struct SettleProbe<'a> {
-    pub(super) collect_ports:
-        &'a mut dyn FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
+    pub(super) collect_snapshot:
+        &'a mut dyn FnMut() -> Result<NetworkSnapshot, collector::CollectorError>,
     pub(super) observe_exit: &'a mut dyn FnMut(ProcessIdentity) -> ExitObservation,
     pub(super) sleep: &'a mut dyn FnMut(Duration),
 }
@@ -56,7 +64,10 @@ pub(super) struct SettleProbe<'a> {
 /// Poll until every identity exited and the ports cleared, or the window ends.
 ///
 /// A port refresh error stops port polling with a warning instead of claiming
-/// the ports cleared without evidence. Exit polling continues.
+/// the ports cleared without evidence. Exit polling continues. If exit polling
+/// continues after ports initially cleared, one final port snapshot is taken
+/// when exit polling ends so the report reflects the latest state (catching
+/// supervisors that rebind while the old process shuts down).
 pub(super) fn settle(
     identities: &[ProcessIdentity],
     ports: &[KillTargetPort],
@@ -70,7 +81,11 @@ pub(super) fn settle(
     } else {
         PortsStatus::StillVisible
     };
+    let mut ports_settled = ports.is_empty();
+    let mut refresh_failed = false;
+    let mut last_port_attempt = None;
     let mut visible_ports = Vec::new();
+    let mut survivors_with_visible_ports = Vec::new();
 
     for attempt in 0..SETTLE_ATTEMPTS_MAX {
         pending.retain(|identity| match (probe.observe_exit)(*identity) {
@@ -89,22 +104,42 @@ pub(super) fn settle(
             }
         });
 
-        if ports_status == PortsStatus::StillVisible {
+        let final_exit_poll = pending.is_empty() || attempt + 1 == SETTLE_ATTEMPTS_MAX;
+        let should_poll_ports = !ports.is_empty()
+            && !refresh_failed
+            && (!ports_settled || (final_exit_poll && last_port_attempt != Some(attempt)));
+
+        if should_poll_ports {
+            last_port_attempt = Some(attempt);
             visible_ports.clear();
-            ports_status = match (probe.collect_ports)() {
-                Err(error) => PortsStatus::RefreshFailed(error.to_string()),
-                Ok(entries) => {
-                    visible_ports = confirmed_ports_visible(ports, &entries);
-                    if visible_ports.is_empty() {
-                        PortsStatus::Cleared
+            survivors_with_visible_ports.clear();
+            match (probe.collect_snapshot)() {
+                Err(error) => {
+                    ports_status = PortsStatus::RefreshFailed(error.to_string());
+                    refresh_failed = true;
+                    ports_settled = true;
+                }
+                Ok(snapshot) => {
+                    visible_ports = confirmed_ports_visible(ports, &snapshot);
+                    survivors_with_visible_ports =
+                        surviving_identities_owning_visible_port(&pending, &snapshot);
+                    if !visible_ports.is_empty() {
+                        ports_status = PortsStatus::StillVisible;
+                        ports_settled = false;
+                    } else if snapshot.socket_set_diff_safe() {
+                        ports_status = PortsStatus::Cleared;
+                        ports_settled = true;
                     } else {
-                        PortsStatus::StillVisible
+                        ports_status = PortsStatus::Unconfirmed;
+                        // Retry a transient race within the window; do not spin
+                        // for 2s on a persistent permission-limited socket set.
+                        ports_settled = snapshot.completeness != SnapshotCompleteness::Raced;
                     }
                 }
-            };
+            }
         }
 
-        if pending.is_empty() && ports_status != PortsStatus::StillVisible {
+        if pending.is_empty() && ports_settled {
             break;
         }
         if attempt + 1 < SETTLE_ATTEMPTS_MAX {
@@ -128,19 +163,61 @@ pub(super) fn settle(
         unknown,
         ports: ports_status,
         visible_ports,
+        survivors_with_visible_ports,
     }
 }
 
-/// The confirmed ports present in `entries`, sorted. `ports` must be sorted.
-fn confirmed_ports_visible(ports: &[KillTargetPort], entries: &[PortEntry]) -> Vec<KillTargetPort> {
-    let mut visible = entries
+fn socket_target_port(socket: &SocketObservation) -> Option<KillTargetPort> {
+    socket.state.port_row_state()?;
+    Some(KillTargetPort {
+        protocol: socket.local_endpoint.protocol,
+        local_addr: socket.local_endpoint.address,
+        local_port: socket.local_endpoint.port.get(),
+        ipv6_scope: socket.local_endpoint.ipv6_scope,
+    })
+}
+
+/// The confirmed ports present in `snapshot`, sorted. `ports` must be sorted.
+fn confirmed_ports_visible(
+    ports: &[KillTargetPort],
+    snapshot: &NetworkSnapshot,
+) -> Vec<KillTargetPort> {
+    let mut visible = snapshot
+        .sockets
         .iter()
-        .map(|entry| KillTargetPort::from(PortEntryView::from(entry)))
+        .filter_map(socket_target_port)
         .filter(|port| process::kill_target_has_port(ports, port))
         .collect::<Vec<_>>();
     visible.sort_unstable();
     visible.dedup();
     visible
+}
+
+/// Surviving target identities verified as owning at least one visible
+/// listening TCP or bound UDP socket in `snapshot`, sorted by PID.
+fn surviving_identities_owning_visible_port(
+    identities: &[ProcessIdentity],
+    snapshot: &NetworkSnapshot,
+) -> Vec<u32> {
+    if identities.is_empty() {
+        return Vec::new();
+    }
+    let mut owners = Vec::new();
+    for socket in &snapshot.sockets {
+        if socket.state.port_row_state().is_none() {
+            continue;
+        }
+        for owner in &socket.owners {
+            if let OwnerObservation::Verified(identity) = owner
+                && identities.contains(identity)
+            {
+                owners.push(identity.pid);
+            }
+        }
+    }
+    owners.sort_unstable();
+    owners.dedup();
+    owners
 }
 
 /// The settle window as shown to users, for example `2.0s`.
@@ -204,12 +281,16 @@ pub(super) fn single_report_lines(
             "warning: {identity} is still running {} after {}; it may still be shutting down{}",
             settle_window_text(),
             mode.delivery_label(target.platform),
-            // A plain retry needs the process to still own a confirmed port.
+            // A plain retry needs this surviving process identity to still own
+            // a visible listening TCP or bound UDP port.
             sigkill_retry_hint(
                 target.platform,
                 mode,
                 &[target.pid],
-                report.ports == PortsStatus::StillVisible,
+                report
+                    .survivors_with_visible_ports
+                    .binary_search(&target.pid)
+                    .is_ok(),
             ),
         ));
     }
@@ -271,6 +352,9 @@ pub(super) fn ports_line(status: &PortsStatus) -> Option<String> {
     match status {
         PortsStatus::NotChecked => None,
         PortsStatus::Cleared => Some("confirmed target ports are no longer visible".to_owned()),
+        PortsStatus::Unconfirmed => Some(
+            "warning: confirmed target ports were not visible, but the post-kill snapshot was incomplete; refresh manually to verify they closed".to_owned(),
+        ),
         PortsStatus::StillVisible => Some(
             "warning: one or more confirmed ports are still visible after termination; another process may own them or shutdown may still be completing".to_owned(),
         ),
@@ -283,13 +367,13 @@ pub(super) fn ports_line(status: &PortsStatus) -> Option<String> {
 /// Poll the root's confirmed ports with no exit checks, and return the line.
 pub(super) fn ports_only_status_message(
     target: &KillTarget,
-    collect_ports: &mut dyn FnMut() -> Result<Vec<PortEntry>, collector::CollectorError>,
+    collect_snapshot: &mut dyn FnMut() -> Result<NetworkSnapshot, collector::CollectorError>,
 ) -> Option<String> {
     let report = settle(
         &[],
         &target.ports,
         &mut SettleProbe {
-            collect_ports,
+            collect_snapshot,
             observe_exit: &mut |_| ExitObservation::Running,
             sleep: &mut std::thread::sleep,
         },

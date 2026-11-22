@@ -92,9 +92,7 @@ pub(in crate::cli) fn run_batch_kill(
             prepare: &mut process::prepare_termination,
             terminate: &mut process::terminate_handle_checked,
             settle: settle::SettleProbe {
-                collect_ports: &mut || {
-                    collector::collect_ports_with_profile(POST_KILL_VISIBILITY_PROFILE)
-                },
+                collect_snapshot: &mut || collector::collect_snapshot(POST_KILL_VISIBILITY_PROFILE),
                 observe_exit: &mut process::observe_exit,
                 sleep: &mut std::thread::sleep,
             },
@@ -221,11 +219,17 @@ fn deliver<Handle>(
         let planned = &planned[*index];
         let mut revalidate = |args: &KillArgs, confirmed: &KillTarget| {
             revalidate_single_cli_target(args, config, confirmed, &mut io.context, &mut || {
-                collector::kill_ports_from_snapshot(
-                    &fresh,
-                    args.selector.pid(),
-                    args.selector.port(),
-                )
+                match args.selector {
+                    KillSelector::Pid(pid) => {
+                        collector::kill_ports_from_snapshot(&fresh, Some(pid), None)
+                    }
+                    KillSelector::Port(port) => {
+                        collector::kill_ports_from_snapshot(&fresh, None, Some(port))
+                    }
+                    KillSelector::VerifiedPortOwner { port, pid } => {
+                        collector::kill_ports_for_verified_port_owner(&fresh, port, pid)
+                    }
+                }
             })
         };
         // Every selector that named this process must still hold, not only the
@@ -282,7 +286,7 @@ fn plan<'a, Handle>(
             lines,
             reason,
         };
-        if let Some(port) = args.selector.port()
+        if let KillSelector::Port(port) = args.selector
             && let Some(message) = unprovable_port_kill_message(args, port, snapshot, &entries)
         {
             refusals.push(refuse(vec![message], ExitReason::PermissionDenied));
@@ -329,7 +333,9 @@ fn plan<'a, Handle>(
 fn selector_text(args: &KillArgs) -> String {
     match args.selector {
         KillSelector::Pid(pid) => format!("--pid {pid}"),
-        KillSelector::Port(port) => format!("--port {port}"),
+        KillSelector::Port(port) | KillSelector::VerifiedPortOwner { port, .. } => {
+            format!("--port {port}")
+        }
     }
 }
 
@@ -442,6 +448,45 @@ struct Summary<'a> {
     failures: &'a [(&'a KillTarget, &'a TerminationOutcome)],
 }
 
+fn summary_ports_text(ports: usize, settled: &settle::SettleReport) -> String {
+    match &settled.ports {
+        settle::PortsStatus::NotChecked | settle::PortsStatus::Cleared => {
+            format!("{ports} of {ports} confirmed port(s) no longer visible")
+        }
+        settle::PortsStatus::Unconfirmed => {
+            "confirmed ports not verified (incomplete snapshot)".to_owned()
+        }
+        settle::PortsStatus::StillVisible => format!(
+            "{} of {ports} confirmed port(s) no longer visible",
+            ports.saturating_sub(settled.visible_ports.len())
+        ),
+        settle::PortsStatus::RefreshFailed(_) => "confirmed ports not rechecked".to_owned(),
+    }
+}
+
+fn summary_ports_detail(settled: &settle::SettleReport) -> Option<String> {
+    match &settled.ports {
+        settle::PortsStatus::StillVisible => Some(format!(
+            "  still visible: {}; another process may own them or shutdown may still be completing",
+            sanitize(
+                &settled
+                    .visible_ports
+                    .iter()
+                    .map(KillTargetPort::label)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )),
+        settle::PortsStatus::Unconfirmed => Some(
+            "  warning: confirmed target ports were not visible, but the post-kill snapshot was incomplete; refresh manually to verify".to_owned(),
+        ),
+        settle::PortsStatus::RefreshFailed(error) => Some(format!(
+            "  warning: collecting ports after termination failed; refresh manually to verify: {error}"
+        )),
+        settle::PortsStatus::NotChecked | settle::PortsStatus::Cleared => None,
+    }
+}
+
 /// One summary line, then one line per kind of problem.
 fn summary_lines(summary: &Summary<'_>) -> Vec<String> {
     let Summary {
@@ -458,16 +503,7 @@ fn summary_lines(summary: &Summary<'_>) -> Vec<String> {
         .or_else(|| failures.first().map(|(target, _)| target))
         .map_or(crate::model::Platform::Linux, |target| target.platform);
     let delivery = mode.delivery_label(platform);
-    let ports_text = match &settled.ports {
-        settle::PortsStatus::NotChecked | settle::PortsStatus::Cleared => {
-            format!("{ports} of {ports} confirmed port(s) no longer visible")
-        }
-        settle::PortsStatus::StillVisible => format!(
-            "{} of {ports} confirmed port(s) no longer visible",
-            ports.saturating_sub(settled.visible_ports.len())
-        ),
-        settle::PortsStatus::RefreshFailed(_) => "confirmed ports not rechecked".to_owned(),
-    };
+    let ports_text = summary_ports_text(ports, settled);
     let mut lines = vec![format!(
         "summary: sent {delivery} to {} of {total} process(es); {} exited; {ports_text}; {} failed",
         delivered.len(),
@@ -529,22 +565,8 @@ fn summary_lines(summary: &Summary<'_>) -> Vec<String> {
             "  exit not confirmed for {missing} process(es) without a start identity"
         ));
     }
-    match &settled.ports {
-        settle::PortsStatus::StillVisible => lines.push(format!(
-            "  still visible: {}; another process may own them or shutdown may still be completing",
-            sanitize(
-                &settled
-                    .visible_ports
-                    .iter()
-                    .map(KillTargetPort::label)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        )),
-        settle::PortsStatus::RefreshFailed(error) => lines.push(format!(
-            "  warning: collecting ports after termination failed; refresh manually to verify: {error}"
-        )),
-        settle::PortsStatus::NotChecked | settle::PortsStatus::Cleared => {}
+    if let Some(detail) = summary_ports_detail(settled) {
+        lines.push(detail);
     }
     lines
 }

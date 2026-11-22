@@ -19,8 +19,10 @@ env:
 
 concurrency:
   # Releases share the Homebrew tap branch and must publish in order.
+  # queue: max preserves queued releases instead of displacing intermediate runs.
   group: ${{ github.workflow }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   plan:
@@ -252,6 +254,9 @@ jobs:
           jq --raw-output '.upload_files[]' dist-manifest.json >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      - name: Embed release checksums in the Unix installer
+        shell: bash
+        run: ./packaging/unix/protect-installer.sh --distrib target/distrib
       - name: Embed release checksums in the Windows installer
         shell: pwsh
         run: ./packaging/windows/protect-installer.ps1 -Distrib target/distrib

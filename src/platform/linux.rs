@@ -117,6 +117,65 @@ pub(crate) fn fresh_process_evidence(
     read_fresh_process_evidence(Path::new(PROC_ROOT), pid)
 }
 
+/// Verify that `/proc` resolves PIDs in Kickoutchi's own PID namespace.
+///
+/// Linux reads identity and stopped-state evidence from `/proc/<pid>`, whereas
+/// `pidfd_open(2)` resolves the numeric PID in the caller's PID namespace. In
+/// a nested PID namespace sharing an ancestor's `/proc`, those two lookups can
+/// address different processes. Require both `/proc/self` to resolve to this
+/// process's PID and `/proc/self/status`'s `NSpid:` line to list only that PID
+/// (ruling out coincidental numeric equality across nested namespaces).
+pub(crate) fn verify_proc_matches_pid_namespace() -> Result<(), String> {
+    verify_proc_matches_pid_namespace_at(Path::new(PROC_ROOT), std::process::id())
+}
+
+fn verify_proc_matches_pid_namespace_at(proc_root: &Path, self_pid: u32) -> Result<(), String> {
+    const SELF_LINK_MAX_BYTES: usize = 32;
+    let self_link = proc_root.join("self");
+    let link_target = read_link_bounded(&self_link, SELF_LINK_MAX_BYTES).map_err(|error| {
+        format!(
+            "cannot verify /proc PID namespace via {}: {error}",
+            self_link.display()
+        )
+    })?;
+    let proc_self_pid = link_target
+        .to_str()
+        .and_then(|text| text.parse::<u32>().ok())
+        .ok_or_else(|| {
+            format!(
+                "cannot verify /proc PID namespace: {} target is not a valid PID",
+                self_link.display()
+            )
+        })?;
+    if proc_self_pid != self_pid {
+        return Err(format!(
+            "procfs PID namespace mismatch: {} resolves to PID {proc_self_pid} instead of caller PID {self_pid}",
+            self_link.display()
+        ));
+    }
+
+    let status_path = proc_root.join("self/status");
+    let status_bytes = read_bounded_bytes(&status_path, MAX_STATUS_BYTES).map_err(|error| {
+        format!(
+            "cannot verify /proc PID namespace via {}: {error}",
+            status_path.display()
+        )
+    })?;
+    let nspids = parse_status_nspids(&status_bytes).map_err(|error| {
+        format!(
+            "cannot verify /proc PID namespace via {}: {error}",
+            status_path.display()
+        )
+    })?;
+    if nspids.as_slice() != [self_pid] {
+        return Err(format!(
+            "procfs PID namespace mismatch: {} reports NSpid {nspids:?} instead of [{self_pid}]",
+            status_path.display()
+        ));
+    }
+    Ok(())
+}
+
 impl Collector for LinuxCollector {
     fn collect(&self, profile: MetadataProfile) -> Result<NetworkSnapshot, CollectorError> {
         let raw_scope_identifier = fs::read_link(self.proc_root.join("self/ns/net")).ok();
@@ -1152,10 +1211,37 @@ fn scan_process_ids(
     Ok((pids, incomplete))
 }
 
-fn proc_visibility_restricted(proc_root: &Path) -> bool {
-    let Ok(mounts) = read_bounded_text(&proc_root.join("mounts"), MAX_STATUS_BYTES) else {
-        return true;
-    };
+enum ProcVisibilityIssue {
+    UnreadableMounts(std::io::Error),
+    UnprovenMounts(&'static str),
+    Hidepid(Option<String>),
+}
+
+impl ProcVisibilityIssue {
+    fn into_io_error(self) -> std::io::Error {
+        match self {
+            Self::UnreadableMounts(source) => source,
+            Self::UnprovenMounts(detail) => std::io::Error::new(
+                ErrorKind::InvalidData,
+                format!("cannot verify /proc visibility: {detail}"),
+            ),
+            Self::Hidepid(Some(mode)) => std::io::Error::new(
+                ErrorKind::PermissionDenied,
+                format!(
+                    "restricted /proc visibility (hidepid={mode}) prevents complete process-table enumeration"
+                ),
+            ),
+            Self::Hidepid(None) => std::io::Error::new(
+                ErrorKind::PermissionDenied,
+                "restricted /proc visibility (hidepid) prevents complete process-table enumeration",
+            ),
+        }
+    }
+}
+
+fn check_proc_visibility(proc_root: &Path) -> Result<(), ProcVisibilityIssue> {
+    let mounts = read_bounded_text(&proc_root.join("mounts"), MAX_STATUS_BYTES)
+        .map_err(ProcVisibilityIssue::UnreadableMounts)?;
     let proc_root = proc_root.as_os_str().as_bytes();
     let mut matching_options = None;
     for line in mounts.lines() {
@@ -1164,37 +1250,56 @@ fn proc_visibility_restricted(proc_root: &Path) -> bool {
             || fields[4].parse::<u32>().is_err()
             || fields[5].parse::<u32>().is_err()
         {
-            return true;
+            return Err(ProcVisibilityIssue::UnprovenMounts(
+                "malformed mount entry in /proc/mounts",
+            ));
         }
         if fields[1].as_bytes() != proc_root {
             continue;
         }
         if matching_options.replace((fields[2], fields[3])).is_some() {
-            return true;
+            return Err(ProcVisibilityIssue::UnprovenMounts(
+                "duplicate /proc mount entry in /proc/mounts",
+            ));
         }
     }
 
     let Some((filesystem, options)) = matching_options else {
-        return true;
+        return Err(ProcVisibilityIssue::UnprovenMounts(
+            "no matching /proc mount entry in /proc/mounts",
+        ));
     };
     if filesystem != "proc" {
-        return true;
+        return Err(ProcVisibilityIssue::UnprovenMounts(
+            "mount point is not a proc filesystem",
+        ));
     }
 
     let mut hidepid = None;
     for option in options.split(',') {
         if option.is_empty() {
-            return true;
+            return Err(ProcVisibilityIssue::UnprovenMounts(
+                "empty mount option on /proc mount",
+            ));
         }
         if let Some(mode) = option.strip_prefix("hidepid=") {
             if mode.is_empty() || hidepid.replace(mode).is_some() {
-                return true;
+                return Err(ProcVisibilityIssue::UnprovenMounts(
+                    "malformed or duplicate hidepid option on /proc mount",
+                ));
             }
         } else if option == "hidepid" {
-            return true;
+            return Err(ProcVisibilityIssue::Hidepid(None));
         }
     }
-    !matches!(hidepid, None | Some("0" | "off"))
+    match hidepid {
+        None | Some("0" | "off") => Ok(()),
+        Some(mode) => Err(ProcVisibilityIssue::Hidepid(Some(mode.to_owned()))),
+    }
+}
+
+fn proc_visibility_restricted(proc_root: &Path) -> bool {
+    check_proc_visibility(proc_root).is_err()
 }
 
 fn ancestor_pid_visibility_not_proven(proc_root: &Path) -> bool {
@@ -1616,6 +1721,7 @@ fn collect_related_process_hints_from_with_limit(
 pub(crate) struct LinuxTreeOps {
     proc_root: PathBuf,
     delivery_handles: HashMap<u32, TreeDeliveryHandle>,
+    read_only: bool,
 }
 
 impl LinuxTreeOps {
@@ -1623,13 +1729,26 @@ impl LinuxTreeOps {
         Self {
             proc_root: PathBuf::from(PROC_ROOT),
             delivery_handles: HashMap::new(),
+            read_only: false,
+        }
+    }
+
+    pub(crate) fn for_inspect() -> Self {
+        Self {
+            proc_root: PathBuf::from(PROC_ROOT),
+            delivery_handles: HashMap::new(),
+            read_only: true,
         }
     }
 }
 
 impl TreeProcessOps for LinuxTreeOps {
     fn snapshot(&mut self) -> Result<Vec<TreeProcessInfo>, String> {
-        collect_tree_process_infos(&self.proc_root).map_err(|error| error.to_string())
+        if !self.read_only {
+            verify_proc_matches_pid_namespace_at(&self.proc_root, std::process::id())?;
+        }
+        collect_tree_process_infos_with_visibility(&self.proc_root, !self.read_only)
+            .map_err(|error| error.to_string())
     }
 
     fn pin_root_for_revalidation(&mut self, pid: u32) -> TreeSignalResult {
@@ -1773,7 +1892,21 @@ fn process_evidence_io_error(pid: u32, error: &std::io::Error) -> ProcessEvidenc
 /// live process whose name, parent, or start marker cannot be read is a hard
 /// error. Tree kill must not run against a table with holes because
 /// a missing parent edge silently drops that process's whole subtree.
+#[cfg(test)]
 fn collect_tree_process_infos(proc_root: &Path) -> Result<Vec<TreeProcessInfo>, CollectorError> {
+    collect_tree_process_infos_with_visibility(proc_root, true)
+}
+
+fn collect_tree_process_infos_with_visibility(
+    proc_root: &Path,
+    require_complete_visibility: bool,
+) -> Result<Vec<TreeProcessInfo>, CollectorError> {
+    if require_complete_visibility && let Err(issue) = check_proc_visibility(proc_root) {
+        return Err(CollectorError::Read {
+            path: proc_root.join("mounts"),
+            source: issue.into_io_error(),
+        });
+    }
     let pids = process_ids(proc_root).map_err(|source| CollectorError::Read {
         path: proc_root.to_path_buf(),
         source,
@@ -1915,7 +2048,7 @@ fn read_process_name(process_dir: &Path) -> std::io::Result<Option<String>> {
 }
 
 fn read_process_status(path: &Path) -> std::io::Result<ProcessStatus> {
-    parse_process_status(&read_bounded_text(path, MAX_STATUS_BYTES)?)
+    parse_process_status(&read_bounded_bytes(path, MAX_STATUS_BYTES)?)
 }
 
 fn read_process_start_time_ticks(path: &Path) -> std::io::Result<u64> {
@@ -1957,26 +2090,65 @@ fn stat_field(bytes: &[u8], index: usize) -> std::io::Result<&[u8]> {
         .ok_or_else(|| std::io::Error::new(ErrorKind::InvalidData, "missing process stat field"))
 }
 
-fn parse_process_status(text: &str) -> std::io::Result<ProcessStatus> {
+fn parse_process_status(bytes: &[u8]) -> std::io::Result<ProcessStatus> {
     let mut status = ProcessStatus::default();
-    for line in text.lines() {
-        if let Some(value) = line.strip_prefix("PPid:") {
+    for line in bytes.split(|&byte| byte == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if let Some(value) = line.strip_prefix(b"PPid:") {
             status.parent_pid = Some(parse_status_u32(value)?);
-        } else if let Some(value) = line.strip_prefix("Uid:") {
+        } else if let Some(value) = line.strip_prefix(b"Uid:") {
             status.owner_uid = Some(parse_status_u32(value)?);
         }
     }
     Ok(status)
 }
 
-fn parse_status_u32(value: &str) -> std::io::Result<u32> {
+fn parse_status_u32(value: &[u8]) -> std::io::Result<u32> {
     let first = value
-        .split_whitespace()
-        .next()
+        .split(u8::is_ascii_whitespace)
+        .find(|field| !field.is_empty())
         .ok_or_else(|| std::io::Error::new(ErrorKind::InvalidData, "missing numeric value"))?;
+    let first = std::str::from_utf8(first)
+        .map_err(|source| std::io::Error::new(ErrorKind::InvalidData, source))?;
     first
         .parse::<u32>()
         .map_err(|source| std::io::Error::new(ErrorKind::InvalidData, source))
+}
+
+fn parse_status_nspids(bytes: &[u8]) -> std::io::Result<Vec<u32>> {
+    let mut found = None;
+    for line in bytes.split(|&byte| byte == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let Some(value) = line.strip_prefix(b"NSpid:") else {
+            continue;
+        };
+        if found.is_some() {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "duplicate NSpid field",
+            ));
+        }
+        let mut pids = Vec::new();
+        for token in value
+            .split(u8::is_ascii_whitespace)
+            .filter(|field| !field.is_empty())
+        {
+            let text = std::str::from_utf8(token)
+                .map_err(|source| std::io::Error::new(ErrorKind::InvalidData, source))?;
+            let pid = text
+                .parse::<u32>()
+                .map_err(|source| std::io::Error::new(ErrorKind::InvalidData, source))?;
+            pids.push(pid);
+        }
+        if pids.is_empty() {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                "empty NSpid field",
+            ));
+        }
+        found = Some(pids);
+    }
+    found.ok_or_else(|| std::io::Error::new(ErrorKind::InvalidData, "missing NSpid field"))
 }
 
 #[cfg(any(test, fuzzing))]
@@ -1994,9 +2166,8 @@ pub(crate) fn exercise_proc_parser(bytes: &[u8]) {
             let _ = parse_process_group_id(payload);
         }
         1 => {
-            if let Ok(text) = std::str::from_utf8(payload) {
-                let _ = parse_process_status(text);
-            }
+            let _ = parse_process_status(payload);
+            let _ = parse_status_nspids(payload);
         }
         2 => {
             if let Ok(text) = std::str::from_utf8(payload) {

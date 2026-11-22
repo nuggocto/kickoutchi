@@ -1730,6 +1730,66 @@ fn pid_reuse_marker_mismatch_is_unverified_and_discards_metadata() {
 }
 
 #[test]
+fn unreadable_and_raced_children_preserve_unverified_parent_edges_for_tree_preflight() {
+    let relations = HashMap::from([
+        (10, None),
+        (20, Some(10)),
+        (21, Some(10)),
+        (22, Some(10)),
+        (23, Some(10)),
+        (24, Some(10)),
+        (25, Some(25)),
+    ]);
+    let mut api = FakeProcessApi::stable(relations);
+    api.open_errors
+        .insert(20, ProcessOpenError::PermissionDenied);
+    api.open_errors
+        .insert(21, ProcessOpenError::IdentityUnavailable);
+    api.open_errors.insert(22, ProcessOpenError::Disappeared);
+    api.markers.remove(&23);
+    // PID 24 changes creation marker between before-check and handle read.
+    api.marker_reads.insert(24, VecDeque::from([999]));
+
+    let snapshot = ProcessSnapshot::collect_with(
+        &mut api,
+        MetadataProfile::Display,
+        ProcessSelection::All,
+        super::PROCESS_METADATA_BUDGET_BYTES,
+    )
+    .expect("snapshot with mixed child failures collects");
+    let rows = super::tree_process_infos_from_snapshot(&snapshot);
+    let row = |pid: u32| {
+        rows.iter()
+            .find(|info| info.pid == pid)
+            .expect("row must exist")
+    };
+
+    assert_eq!(row(20).parent_pid, None);
+    assert_eq!(row(20).unverified_parent_pid, Some(10));
+    assert_eq!(row(21).unverified_parent_pid, Some(10));
+    assert_eq!(
+        row(22).unverified_parent_pid,
+        None,
+        "a disappeared child must not create a spurious unverified parent edge"
+    );
+    assert_eq!(row(23).unverified_parent_pid, Some(10));
+    assert_eq!(row(24).unverified_parent_pid, Some(10));
+    assert_eq!(
+        row(25).unverified_parent_pid,
+        None,
+        "self-parent edges must not be kept as unverified parents"
+    );
+
+    let raced = finish_bracketed_metadata(
+        full_process_metadata(),
+        ProcessStartMarker::windows(100).unwrap(),
+        ProcessStartMarker::windows(101).ok(),
+        ProcessStartMarker::windows(101).ok(),
+    );
+    assert_eq!(raced.unverified_parent_pid, Some(42));
+}
+
+#[test]
 fn image_file_name_reader_grows_for_long_paths_and_bounds_reported_lengths() {
     use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER};
 

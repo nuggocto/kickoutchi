@@ -199,6 +199,29 @@ impl ReplacementReadiness {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedSnapshot {
+    indices: Arc<[usize]>,
+    replacement_readiness: Arc<ReplacementReadiness>,
+}
+
+impl PreparedSnapshot {
+    pub(crate) fn new(snapshot: &NetworkSnapshot) -> Result<Self, DiffError> {
+        if !snapshot.socket_set_diff_safe() {
+            return Err(DiffError::UnsafeSnapshot);
+        }
+        let mut indices = (0..snapshot.sockets.len()).collect::<Vec<_>>();
+        indices.sort_unstable_by(|left, right| {
+            compare_socket(&snapshot.sockets[*left], &snapshot.sockets[*right])
+        });
+        let replacement_readiness = ReplacementReadiness::new(snapshot);
+        Ok(Self {
+            indices: indices.into(),
+            replacement_readiness: Arc::new(replacement_readiness),
+        })
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct SnapshotDiff<'a> {
     previous: &'a NetworkSnapshot,
@@ -215,6 +238,7 @@ pub(crate) struct SnapshotDiff<'a> {
     event_limit: usize,
 }
 
+#[cfg(test)]
 pub(crate) fn diff_snapshots<'a>(
     previous: &'a NetworkSnapshot,
     current: &'a NetworkSnapshot,
@@ -222,39 +246,60 @@ pub(crate) fn diff_snapshots<'a>(
     SnapshotDiff::with_limit(previous, current, WATCH_EVENTS_PER_POLL_MAX)
 }
 
+pub(crate) fn diff_prepared_snapshots<'a>(
+    previous: &'a NetworkSnapshot,
+    previous_prepared: &PreparedSnapshot,
+    current: &'a NetworkSnapshot,
+    current_prepared: &PreparedSnapshot,
+) -> SnapshotDiff<'a> {
+    SnapshotDiff::from_prepared(
+        previous,
+        previous_prepared,
+        current,
+        current_prepared,
+        WATCH_EVENTS_PER_POLL_MAX,
+    )
+}
+
 impl<'a> SnapshotDiff<'a> {
+    #[cfg(test)]
     fn with_limit(
         previous: &'a NetworkSnapshot,
         current: &'a NetworkSnapshot,
         event_limit: usize,
     ) -> Result<Self, DiffError> {
-        if !previous.socket_set_diff_safe() || !current.socket_set_diff_safe() {
-            return Err(DiffError::UnsafeSnapshot);
-        }
-        let mut previous_indices = (0..previous.sockets.len()).collect::<Vec<_>>();
-        let mut current_indices = (0..current.sockets.len()).collect::<Vec<_>>();
-        previous_indices.sort_unstable_by(|left, right| {
-            compare_socket(&previous.sockets[*left], &previous.sockets[*right])
-        });
-        current_indices.sort_unstable_by(|left, right| {
-            compare_socket(&current.sockets[*left], &current.sockets[*right])
-        });
-        let previous_replacement_readiness = ReplacementReadiness::new(previous);
-        let current_replacement_readiness = ReplacementReadiness::new(current);
-        Ok(Self {
+        let previous_prepared = PreparedSnapshot::new(previous)?;
+        let current_prepared = PreparedSnapshot::new(current)?;
+        Ok(Self::from_prepared(
+            previous,
+            &previous_prepared,
+            current,
+            &current_prepared,
+            event_limit,
+        ))
+    }
+
+    fn from_prepared(
+        previous: &'a NetworkSnapshot,
+        previous_prepared: &PreparedSnapshot,
+        current: &'a NetworkSnapshot,
+        current_prepared: &PreparedSnapshot,
+        event_limit: usize,
+    ) -> Self {
+        Self {
             previous,
             current,
-            previous_indices: previous_indices.into(),
-            current_indices: current_indices.into(),
-            previous_replacement_readiness: Arc::new(previous_replacement_readiness),
-            current_replacement_readiness: Arc::new(current_replacement_readiness),
+            previous_indices: Arc::clone(&previous_prepared.indices),
+            current_indices: Arc::clone(&current_prepared.indices),
+            previous_replacement_readiness: Arc::clone(&previous_prepared.replacement_readiness),
+            current_replacement_readiness: Arc::clone(&current_prepared.replacement_readiness),
             previous_position: 0,
             current_position: 0,
             pending_replacement: None,
             pending_remainder: None,
             yielded: 0,
             event_limit,
-        })
+        }
     }
 
     fn next_event(&mut self) -> Option<WatchEvent<'a>> {
@@ -496,19 +541,21 @@ pub(crate) struct BaselineEvents<'a> {
     position: usize,
 }
 
+#[cfg(test)]
 pub(crate) fn baseline_events(snapshot: &NetworkSnapshot) -> Result<BaselineEvents<'_>, DiffError> {
-    if !snapshot.socket_set_diff_safe() {
-        return Err(DiffError::UnsafeSnapshot);
-    }
-    let mut indices = (0..snapshot.sockets.len()).collect::<Vec<_>>();
-    indices.sort_unstable_by(|left, right| {
-        compare_socket(&snapshot.sockets[*left], &snapshot.sockets[*right])
-    });
-    Ok(BaselineEvents {
+    let prepared = PreparedSnapshot::new(snapshot)?;
+    Ok(baseline_events_prepared(snapshot, &prepared))
+}
+
+pub(crate) fn baseline_events_prepared<'a>(
+    snapshot: &'a NetworkSnapshot,
+    prepared: &PreparedSnapshot,
+) -> BaselineEvents<'a> {
+    BaselineEvents {
         snapshot,
-        indices: indices.into(),
+        indices: Arc::clone(&prepared.indices),
         position: 0,
-    })
+    }
 }
 
 impl<'a> Iterator for BaselineEvents<'a> {

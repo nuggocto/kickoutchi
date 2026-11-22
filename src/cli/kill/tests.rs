@@ -96,7 +96,9 @@ fn kill_port_without_readable_pid_exits_permission_denied() {
         KillCollectors {
             context: &mut no_context,
             kill_ports: &mut || panic!("missing PID target must fail before revalidation"),
-            visibility_ports: &mut || Ok(Vec::new()),
+            visibility_snapshot: &mut || {
+                Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
+            },
             observe_exit: &mut |_| ExitObservation::Exited,
             sleep: &mut |_| panic!("settled facts must not sleep"),
         },
@@ -173,7 +175,9 @@ fn kill_yes_sends_signal_without_prompt_for_unprotected_target() {
         KillCollectors {
             context: &mut no_context,
             kill_ports: &mut || Ok(rows.clone()),
-            visibility_ports: &mut || Ok(Vec::new()),
+            visibility_snapshot: &mut || {
+                Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
+            },
             observe_exit: &mut |_| ExitObservation::Exited,
             sleep: &mut |_| panic!("settled facts must not sleep"),
         },
@@ -203,7 +207,9 @@ fn protected_process_yes_returns_exit_6_without_signalling() {
         KillCollectors {
             context: &mut no_context,
             kill_ports: &mut || Ok(rows.clone()),
-            visibility_ports: &mut || Ok(Vec::new()),
+            visibility_snapshot: &mut || {
+                Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
+            },
             observe_exit: &mut |_| ExitObservation::Exited,
             sleep: &mut |_| panic!("settled facts must not sleep"),
         },
@@ -232,7 +238,9 @@ fn force_kill_uses_force_word_confirmation_when_configured() {
         KillCollectors {
             context: &mut no_context,
             kill_ports: &mut || Ok(rows.clone()),
-            visibility_ports: &mut || Ok(Vec::new()),
+            visibility_snapshot: &mut || {
+                Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
+            },
             observe_exit: &mut |_| ExitObservation::Exited,
             sleep: &mut |_| panic!("settled facts must not sleep"),
         },
@@ -263,7 +271,9 @@ fn declined_confirmation_cancels_without_signalling() {
         KillCollectors {
             context: &mut no_context,
             kill_ports: &mut || Ok(rows.clone()),
-            visibility_ports: &mut || Ok(Vec::new()),
+            visibility_snapshot: &mut || {
+                Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
+            },
             observe_exit: &mut |_| ExitObservation::Exited,
             sleep: &mut |_| panic!("settled facts must not sleep"),
         },
@@ -298,7 +308,9 @@ fn target_is_revalidated_after_confirmation_before_signal() {
         KillCollectors {
             context: &mut no_context,
             kill_ports: &mut || Ok(fresh_rows.clone()),
-            visibility_ports: &mut || Ok(Vec::new()),
+            visibility_snapshot: &mut || {
+                Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
+            },
             observe_exit: &mut |_| ExitObservation::Exited,
             sleep: &mut |_| panic!("settled facts must not sleep"),
         },
@@ -334,7 +346,9 @@ fn prepare_failure_stops_before_revalidation_or_signal() {
                 collected = true;
                 Ok(rows.clone())
             },
-            visibility_ports: &mut || Ok(Vec::new()),
+            visibility_snapshot: &mut || {
+                Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
+            },
             observe_exit: &mut |_| ExitObservation::Exited,
             sleep: &mut |_| panic!("settled facts must not sleep"),
         },
@@ -365,7 +379,9 @@ fn target_losing_readable_pid_during_revalidation_exits_permission_denied() {
         KillCollectors {
             context: &mut no_context,
             kill_ports: &mut || kill_ports_from_snapshot(&snapshot, None, Some(3000)),
-            visibility_ports: &mut || Ok(Vec::new()),
+            visibility_snapshot: &mut || {
+                Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
+            },
             observe_exit: &mut |_| ExitObservation::Exited,
             sleep: &mut |_| panic!("settled facts must not sleep"),
         },
@@ -403,7 +419,9 @@ fn authoritative_snapshot_refusal_reaches_zero_delivery() {
                     ObservationError::PartialSocketSet,
                 ))
             },
-            visibility_ports: &mut || Ok(Vec::new()),
+            visibility_snapshot: &mut || {
+                Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
+            },
             observe_exit: &mut |_| ExitObservation::Exited,
             sleep: &mut |_| panic!("settled facts must not sleep"),
         },
@@ -440,7 +458,9 @@ fn port_owner_moving_after_handle_preparation_never_signals_old_owner() {
                 events.borrow_mut().push("collect");
                 Ok(moved.clone())
             },
-            visibility_ports: &mut || Ok(Vec::new()),
+            visibility_snapshot: &mut || {
+                Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
+            },
             observe_exit: &mut |_| ExitObservation::Exited,
             sleep: &mut |_| panic!("settled facts must not sleep"),
         },
@@ -473,7 +493,9 @@ fn kill_pid_losing_readable_owner_during_revalidation_exits_permission_denied() 
         KillCollectors {
             context: &mut no_context,
             kill_ports: &mut || kill_ports_from_snapshot(&snapshot, Some(18_422), None),
-            visibility_ports: &mut || Ok(Vec::new()),
+            visibility_snapshot: &mut || {
+                Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
+            },
             observe_exit: &mut |_| ExitObservation::Exited,
             sleep: &mut |_| panic!("settled facts must not sleep"),
         },
@@ -504,7 +526,9 @@ fn target_becoming_protected_after_confirmation_blocks_signal() {
         KillCollectors {
             context: &mut no_context,
             kill_ports: &mut || Ok(fresh_rows.clone()),
-            visibility_ports: &mut || Ok(Vec::new()),
+            visibility_snapshot: &mut || {
+                Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
+            },
             observe_exit: &mut |_| ExitObservation::Exited,
             sleep: &mut |_| panic!("settled facts must not sleep"),
         },
@@ -534,7 +558,9 @@ fn missing_fresh_protection_name_refuses_without_delivery() {
         KillCollectors {
             context: &mut no_context,
             kill_ports: &mut || Ok(vec![fresh.clone()]),
-            visibility_ports: &mut || Ok(Vec::new()),
+            visibility_snapshot: &mut || {
+                Ok(crate::observation::snapshot_from_test_rows(Vec::new()))
+            },
             observe_exit: &mut |_| ExitObservation::Exited,
             sleep: &mut |_| panic!("settled facts must not sleep"),
         },
@@ -648,4 +674,115 @@ fn a_live_portless_pid_is_explained_instead_of_reported_as_no_match() {
         &mut { live },
     );
     assert_eq!(reason, ExitReason::Failure);
+}
+
+#[test]
+fn verified_port_owner_revalidation_refuses_second_visible_owner_and_preserves_unrelated_gap_fallback()
+ {
+    use crate::collector::kill_ports_for_verified_port_owner;
+    use crate::observation::{
+        EvidenceGap, EvidenceGapCode, EvidenceImpact, OwnerCompleteness, snapshot_from_test_rows,
+    };
+
+    let initial_rows = vec![entry_with_pid(3000, Some(101), Protocol::Tcp, "web")];
+    let args = KillArgs {
+        selector: KillSelector::VerifiedPortOwner {
+            port: 3000,
+            pid: 101,
+        },
+        force: false,
+        yes: true,
+        tree: false,
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        group: false,
+    };
+
+    // Unrelated host permission gaps still allow the verified owner when it
+    // remains the sole visible owner of port 3000.
+    let mut fresh_unrelated_gaps = snapshot_from_test_rows(initial_rows.clone());
+    fresh_unrelated_gaps
+        .evidence_gaps
+        .push(EvidenceGap::aggregate_for_pids(
+            EvidenceImpact::Ownership,
+            EvidenceGapCode::OwnerPermissionDenied,
+            None,
+            std::num::NonZeroU64::new(500).expect("nonzero"),
+            "permission denied",
+        ));
+    fresh_unrelated_gaps.owner_completeness =
+        OwnerCompleteness::partial([EvidenceGapCode::OwnerPermissionDenied])
+            .expect("one reason fits");
+    let mut terminated = false;
+    let reason = run_kill_with(
+        &args,
+        &Config::default(),
+        &entry_views(&initial_rows),
+        KillCollectors {
+            context: &mut no_context,
+            kill_ports: &mut || {
+                kill_ports_for_verified_port_owner(&fresh_unrelated_gaps, 3000, 101)
+            },
+            visibility_snapshot: &mut || Ok(snapshot_from_test_rows(Vec::new())),
+            observe_exit: &mut |_| ExitObservation::Exited,
+            sleep: &mut |_| panic!("settled facts must not sleep"),
+        },
+        |_target, _mode, _requirement| panic!("--yes skips prompt"),
+        Ok::<u32, TerminationOutcome>,
+        |_pid: &u32, _target, _protected, _mode| {
+            terminated = true;
+            TerminationOutcome::Success
+        },
+    );
+    assert_eq!(reason, ExitReason::Success);
+    assert!(terminated);
+
+    // If a second visible process binds port 3000 before revalidation, the
+    // preserved port selector must catch ambiguity and refuse without signalling.
+    let mut fresh_ambiguous = snapshot_from_test_rows(vec![
+        entry_with_pid(3000, Some(101), Protocol::Tcp, "web"),
+        entry_with_pid(3000, Some(202), Protocol::Udp, "other"),
+    ]);
+    fresh_ambiguous
+        .evidence_gaps
+        .push(EvidenceGap::aggregate_for_pids(
+            EvidenceImpact::Ownership,
+            EvidenceGapCode::OwnerPermissionDenied,
+            None,
+            std::num::NonZeroU64::new(500).expect("nonzero"),
+            "permission denied",
+        ));
+    let mut ambiguous_terminated = false;
+    let reason = run_kill_with(
+        &args,
+        &Config::default(),
+        &entry_views(&initial_rows),
+        KillCollectors {
+            context: &mut no_context,
+            kill_ports: &mut || kill_ports_for_verified_port_owner(&fresh_ambiguous, 3000, 101),
+            visibility_snapshot: &mut || Ok(snapshot_from_test_rows(Vec::new())),
+            observe_exit: &mut |_| ExitObservation::Exited,
+            sleep: &mut |_| panic!("refusal must not sleep"),
+        },
+        |_target, _mode, _requirement| panic!("--yes skips prompt"),
+        Ok::<u32, TerminationOutcome>,
+        |_pid: &u32, _target, _protected, _mode| {
+            ambiguous_terminated = true;
+            TerminationOutcome::Success
+        },
+    );
+    assert_eq!(reason, ExitReason::NoMatch);
+    assert!(
+        !ambiguous_terminated,
+        "a second visible owner on the port must block termination"
+    );
+
+    // A new ownerless socket on the same port must also fail closed.
+    let fresh_hidden_coowner = snapshot_from_test_rows(vec![
+        entry_with_pid(3000, Some(101), Protocol::Tcp, "web"),
+        entry_with_pid(3000, None, Protocol::Udp, "hidden"),
+    ]);
+    assert!(
+        kill_ports_for_verified_port_owner(&fresh_hidden_coowner, 3000, 101).is_err(),
+        "an unverified co-holder on the selected port must be refused"
+    );
 }

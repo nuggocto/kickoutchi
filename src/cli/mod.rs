@@ -113,8 +113,9 @@ pub(crate) enum Command {
     /// Terminate a verified port owner, process tree, or process group.
     ///
     /// When other users' processes cannot be read, `--port` targets the port's
-    /// verified owner by PID and the after-kill report shows whether the port
-    /// closed.
+    /// verified owner while keeping the port selector for revalidation (still
+    /// refusing if a second visible owner appears) and reports afterward
+    /// whether the port closed.
     ///
     /// After delivery, kill waits up to two seconds and reports, on separate
     /// stderr lines, whether each signalled process exited and whether its
@@ -330,20 +331,28 @@ fn dedup_in_order<T: Copy + Ord>(values: &mut Vec<T>) {
 pub(crate) enum KillSelector {
     Pid(u32),
     Port(u16),
+    /// A `--port` selector redirected to its sole visible verified owner when
+    /// unrelated host permission gaps block a port-wide proof. Keeping both
+    /// fields preserves the fallback while still checking `port` for a second
+    /// visible owner or a port-specific gap on revalidation.
+    VerifiedPortOwner {
+        port: u16,
+        pid: u32,
+    },
 }
 
 impl KillSelector {
     pub(crate) const fn pid(self) -> Option<u32> {
         match self {
             Self::Pid(pid) => Some(pid),
-            Self::Port(_) => None,
+            Self::Port(_) | Self::VerifiedPortOwner { .. } => None,
         }
     }
 
     pub(crate) const fn port(self) -> Option<u16> {
         match self {
             Self::Pid(_) => None,
-            Self::Port(port) => Some(port),
+            Self::Port(port) | Self::VerifiedPortOwner { port, .. } => Some(port),
         }
     }
 }
@@ -361,6 +370,12 @@ pub(crate) struct KillArgs {
     tree: bool,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     group: bool,
+}
+
+enum OneShotCommand<'a> {
+    List(&'a ListArgs),
+    Kill(Vec<KillArgs>),
+    Inspect(&'a InspectArgs),
 }
 
 /// Run a CLI command to completion and report how the process should exit.
@@ -382,21 +397,36 @@ pub(crate) fn run(
         return run_why(args, config);
     }
     debug_assert!(watch_signal_guard.is_none());
-    if let Command::List(args) = command
-        && let Err(error) = crate::query::validate_filter_text(
-            args.filter.as_deref().unwrap_or_default(),
-            crate::query::QueryCapabilities::LIST,
-        )
-    {
-        eprintln!("error: invalid filter: {error}");
-        return ExitReason::InvalidArguments;
-    }
-    let profile = match command {
-        Command::List(args) if args.snapshot_json => crate::observation::MetadataProfile::Display,
-        Command::List(_) => crate::observation::MetadataProfile::LegacyList,
-        Command::Kill(_) | Command::Inspect(_) => crate::observation::MetadataProfile::Display,
+    let prepared = match command {
+        Command::List(args) => {
+            if let Err(error) = crate::query::validate_filter_text(
+                args.filter.as_deref().unwrap_or_default(),
+                crate::query::QueryCapabilities::LIST,
+            ) {
+                eprintln!("error: invalid filter: {error}");
+                return ExitReason::InvalidArguments;
+            }
+            OneShotCommand::List(args)
+        }
+        Command::Kill(command) => match command.targets() {
+            Ok(targets) => OneShotCommand::Kill(targets),
+            Err(message) => {
+                eprintln!("error: {message}");
+                return ExitReason::InvalidArguments;
+            }
+        },
+        Command::Inspect(args) => OneShotCommand::Inspect(args),
         Command::Watch(_) => unreachable!("watch owns its repeated collection loop"),
         Command::Why(_) => unreachable!("why owns collection and exact probing"),
+    };
+    let profile = match &prepared {
+        OneShotCommand::List(args) if args.snapshot_json => {
+            crate::observation::MetadataProfile::Display
+        }
+        OneShotCommand::List(_) => crate::observation::MetadataProfile::LegacyList,
+        OneShotCommand::Kill(_) | OneShotCommand::Inspect(_) => {
+            crate::observation::MetadataProfile::Display
+        }
     };
     let snapshot = match collector::collect_snapshot(profile) {
         Ok(snapshot) => snapshot,
@@ -405,27 +435,13 @@ pub(crate) fn run(
             return ExitReason::Failure;
         }
     };
-    match command {
-        Command::List(args) => run_list_snapshot(args, config, &snapshot),
-        Command::Kill(command) => {
-            let targets = match command.targets() {
-                Ok(targets) => targets,
-                Err(message) => {
-                    eprintln!("error: {message}");
-                    return ExitReason::InvalidArguments;
-                }
-            };
-            let mut targets = targets
+    match prepared {
+        OneShotCommand::List(args) => run_list_snapshot(args, config, &snapshot),
+        OneShotCommand::Kill(targets) => {
+            let targets = targets
                 .into_iter()
                 .map(|args| redirect_port_to_verified_owner(args, &snapshot, config))
                 .collect::<Vec<_>>();
-            // Two ports with the same verified owner now name the same PID.
-            let mut seen = Vec::with_capacity(targets.len());
-            targets.retain(|args| {
-                let first = !seen.contains(&args.selector);
-                seen.push(args.selector);
-                first
-            });
             let [args] = targets.as_slice() else {
                 return kill::batch::run_batch_kill(&targets, config, &snapshot);
             };
@@ -446,14 +462,14 @@ pub(crate) fn run(
                 .iter()
                 .map(|descriptor| snapshot.port_entry_view(descriptor))
                 .collect::<Vec<_>>();
-            if let Some(port) = args.selector.port()
+            if let KillSelector::Port(port) = args.selector
                 && let Some(reason) = refuse_unprovable_port_kill(args, port, &snapshot, &entries)
             {
                 return reason;
             }
             run_kill(args, config, &entries)
         }
-        Command::Inspect(args) => {
+        OneShotCommand::Inspect(args) => {
             if let Some(port) = args.port
                 && let Some(message) = hidden_port_owner_message(&snapshot, port)
             {
@@ -462,8 +478,6 @@ pub(crate) fn run(
             }
             run_inspect(args, config, &snapshot)
         }
-        Command::Watch(_) => unreachable!("watch is dispatched before one-shot collection"),
-        Command::Why(_) => unreachable!("why is dispatched before one-shot collection"),
     }
 }
 
@@ -527,10 +541,10 @@ fn port_kill_plan(
         .iter()
         .find_map(|row| row.process_name)
         .map_or_else(|| "<unknown>".to_owned(), crate::display::sanitize);
-    // The PID rules are the ones `kick kill --pid` uses: they ignore
-    // permission gaps that name neither this PID nor its sockets. If even
-    // those fail, the owner itself is unreadable and nothing can be sent.
-    if collector::kill_ports_from_snapshot(snapshot, Some(pid), None).is_ok() {
+    // The verified-port-owner rules ignore unrelated host permission gaps while
+    // still checking every socket on `port` and every gap naming `pid` or `port`.
+    // If even those fail, the owner or port itself is unreadable and nothing can be sent.
+    if collector::kill_ports_for_verified_port_owner(snapshot, port, pid).is_ok() {
         return PortKillPlan::ViaVerifiedOwner { pid, name };
     }
     PortKillPlan::Refuse(format!(
@@ -539,20 +553,20 @@ fn port_kill_plan(
     ))
 }
 
-/// Turn a port selector into a PID selector when the port's verified owner
-/// is known and only unreadable processes elsewhere block a port-level proof.
+/// Bind a port selector to its verified owner when only unreadable processes
+/// elsewhere block a port-level proof.
 ///
 /// On a normal desktop, root and service processes cannot be read, so a
 /// port-level proof that nobody else shares the socket is never available.
-/// Killing the verified owner is still what the user asked for. If a hidden
-/// process does share the socket, the settle step reports that the port is
-/// still visible after the kill.
+/// Keeping the port alongside the verified PID preserves the fallback across
+/// unrelated gaps while still refusing if a second visible owner binds the port
+/// before revalidation.
 fn redirect_port_to_verified_owner(
     args: KillArgs,
     snapshot: &crate::observation::NetworkSnapshot,
     config: &Config,
 ) -> KillArgs {
-    let Some(port) = args.selector.port() else {
+    let KillSelector::Port(port) = args.selector else {
         return args;
     };
     let Ok(descriptors) =
@@ -574,7 +588,7 @@ fn redirect_port_to_verified_owner(
         OwnerVisibility::of(snapshot).unreadable_clause(),
     );
     KillArgs {
-        selector: KillSelector::Pid(pid),
+        selector: KillSelector::VerifiedPortOwner { port, pid },
         ..args
     }
 }
@@ -710,7 +724,7 @@ fn run_inspect(
     };
 
     #[cfg(target_os = "linux")]
-    let mut ops = crate::platform::linux::LinuxTreeOps::new();
+    let mut ops = crate::platform::linux::LinuxTreeOps::for_inspect();
     #[cfg(target_os = "macos")]
     let mut ops = crate::platform::macos::MacosTreeOps::new();
     #[cfg(windows)]
@@ -1415,7 +1429,13 @@ mod tests {
             &snapshot,
             &crate::config::Config::default(),
         );
-        assert_eq!(redirected.selector, KillSelector::Pid(18_422));
+        assert_eq!(
+            redirected.selector,
+            KillSelector::VerifiedPortOwner {
+                port: 3000,
+                pid: 18_422,
+            }
+        );
         assert!(redirected.yes && !redirected.force && !redirected.tree);
 
         // When the owner itself is the unreadable process, nothing changes and

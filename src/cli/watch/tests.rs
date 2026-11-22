@@ -1828,7 +1828,7 @@ fn filter_result_order_crosses_batch_boundaries_without_retaining_the_group() {
         diagnostics: &mut diagnostics,
         sequence: 0,
     };
-    let mut current_index = super::SnapshotIndex::new(&snapshot);
+    let mut current_index = super::SnapshotIndex::new(&snapshot).unwrap();
 
     let reason = write_ordered_events(
         events,
@@ -1904,8 +1904,8 @@ fn filtering_uses_the_uncancelled_owner_beyond_the_public_owner_limit() {
         diagnostics: &mut diagnostics,
         sequence: 0,
     };
-    let mut previous_index = super::SnapshotIndex::new(&previous);
-    let mut current_index = super::SnapshotIndex::new(&current);
+    let mut previous_index = super::SnapshotIndex::new(&previous).unwrap();
+    let mut current_index = super::SnapshotIndex::new(&current).unwrap();
 
     let reason = write_ordered_events(
         diff_snapshots(&previous, &current).unwrap(),
