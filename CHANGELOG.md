@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.2] - 2026-11-23
+
 ### Fixed
 
 - Closing the terminal window of a running TUI ends it again. Since 1.3.1 the
@@ -1970,7 +1972,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tracing` diagnostics routed to stderr only, never the TUI surface.
 - Unit tests for the quit predicate, including the key-release edge case.
 
-[Unreleased]: https://github.com/nuggocto/kickoutchi/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/nuggocto/kickoutchi/compare/v1.7.2...HEAD
+[1.7.2]: https://github.com/nuggocto/kickoutchi/compare/v1.7.1...v1.7.2
+[1.7.1]: https://github.com/nuggocto/kickoutchi/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/nuggocto/kickoutchi/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/nuggocto/kickoutchi/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/nuggocto/kickoutchi/compare/v1.5.1...v1.5.2
