@@ -25,7 +25,7 @@ use crate::tree::TreeKillOutcome as TreeRefusal;
 
 use super::kill::{
     KillTargetError, collect_kill_ports_for_selector, deleted_executable_note, print_target_error,
-    read_confirmation_line, resolve_kill_target, revalidate_cli_target,
+    read_confirmation_line, refuse_unshown_kill, resolve_kill_target, revalidate_cli_target,
 };
 use super::{ExitReason, KillArgs, TREE_HOST_PLATFORM};
 
@@ -134,7 +134,7 @@ where
     let snapshot = match ops.snapshot() {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            eprintln!(
+            stderr_println!(
                 "error: enumerating the process tree failed: {}",
                 sanitize(&error)
             );
@@ -244,7 +244,7 @@ fn run_windows_tree_kill_with<RootHandle>(
     let snapshot = match (io.collect_tree)() {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            eprintln!("error: enumerating the process table failed: {error}");
+            stderr_println!("error: enumerating the process table failed: {error}");
             return ExitReason::Failure;
         }
     };
@@ -409,14 +409,14 @@ fn plan_tree_preview(
     )
     .map_err(|error| match error {
         tree::TreePlanError::RootMissing => {
-            eprintln!(
+            stderr_println!(
                 "error: root PID {} is no longer running; nothing to terminate",
                 root.pid
             );
             ExitReason::NoMatch
         }
         tree::TreePlanError::SnapshotLimitExceeded { limit } => {
-            eprintln!("error: process snapshot exceeds the bounded {limit}-PID index");
+            stderr_println!("error: process snapshot exceeds the bounded {limit}-PID index");
             ExitReason::Failure
         }
     })
@@ -458,17 +458,19 @@ fn confirm_scoped_kill<Prompt, PrintBanner>(
 ) -> Result<tree::ScopeAuthorization, ExitReason>
 where
     Prompt: FnMut(&KillTarget, &tree::ProcessTreeTarget, TreeConfirmation) -> std::io::Result<bool>,
-    PrintBanner: FnOnce(),
+    PrintBanner: FnOnce() -> std::io::Result<()>,
 {
     if decision == TreeConfirmDecision::RefuseProtectedYes {
-        eprintln!(
+        stderr_println!(
             "error: {} is protected; --yes cannot bypass protected-process confirmation",
             root.identity(),
         );
         return Err(ExitReason::ProtectedNeedsConfirmation);
     }
 
-    print_banner();
+    if let Err(error) = print_banner() {
+        return Err(refuse_unshown_kill(&error));
+    }
     match decision {
         TreeConfirmDecision::RefuseProtectedYes => {
             unreachable!("protected --yes refusal returned before printing a banner")
@@ -497,15 +499,12 @@ where
 {
     let confirmed = match prompt(root, preview, requirement) {
         Ok(confirmed) => confirmed,
-        Err(error) => {
-            eprintln!("error: reading confirmation failed: {error}");
-            return Err(ExitReason::Failure);
-        }
+        Err(error) => return Err(refuse_unshown_kill(&error)),
     };
     if confirmed {
         Ok(())
     } else {
-        eprintln!("kill cancelled");
+        stderr_println!("kill cancelled");
         Err(ExitReason::KillCancelled)
     }
 }
@@ -535,14 +534,16 @@ where
             match resolve_pid_tree_root_from_snapshot(pid, snapshot, &config.protected_processes) {
                 Ok(target) => Ok(target),
                 Err(KillTargetError::NoMatch) => {
-                    eprintln!("error: root PID {pid} is no longer running; nothing to terminate");
+                    stderr_println!(
+                        "error: root PID {pid} is no longer running; nothing to terminate"
+                    );
                     Err(ExitReason::NoMatch)
                 }
                 Err(error) => Err(print_target_error(error)),
             }
         }
         (Err(KillTargetError::NoMatch), None) => {
-            eprintln!("error: no open port matches the requested target");
+            stderr_println!("error: no open port matches the requested target");
             Err(ExitReason::NoMatch)
         }
         (Err(error), _) => Err(print_target_error(error)),
@@ -763,23 +764,23 @@ fn scoped_preflight_refusal(
 ) -> Option<ExitReason> {
     tree::preflight_outcome(preview).err().map(|outcome| match outcome {
         tree::TreeKillOutcome::Truncated { limit } => {
-            eprintln!(
+            stderr_println!(
                 "error: process {scope_noun} exceeds the {limit} process cap; refusing to kill a partial {scope_noun}",
             );
             ExitReason::Failure
         }
         tree::TreeKillOutcome::UnsafePid { pid, .. } => {
-            eprintln!("error: process {scope_noun} contains unsafe PID {pid}; refusing {scope_noun} kill");
+            stderr_println!("error: process {scope_noun} contains unsafe PID {pid}; refusing {scope_noun} kill");
             ExitReason::Failure
         }
         tree::TreeKillOutcome::ProtectedDescendant { pid, name } => {
             let name = sanitize(name.as_deref().unwrap_or("<unknown>"));
-            eprintln!("error: process {scope_noun} contains protected process PID {pid} ({name}); refusing {scope_noun} kill");
+            stderr_println!("error: process {scope_noun} contains protected process PID {pid} ({name}); refusing {scope_noun} kill");
             ExitReason::ProtectedNeedsConfirmation
         }
         // Refuse unknown preflight outcomes with an explicit diagnostic.
         other => {
-            eprintln!("error: process {scope_noun} pre-flight refused the kill: {other:?}");
+            stderr_println!("error: process {scope_noun} pre-flight refused the kill: {other:?}");
             ExitReason::Failure
         }
     })
@@ -820,55 +821,60 @@ fn root_has_tree_yes_blocking_warning(root: &KillTarget) -> bool {
         .any(|warning| !matches!(warning, process::KillWarning::HasChildren { .. }))
 }
 
-fn print_tree_kill_banner(root: &KillTarget, preview: &tree::ProcessTreeTarget, mode: KillMode) {
-    eprintln!(
+fn print_tree_kill_banner(
+    root: &KillTarget,
+    preview: &tree::ProcessTreeTarget,
+    mode: KillMode,
+) -> std::io::Result<()> {
+    required_stderr_println!(
         "{} process tree from {}",
         mode.action_label(),
         root.identity()
     );
-    eprintln!("Scope: tree ({} processes)", preview.len());
-    eprintln!("Ports: {}", sanitize(&root.ports_text()));
+    required_stderr_println!("Scope: tree ({} processes)", preview.len());
+    required_stderr_println!("Ports: {}", sanitize(&root.ports_text()));
     let mut command = format!("kick kill --pid {} --tree", root.pid);
     if mode == KillMode::Force {
         command.push_str(" --force");
     }
-    eprintln!("Command: {}", sanitize(&command));
+    required_stderr_println!("Command: {}", sanitize(&command));
     for node in preview.preview_nodes(TREE_PREVIEW_MAX) {
         let indent = "  ".repeat(node.depth + 1);
         let name = sanitize(node.process_name.as_deref().unwrap_or("<unknown>"));
-        eprintln!("{indent}PID {} ({name})", node.pid);
+        required_stderr_println!("{indent}PID {} ({name})", node.pid);
     }
     if preview.len() > TREE_PREVIEW_MAX {
-        eprintln!("  ... and {} more", preview.len() - TREE_PREVIEW_MAX);
+        required_stderr_println!("  ... and {} more", preview.len() - TREE_PREVIEW_MAX);
     }
     if let Some(warning) = mode.force_warning(root.platform) {
-        eprintln!("Warning: {}", sanitize(warning));
+        required_stderr_println!("Warning: {}", sanitize(warning));
     }
     if root.platform == Platform::Windows {
-        eprintln!(
+        required_stderr_println!(
             "Warning: Windows tree kill uses Job Object containment and hard termination; close apps normally first when possible."
         );
-        eprintln!(
+        required_stderr_println!(
             "Warning: Windows may also terminate newly spawned job-contained children that were not visible in this preview."
         );
     }
     if preview.has_system_process() {
-        eprintln!(
+        required_stderr_println!(
             "Warning: tree includes system/service processes; verify this is safe to terminate."
         );
     }
     if let Some(warning) = scoped_owner_warning(preview, "tree") {
-        eprintln!("Warning: {warning}.");
+        required_stderr_println!("Warning: {warning}.");
     }
     for warning in root.warnings() {
-        eprintln!(
+        required_stderr_println!(
             "Warning: {}.",
             sanitize(&warning.text(process::WarningScope::Tree))
         );
     }
     if let Some(note) = deleted_executable_note(root) {
-        eprintln!("{note}");
+        required_stderr_println!("{note}");
     }
+    Ok(())
 }
 
 fn prompt_tree_confirmation(
@@ -877,11 +883,11 @@ fn prompt_tree_confirmation(
     requirement: TreeConfirmation,
 ) -> std::io::Result<bool> {
     match requirement {
-        TreeConfirmation::TypedWord(word) => eprint!(
+        TreeConfirmation::TypedWord(word) => required_stderr_print!(
             "Type {word} to terminate all {} processes, or press Enter to cancel: ",
             preview.len(),
         ),
-        TreeConfirmation::ProtectedRoot => eprint!(
+        TreeConfirmation::ProtectedRoot => required_stderr_print!(
             "Protected root: type {} to confirm: ",
             root.protected_confirmation_choices(),
         ),
@@ -977,7 +983,7 @@ where
     let snapshot = match ops.snapshot() {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            eprintln!(
+            stderr_println!(
                 "error: enumerating the process group failed: {}",
                 sanitize(&error)
             );
@@ -999,14 +1005,14 @@ where
     ) {
         Ok(group) => group,
         Err(tree::GroupPlanError::RootMissing) => {
-            eprintln!(
+            stderr_println!(
                 "error: root PID {} is no longer running; nothing to terminate",
                 root.pid
             );
             return ExitReason::NoMatch;
         }
         Err(tree::GroupPlanError::GroupUnavailable) => {
-            eprintln!(
+            stderr_println!(
                 "error: PID {} has no targetable process group; refusing group kill",
                 root.pid
             );
@@ -1116,25 +1122,29 @@ fn group_yes_skip_allowed(root: &KillTarget, members: &tree::ProcessTreeTarget) 
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn print_group_kill_banner(root: &KillTarget, group: &tree::ProcessGroupTarget, mode: KillMode) {
+fn print_group_kill_banner(
+    root: &KillTarget,
+    group: &tree::ProcessGroupTarget,
+    mode: KillMode,
+) -> std::io::Result<()> {
     let members = group.members();
-    eprintln!(
+    required_stderr_println!(
         "{} process group {} of {}",
         mode.action_label(),
         group.pgid(),
         root.identity()
     );
-    eprintln!(
+    required_stderr_println!(
         "Scope: group {} ({} processes)",
         group.pgid(),
         members.len()
     );
-    eprintln!("Ports: {}", sanitize(&root.ports_text()));
+    required_stderr_println!("Ports: {}", sanitize(&root.ports_text()));
     let mut command = format!("kick kill --pid {} --group", root.pid);
     if mode == KillMode::Force {
         command.push_str(" --force");
     }
-    eprintln!("Command: {}", sanitize(&command));
+    required_stderr_println!("Command: {}", sanitize(&command));
     // Show every member. The builder already bounds the set, and process groups
     // can contain unrelated commands from the same shell.
     for node in members.preview_nodes(members.len()) {
@@ -1144,31 +1154,32 @@ fn print_group_kill_banner(root: &KillTarget, group: &tree::ProcessGroupTarget, 
         } else {
             ""
         };
-        eprintln!("  PID {} ({name}){root_marker}", node.pid);
+        required_stderr_println!("  PID {} ({name}){root_marker}", node.pid);
     }
     if let Some(warning) = mode.force_warning(root.platform) {
-        eprintln!("Warning: {}", sanitize(warning));
+        required_stderr_println!("Warning: {}", sanitize(warning));
     }
     if members.has_system_process() {
-        eprintln!(
+        required_stderr_println!(
             "Warning: group includes system/service processes; verify this is safe to terminate."
         );
     }
     if let Some(warning) = scoped_owner_warning(members, "group") {
-        eprintln!("Warning: {warning}.");
+        required_stderr_println!("Warning: {warning}.");
     }
-    eprintln!(
+    required_stderr_println!(
         "Warning: a process group can include unrelated processes started from the same shell; review every member above."
     );
     for warning in root.warnings() {
-        eprintln!(
+        required_stderr_println!(
             "Warning: {}.",
             sanitize(&warning.text(process::WarningScope::Group))
         );
     }
     if let Some(note) = deleted_executable_note(root) {
-        eprintln!("{note}");
+        required_stderr_println!("{note}");
     }
+    Ok(())
 }
 
 fn scoped_owner_warning(preview: &tree::ProcessTreeTarget, scope_noun: &str) -> Option<String> {
@@ -1209,11 +1220,11 @@ fn prompt_group_confirmation(
     requirement: TreeConfirmation,
 ) -> std::io::Result<bool> {
     match requirement {
-        TreeConfirmation::TypedWord(word) => eprint!(
+        TreeConfirmation::TypedWord(word) => required_stderr_print!(
             "Type {word} to terminate all {} processes in the group, or press Enter to cancel: ",
             members.len(),
         ),
-        TreeConfirmation::ProtectedRoot => eprint!(
+        TreeConfirmation::ProtectedRoot => required_stderr_print!(
             "Protected root: type {} to confirm: ",
             root.protected_confirmation_choices(),
         ),

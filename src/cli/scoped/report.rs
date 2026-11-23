@@ -69,7 +69,7 @@ fn print_scoped_settle_report(
         },
     );
     for line in settle::scoped_report_lines(root, mode, report.delivered, &settled) {
-        eprintln!("{line}");
+        stderr_println!("{line}");
     }
 }
 
@@ -103,7 +103,7 @@ where
     CollectSnapshot: FnMut() -> Result<NetworkSnapshot, collector::CollectorError>,
 {
     if report.termination_state.is_complete() && report.not_terminated.is_empty() {
-        eprintln!(
+        stderr_println!(
             "terminated {} process(es) in the Windows Job Object for the tree rooted at {}",
             report.job_terminated_pids.len(),
             root.identity(),
@@ -112,7 +112,7 @@ where
         return ExitReason::Success;
     }
 
-    eprintln!("{}", windows_tree_partial_report_text(root, report));
+    stderr_println!("{}", windows_tree_partial_report_text(root, report));
     if let Some(issue) = &report.post_commit_issue {
         return windows_post_commit_issue_exit_reason(issue);
     }
@@ -329,14 +329,14 @@ fn map_windows_tree_refusal(
     let cause = sanitize(&refusal.failure_cause_text());
     match refusal {
         TreeRefusal::RootAlreadyExited => {
-            eprintln!(
+            stderr_println!(
                 "{} already exited before containment was committed",
                 root.identity(),
             );
             print_post_kill_refresh_status(root, collect_snapshot);
         }
         TreeRefusal::PermissionDenied { .. } => {
-            eprintln!(
+            stderr_println!(
                 "error: {cause}; no Windows Job Object containment was committed; {}",
                 process::permission_denied_hint(root.platform),
             );
@@ -345,26 +345,26 @@ fn map_windows_tree_refusal(
         | TreeRefusal::SweepPassLimit { .. }
         | TreeRefusal::UnsafePid { .. }
         | TreeRefusal::ProtectedDescendant { .. } => {
-            eprintln!("error: {cause}; no Windows Job Object containment was committed");
+            stderr_println!("error: {cause}; no Windows Job Object containment was committed");
         }
         TreeRefusal::Truncated { .. } => {
-            eprintln!("error: {cause}; refusing to commit a partial Windows process tree");
+            stderr_println!("error: {cause}; refusing to commit a partial Windows process tree");
         }
         TreeRefusal::ProtectedRoot { .. } => {
-            eprintln!(
+            stderr_println!(
                 "error: {cause} and requires PID/name confirmation before Windows containment",
             );
         }
         TreeRefusal::FreshConfirmationRequired => {
-            eprintln!(
+            stderr_println!(
                 "error: {cause}; rerun without --yes to review fresh warnings; no containment was committed",
             );
         }
         TreeRefusal::OwnershipUnavailable { .. } | TreeRefusal::PartialMetadata { .. } => {
-            eprintln!("error: {cause} before Windows containment; no termination was sent");
+            stderr_println!("error: {cause} before Windows containment; no termination was sent");
         }
         TreeRefusal::SnapshotFailed(_) => {
-            eprintln!(
+            stderr_println!(
                 "error: enumerating the Windows process tree failed: {cause}; no termination was sent",
             );
         }
@@ -470,7 +470,7 @@ fn map_scoped_outcome(
     let delivery = mode.delivery_label(root.platform);
     match outcome {
         TreeKillOutcome::ThawFailed { pids, cause } => {
-            eprintln!(
+            stderr_println!(
                 "error: {}; cleanup could not continue PID(s) {}; they may remain stopped and require SIGCONT",
                 sanitize(&cause.failure_cause_text()),
                 tree::format_pid_list(pids),
@@ -480,7 +480,7 @@ fn map_scoped_outcome(
         TreeKillOutcome::Completed(report)
             if report.denied.is_empty() && report.thaw_failed.is_empty() =>
         {
-            eprintln!(
+            stderr_println!(
                 "{}",
                 scoped_delivery_summary(delivery, scope_noun, scope_of_target, report)
             );
@@ -488,7 +488,7 @@ fn map_scoped_outcome(
             ExitReason::Success
         }
         TreeKillOutcome::Completed(report) => {
-            eprintln!(
+            stderr_println!(
                 "{}",
                 scoped_delivery_summary(delivery, scope_noun, scope_of_target, report)
             );
@@ -498,7 +498,7 @@ fn map_scoped_outcome(
             if report.thaw_failed.is_empty() {
                 ExitReason::PermissionDenied
             } else {
-                eprintln!(
+                stderr_println!(
                     "error: PID(s) {} may remain stopped because SIGCONT failed",
                     tree::format_pid_list(&report.thaw_failed),
                 );
@@ -506,7 +506,7 @@ fn map_scoped_outcome(
             }
         }
         TreeKillOutcome::RootAlreadyExited => {
-            eprintln!(
+            stderr_println!(
                 "{} already exited before termination was sent",
                 root.identity(),
             );
@@ -514,7 +514,7 @@ fn map_scoped_outcome(
             tree_refusal_exit_reason(outcome)
         }
         TreeKillOutcome::PermissionDenied { .. } => {
-            eprintln!(
+            stderr_println!(
                 "error: {}; any frozen process was thawed and no termination was sent; {}",
                 sanitize(&outcome.failure_cause_text()),
                 process::permission_denied_hint(root.platform),
@@ -522,7 +522,7 @@ fn map_scoped_outcome(
             tree_refusal_exit_reason(outcome)
         }
         TreeKillOutcome::TargetChanged { .. } | TreeKillOutcome::SweepPassLimit { .. } => {
-            eprintln!(
+            stderr_println!(
                 "error: {}; the process {scope_noun} was thawed and no termination was sent",
                 sanitize(&outcome.failure_cause_text()),
             );
@@ -531,56 +531,58 @@ fn map_scoped_outcome(
         TreeKillOutcome::Truncated { .. }
         | TreeKillOutcome::ProtectedDescendant { .. }
         | TreeKillOutcome::CancellationCheckFailed(_) => {
-            eprintln!(
+            stderr_println!(
                 "error: {}; any frozen process was thawed and no termination was sent",
                 sanitize(&outcome.failure_cause_text()),
             );
             tree_refusal_exit_reason(outcome)
         }
         TreeKillOutcome::UnsafePid { .. } => {
-            eprintln!(
+            stderr_println!(
                 "error: {} in {scope_noun}; any frozen process was thawed and no termination was sent",
                 sanitize(&outcome.failure_cause_text()),
             );
             tree_refusal_exit_reason(outcome)
         }
         TreeKillOutcome::ProtectedRoot { .. } => {
-            eprintln!(
+            stderr_println!(
                 "error: {} and requires PID/name confirmation; any frozen process was thawed and no termination was sent",
                 sanitize(&outcome.failure_cause_text()),
             );
             tree_refusal_exit_reason(outcome)
         }
         TreeKillOutcome::FreshConfirmationRequired => {
-            eprintln!(
+            stderr_println!(
                 "error: {}; rerun without --yes to review fresh warnings; any frozen process was thawed and no termination was sent",
                 sanitize(&outcome.failure_cause_text()),
             );
             tree_refusal_exit_reason(outcome)
         }
         TreeKillOutcome::OwnershipUnavailable { .. } => {
-            eprintln!(
+            stderr_println!(
                 "error: {} before {delivery}; any frozen process was thawed and no termination was sent",
                 sanitize(&outcome.failure_cause_text()),
             );
             tree_refusal_exit_reason(outcome)
         }
         TreeKillOutcome::PartialMetadata { .. } => {
-            eprintln!(
+            stderr_println!(
                 "error: {} during {scope_noun} verification; any frozen process was thawed and no termination was sent",
                 sanitize(&outcome.failure_cause_text()),
             );
             tree_refusal_exit_reason(outcome)
         }
         TreeKillOutcome::SnapshotFailed(_) => {
-            eprintln!(
+            stderr_println!(
                 "error: enumerating the process {scope_noun} during termination failed: {}; no termination was sent",
                 sanitize(&outcome.failure_cause_text()),
             );
             tree_refusal_exit_reason(outcome)
         }
         TreeKillOutcome::Cancelled => {
-            eprintln!("kill cancelled; any frozen process was thawed and no termination was sent");
+            stderr_println!(
+                "kill cancelled; any frozen process was thawed and no termination was sent"
+            );
             tree_refusal_exit_reason(outcome)
         }
     }

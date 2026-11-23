@@ -86,14 +86,16 @@ allow_attributes_without_reason = "warn"
 # it keeps ordinary builds strict without exposing a production Cargo feature.
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 
-# Size over peak speed: collection is I/O-bound, and on Linux `kick list`
-# measured the same (about 10 ms) at opt-level 3 and "s". Together these
-# settings cut the stripped binary from 3.6 MB to 2.4 MB. `cargo install` and
-# the Nix package use this profile directly.
+# Size over peak speed: collection is I/O-bound. On Linux, `kick list` over
+# about 400 processes took a 14.2 ms median at opt-level "s" and 14.3 ms at
+# "z", within run-to-run noise, while "z" cut the stripped binary from 2.21 MB
+# to 1.97 MB. Symbols are stripped as in the dist profile; panic messages keep
+# their source location. `cargo install` and the Nix package use this profile.
 [profile.release]
 codegen-units = 1
 lto = "fat"
-opt-level = "s"
+opt-level = "z"
+strip = "symbols"
 
 # The profile that 'dist' will build with
 [profile.dist]

@@ -1,275 +1,264 @@
-# Platform Support and Observation Limits
+# Platform support and observation limits
 
-Kickoutchi reports bounded observations from native operating-system sources. It
-does not claim host-wide visibility where the selected native source cannot
-provide it. Every result must be interpreted together with its observation
-scope, completeness, evidence gaps, and certainty.
+Kickoutchi reads sockets from each operating system's native sources. Each
+source sees only part of the machine, and Kickoutchi never claims more than its
+source can see. Read every result together with its scope, completeness,
+evidence gaps, and certainty.
 
 ## Supported targets
 
-Published releases support these native targets:
-
-| Platform | Release targets | Native socket source | Declared observation scope | Principal exclusion |
+| Platform | Release targets | Socket source | Scope | Main exclusion |
 | --- | --- | --- | --- | --- |
 | Linux | `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` | `/proc/net/tcp*`, `/proc/net/udp*`, and `/proc/<pid>/fd` | Current network namespace | Other network namespaces |
-| macOS | `x86_64-apple-darwin`, `aarch64-apple-darwin` | Process and descriptor enumeration through libproc | Current host process-visible sockets | Sockets not reachable through visible user-process descriptors |
-| Windows | `x86_64-pc-windows-msvc` | IP Helper extended TCP and UDP owner tables | Current native Windows host network stack | The separate WSL network stack |
+| macOS | `x86_64-apple-darwin`, `aarch64-apple-darwin` | Process and descriptor enumeration through libproc | Sockets held by visible processes | Sockets no visible user process holds |
+| Windows | `x86_64-pc-windows-msvc` | IP Helper extended TCP and UDP owner tables | Native Windows network stack | The WSL network stack |
 
-Linux listing works on kernels older than 5.3, but safe process termination
-requires Linux 5.3 or later because it uses `pidfd`. Windows ARM64 and other Rust
-targets are not release-supported unless they are added to the native test and
-artifact matrix.
+Listing works on Linux kernels older than 5.3, but stopping a process needs 5.3
+or newer, because Kickoutchi uses `pidfd`. Windows ARM64 and other Rust targets
+aren't supported releases until they join the native test and artifact matrix.
 
-All three collectors retain IPv4 and IPv6 TCP rows and states exposed by their
-native source, including unknown native TCP state codes, and retain exposed UDP
-rows as bound endpoints. UDP is not assigned a portable TCP-style lifecycle
-state.
+All three collectors keep every IPv4 and IPv6 TCP row and state their source
+reports, including unknown native TCP state codes. UDP rows are reported as
+`bound`; UDP has no TCP-style lifecycle.
 
-## What complete means
+## What "complete" means
 
-`complete` means complete within the snapshot's declared observation scope and
-the collector's documented native source. It does not mean every socket on the
-machine, in every container, virtual machine, network namespace, or subsystem.
-Permanent exclusions remain exclusions even when a snapshot is complete.
+`complete` means complete within the snapshot's scope and the collector's
+documented source. It doesn't mean every socket on the machine, in every
+container, virtual machine, network namespace, or subsystem. Excluded places
+stay excluded even when a snapshot is complete.
 
-Completeness has distinct dimensions:
+Completeness has separate parts:
 
-- Snapshot completeness describes whether the in-scope socket observation was
-  collected without a known partial read or race.
-- Owner completeness describes whether visible socket-to-process attribution was
-  complete. A socket can be authoritative while its owner is unknown.
-- Process metadata completeness describes optional names, paths, parents, and
-  related metadata. Missing metadata does not erase an authoritative socket row.
-- Evidence gaps identify known losses by impact: socket set, ownership, metadata,
-  or scope. An omitted-evidence count means additional gaps could not be retained
-  within the public bound and must itself be treated as uncertainty.
+- Snapshot completeness says whether the sockets in scope were read without a
+  known partial read or race.
+- Owner completeness says whether Kickoutchi could match every visible socket
+  to its processes. A socket can be certain while its owner is unknown.
+- Process metadata completeness covers names, paths, parents, and similar
+  optional details. Missing metadata never removes a socket row.
+- Evidence gaps record known losses, tagged by what they affect (socket set,
+  ownership, metadata, or scope). Gap records are capped. A non-zero
+  `omitted_evidence_gap_count` means more gaps existed than were kept, and is
+  itself a reason for doubt.
 
-For a PID-scoped loss aggregated across a bounded scan, an evidence gap can carry
-a positive `affected_pid_count` while its exact `pid` remains null. Exact PID
-gaps carry `pid` and a null count. Repeated aggregate observations retain the
-maximum count rather than summing potentially overlapping PID sets, and
-`omitted_evidence_gap_count` separately counts unretained gap records rather than
-affected PIDs.
+When a scan loses data for many PIDs at once, its gap carries a positive
+`affected_pid_count` and a null `pid`. A gap about one PID carries that `pid`
+and a null count. If the same aggregate loss shows up in several passes,
+Kickoutchi keeps the largest count rather than adding them up, because the PID
+sets may overlap. `omitted_evidence_gap_count` counts gap records that weren't
+kept, not PIDs.
 
-`partial` preserves facts that were successfully observed but prevents stronger
-claims affected by the reported gaps. `raced` means collection changed in a way
-that makes the relevant comparison unsafe. A failed collection is an error, not
-an empty complete snapshot.
+`partial` keeps the facts that were read but blocks stronger claims the gaps
+would undermine. `raced` means something changed during collection in a way
+that makes the comparison unsafe. A failed collection is an error, never an
+empty `complete` snapshot.
 
-Collection spans a bounded interval and is not an atomic kernel snapshot. A
-process or socket can appear, disappear, or change while tables, descriptors,
-owners, and metadata are read.
+Collection takes a short, bounded amount of time and isn't an atomic kernel
+snapshot. Processes and sockets can appear, disappear, or change while
+Kickoutchi reads tables, descriptors, owners, and metadata.
 
 ## Linux
 
-The Linux collector reads socket tables from the procfs mounted at `/proc` and
-associates their inode values with links under `/proc/<pid>/fd`. Process identity
-comes from `/proc/<pid>/stat`. The current network namespace identifier is read
-from `/proc/self/ns/net` when available.
+The Linux collector reads the socket tables in the procfs mounted at `/proc`
+and matches their inode numbers to links under `/proc/<pid>/fd`. Process
+identity comes from `/proc/<pid>/stat`, and the network namespace identifier
+from `/proc/self/ns/net` when it's readable.
 
-Only the current network namespace is observed. Kickoutchi never enters another
-network namespace implicitly. Running it in the host namespace, a container
-namespace, or another explicitly selected namespace therefore produces different
-socket sets by design.
+Kickoutchi sees only the network namespace it runs in and never enters another.
+Run it on the host, in a container, or in another namespace, and you get a
+different socket set each time. That's by design.
 
-Procfs and PID namespaces impose a separate ownership boundary. Kickoutchi can
-enumerate only PIDs visible through its procfs mount and PID namespace. It treats
-ownership visibility as initial-PID-namespace complete only when the bounded
-`/proc/self/ns/pid` link matches Linux's reserved initial PID namespace identity,
-`pid:[4026531836]`. A nested, missing, unreadable, or unrecognized namespace
-identity makes global ownership and retained socket owner sets partial. An
-ancestor-namespace process may share an otherwise visible socket inode.
-`NSpid` alone cannot prove initial namespace visibility because its entries are
-relative to the procfs mount; a container with its own procfs can have one entry.
+Procfs and the PID namespace limit which owners Kickoutchi can see. It can only
+enumerate PIDs visible through its procfs mount and PID namespace. It treats
+ownership as complete only when the `/proc/self/ns/pid` link matches Linux's
+fixed initial PID namespace, `pid:[4026531836]`. A nested, missing, unreadable,
+or unrecognized namespace makes ownership partial, because a process in an
+ancestor namespace could share a visible socket. `NSpid` alone can't prove
+this: its entries are relative to the procfs mount, so a container with its own
+procfs also shows a single entry.
 
-A restricted, incomplete, or nonstandard procfs mount can hide socket tables,
-PIDs, descriptor links, identities, or metadata. Permission denial while reading
-a required socket table fails collection; denial or disappearance during owner
-and metadata reads is retained as an explicit gap where possible.
-An ownership gap with no endpoint provenance means an unobserved process could
-share any socket, so `kill --port` cannot prove that a port has a single owner.
-When the port has one verified owner, the CLI prints a note and targets that
-owner while retaining the original port selector for revalidation: unrelated
-permission gaps elsewhere on the host are tolerated, but a second visible owner
-or a port-specific gap appearing before delivery is refused. When the owner
-itself cannot be read, the CLI refuses before the confirmation prompt and says
-why.
+A restricted, incomplete, or unusual procfs mount can hide socket tables, PIDs,
+descriptor links, identities, or metadata. If Kickoutchi can't read a required
+socket table, collection fails. Permission errors or vanished processes during
+owner and metadata reads become explicit gaps where possible.
 
-Linux socket rows also report the UID that created each socket. Human output
-uses it to explain an owner-less row, for example "the socket belongs to root
-(uid 0)". It is a hint, not ownership evidence, because descriptors can be
-inherited or passed between users, and it is not part of any JSON contract.
+An ownership gap that isn't tied to a particular endpoint means some unseen
+process could share any socket. `kill --port` then can't prove a port has a
+single owner. When the port has exactly one owner Kickoutchi can verify, the
+CLI prints a note and targets that owner. Before sending anything it checks the
+port again: unrelated permission gaps elsewhere are tolerated, but a second
+visible owner, or a gap specific to that port, makes it refuse. When the owner
+itself can't be read, the CLI refuses before the prompt and says why.
 
-The legacy list/TUI `permission` field compresses these Unix outcomes for 1.x
-compatibility. `partial` covers permission denial, process disappearance, races,
-unsupported metadata, and bounded omission; it must not be interpreted as an
-`EACCES`/`EPERM` diagnosis. Snapshot evidence gaps preserve the specific cause.
+Linux socket rows also record the UID that created each socket. Human output
+uses it to explain a row without an owner, for example "the socket belongs to
+root (uid 0)". It's a hint, not proof of ownership, because descriptors can be
+inherited or passed between users. It isn't part of any JSON contract.
 
-Linux `/proc/net/*6` rows do not expose an IPv6 scope identifier in the selected
-format. Every observed IPv6 endpoint therefore has unavailable scope. Such a row
-cannot support exact scoped-IPv6 matching or an exact-address proven observation,
-although wildcard selectors can still match without scope equality. Human output
-shows these addresses without a `%` suffix; JSON output records the scope as
-`unavailable`.
+The legacy list/TUI `permission` field squeezes all of this into two values for
+1.x compatibility. `partial` covers permission errors, vanished processes,
+races, unsupported metadata, and capped data alike; don't read it as an
+`EACCES` or `EPERM` diagnosis. Snapshot evidence gaps keep the real cause.
 
-Root may make more procfs process descriptors and metadata readable, but it does
-not widen the current network namespace, escape the PID namespace, repair an
-incomplete procfs mount, or make IPv6 scope IDs appear. Elevation can reduce
-permission gaps; it cannot turn out-of-scope data into in-scope data.
+Linux `/proc/net/*6` rows don't include an IPv6 scope ID, so every Linux IPv6
+endpoint has an unavailable scope. Such a row can't match an exact scoped IPv6
+selector or prove an exact-address observation, although wildcard selectors
+still match it. Human output shows these addresses without a `%` suffix, and
+JSON records the scope as `unavailable`.
+
+Running as root can make more process descriptors and metadata readable. It
+doesn't widen the network namespace, escape the PID namespace, fix an
+incomplete procfs mount, or produce IPv6 scope IDs. Root can close permission
+gaps; it can't bring out-of-scope data into scope.
 
 ## macOS
 
-macOS collection is process-first. Kickoutchi enumerates PIDs with
-`proc_listallpids`, enumerates each visible process's descriptors with
+The macOS collector starts from processes. It lists PIDs with
+`proc_listallpids`, lists each visible process's descriptors with
 `proc_pidinfo(PROC_PIDLISTFDS)`, and reads socket details with
-`proc_pidfdinfo(PROC_PIDFDSOCKETINFO)`. This is not a global PCB snapshot.
+`proc_pidfdinfo(PROC_PIDFDSOCKETINFO)`. It never reads a global socket table.
 
-The declared scope contains sockets reachable through successfully enumerated
-user-process file descriptors. Sockets with no visible user-process descriptor
-are permanently outside that scope. A denied, truncated, malformed, or vanished
-process or descriptor enumeration can hide entire socket rows and is therefore a
-socket-set gap, not merely missing process metadata. Permissions may improve
-visibility, but no privilege level changes this process-first source into a
-global socket-table source.
+Its scope is the sockets reachable through file descriptors of user processes
+it could list. A socket with no visible descriptor is always out of scope. If
+listing a process or its descriptors is denied, truncated, malformed, or
+interrupted by the process exiting, whole socket rows can go missing, so
+Kickoutchi records a socket-set gap, not just missing metadata. More privilege
+can help it see more processes, but it never turns this into a global socket
+table.
 
-The selected libproc socket data does not provide a supported IPv6 scope
-identifier. macOS IPv6 observations therefore carry unavailable scope and cannot
-support exact scoped-IPv6 observation claims.
+The libproc socket data Kickoutchi uses has no supported IPv6 scope ID, so
+macOS IPv6 observations carry an unavailable scope and can't back exact scoped
+IPv6 claims.
 
-macOS has no `pidfd` equivalent. Process identity uses the native process start
-time, and destructive actions re-read and compare identity immediately before
-signalling, but the process cannot be pinned to that identity across the final
-instructions. This residual PID-reuse race is a platform limitation and is not
-reported as Linux-style `pidfd` safety.
+macOS has no `pidfd`. Kickoutchi identifies a process by its start time and
+re-checks that identity just before signalling, but nothing pins the process
+across those final instructions. That leftover PID-reuse race is a platform
+limit, and Kickoutchi doesn't describe it as Linux-style `pidfd` safety.
 
-## Unix scoped termination limits
+## Unix tree and group kills
 
-Unix tree and process-group termination uses a bounded freeze-and-verify
-sequence, not an atomic kernel transaction. Kickoutchi observes whether each
-member was stopped before its own `SIGSTOP` and normally sends cleanup `SIGCONT`
-only for transitions it observed. Another actor can concurrently send
-`SIGSTOP` or `SIGCONT` between those observations and signals, so ownership of a
-stopped state cannot be attributed perfectly. After a successfully delivered
-`SIGTERM`, Kickoutchi guardedly continues even a previously stopped target so
-the pending termination can execute; refusal and failed-delivery cleanup leave
-a target observed as previously stopped untouched.
+Tree and group kills on Unix freeze, verify, and then signal in bounded steps;
+they aren't one atomic kernel operation. Kickoutchi notes whether each member
+was already stopped before its own `SIGSTOP`, and normally sends the cleanup
+`SIGCONT` only to members it stopped itself. Another program can send `SIGSTOP`
+or `SIGCONT` between those observations and signals, so who stopped a process
+can't always be known for sure. After a `SIGTERM` is delivered, Kickoutchi
+resumes even a target that was already stopped, so the termination can take
+effect. When it refuses, or delivery fails, it leaves a target it saw as
+already stopped alone.
 
-Process-group membership can also change through concurrent joins, exits, and
-external signals. Kickoutchi freezes enumerated members, repeats bounded
-snapshots toward a fixed point, rechecks identity and group membership, and
-queues every terminating signal before continuing members. This provides
-best-effort convergence over the observed group, with fixed member, pass, and
-operation-wide stop-acknowledgement bounds; it is not an absolute claim that a
-concurrently mutating process group was terminated atomically.
+Group membership can also change while Kickoutchi works, through processes
+joining, exiting, or receiving signals from elsewhere. Kickoutchi freezes the
+members it finds, repeats bounded snapshots until membership stops changing,
+re-checks identity and membership, and queues every termination signal before
+resuming members. Member counts, passes, and the total wait for stop
+confirmations all have fixed limits. The result is a best effort over the group
+it observed, not a guarantee that a group changing underneath it was stopped
+atomically.
 
 ## Windows
 
-The Windows collector obtains IPv4 and IPv6 TCP rows from
-`GetExtendedTcpTable` and UDP rows from `GetExtendedUdpTable`. These IP Helper
-owner tables are authoritative for the observed native Windows socket rows.
-Process creation time verifies PID identity; Toolhelp and bounded process APIs
-provide optional process relationships and metadata.
+The Windows collector reads IPv4 and IPv6 TCP rows from `GetExtendedTcpTable`
+and UDP rows from `GetExtendedUdpTable`. These IP Helper owner tables are the
+authority for the native Windows sockets they list. Process creation time
+verifies each PID's identity; Toolhelp and bounded process APIs add optional
+relationships and metadata.
 
-The declared scope is the current native Windows host network stack. WSL uses a
-separate Linux network stack and is excluded. Run the Linux build inside WSL to
-observe WSL sockets and Linux process owners. A Windows-side result must not be
-interpreted as evidence that a port is absent inside WSL.
+The scope is the native Windows network stack. WSL runs its own Linux network
+stack and is excluded. Run the Linux build inside WSL to see WSL sockets and
+their Linux owners. A Windows result says nothing about whether a port is free
+inside WSL.
 
-IP Helper rows remain valid socket evidence when process handles, identity, or
-metadata cannot be read. An owner PID that cannot be verified is retained as an
-unverified owner; PID zero is never treated as a process owner. Toolhelp failure
-during owner enrichment falls back to bounded direct reads of the socket-owner
-PIDs and leaves metadata partial.
+IP Helper rows stay valid even when Kickoutchi can't open a process handle or
+read identity or metadata. An owner PID it can't verify is kept as an
+unverified owner, and PID 0 is never treated as an owner. If Toolhelp fails
+while Kickoutchi adds owner details, it falls back to bounded direct reads of
+the owner PIDs and marks metadata partial.
 
-Elevation can grant access to additional process identities, metadata, or
-termination handles, but it does not expand the IP Helper scope into WSL and does
-not prove that an unexplained bind denial is a Hyper-V reservation or another
-specific policy. Kickoutchi does not elevate itself.
+Running elevated can unlock more process identities, metadata, and termination
+handles. It doesn't extend IP Helper into WSL, and it can't prove that an
+unexplained bind refusal is a Hyper-V reservation or any other specific policy.
+Kickoutchi never elevates itself.
 
-Windows IP Helper exposes an IPv6 local scope ID. Kickoutchi converts it from
-network byte order. IPv4-mapped IPv6 rows normalize to IPv4 and no longer carry
-an IPv6 scope.
+Windows IP Helper does report an IPv6 local scope ID, which Kickoutchi converts
+from network byte order. IPv4-mapped IPv6 rows become plain IPv4 and lose their
+IPv6 scope.
 
 ## Permissions and collection gaps
 
-Across platforms, the ability to see a socket and the ability to identify its
-owner are separate. Sandboxes, procfs mount options, privacy controls, protected
-processes, access-control policy, and process exit can produce any of these
-outcomes:
+On every platform, seeing a socket and identifying its owner are separate
+abilities. Sandboxes, procfs mount options, privacy controls, protected
+processes, access policy, and processes exiting can each lead to one of these:
 
-- A socket row is visible with a verified owner.
-- A socket row is visible with an unverified PID or incomplete owner set.
-- A process-first collection loses possible socket rows and reports a socket-set
+- A visible socket with a verified owner.
+- A visible socket with an unverified PID or an incomplete owner set.
+- A process-first scan that loses possible sockets and reports a socket-set
   gap.
-- Optional process metadata is unavailable while socket and owner facts remain
-  usable.
-- A required native source cannot be read and the collection fails.
+- Missing process metadata while the socket and owner facts stay usable.
+- A required source that can't be read, so collection fails.
 
-Do not treat an empty partial owner set as proof that no owner exists. Do not
-treat missing name, path, command line, parent, or child information as proof
-that the process lacks that property. Running with more privilege may reduce
-some gaps, but it is not required automatically and is not a cure for scope,
-native-field, or timing limitations.
+An empty partial owner set doesn't prove a socket has no owner. A missing name,
+path, command line, parent, or child doesn't prove the process lacks one. More
+privilege can close some gaps, but Kickoutchi never asks for it, and it can't
+fix scope, missing native fields, or timing.
 
 ## Watch and polling
 
-`kick watch` compares bounded native snapshots. Baseline, bind, and release
-events can be proven within the reported scope when both snapshots are safe for
-socket-set comparison, but their time is only an estimated interval between
-captures. Polling cannot observe a socket that both opens and closes between
-polls, and multiple changes between polls can collapse into only their net
-snapshot difference. Owner-only changes are generally silent unless the narrow
-verified replacement rule applies.
+`kick watch` compares snapshots taken at intervals. Baseline, bind, and release
+events are certain within the reported scope when both snapshots are safe to
+compare, but their time is only the window between two captures. A socket that
+opens and closes between polls is never seen, and several changes between
+polls show up only as their net difference. A change of owner alone usually
+produces no event, unless the narrow verified-replacement rule applies.
 
-A failed poll emits a `collection_gap`; it never fabricates release events.
-Recovery compares the next usable snapshot with the last valid snapshot. A
-raced snapshot or socket-set gap is not safe for ordinary bind/release diffing.
-Therefore absence of an event does not prove that no transient socket activity
-occurred.
+A failed poll prints a `collection_gap` and never invents release events. On
+recovery, watch compares the next usable snapshot with the last good one. A
+raced snapshot, or one with a socket-set gap, isn't safe for normal bind and
+release comparison. So a missing event doesn't prove nothing happened.
 
-Watch never runs an external tool in its polling loop. Its events use native
-socket and process observations plus configured labels, so short polling
-intervals cannot become external-process spawn loops.
+Watch never runs an external program while polling. It uses native socket and
+process data plus your configured labels, so a short interval can't turn into a
+loop of process spawns.
 
 ## Bind probes
 
 Each `kick why` probe creates one socket, applies the requested reuse and IPv6
-mode options, attempts one exact bind, records the result, and closes the socket
-before returning. Multiple requested endpoints are probed sequentially. No probe
-socket remains reserved for the caller.
+options, tries one exact bind, records the result, and closes the socket before
+moving on. Endpoints are probed one at a time. No probe socket stays open for
+you.
 
-A successful probe temporarily occupies the endpoint between its successful
-bind and close. This interval is deliberately short but is observable and can
-briefly deny a concurrent binder. Conversely, after the probe closes, another
-process may bind before Kickoutchi renders the result or before the caller acts.
-For sequential probes, the result for an earlier endpoint may already be stale
-while a later endpoint is being tested.
+A successful probe holds the endpoint between its bind and its close. That
+moment is short but real, and another program binding at the same time can be
+refused. After the probe closes, another process can bind before Kickoutchi
+prints the result or before you act on it. With several endpoints, an earlier
+result may already be out of date while a later one is being tested.
 
-`bindable_now` is therefore proven only at that probe's completion boundary. It
-does not reserve the endpoint or promise future availability. `address_in_use`
-proves that the exact bind attempt failed for that reason at that time; ownership
-or policy explanations still depend on the earlier native snapshot and its
-gaps. A successful probe can legitimately conflict with an earlier observed
-socket because the socket closed between collection and probe or because native
-binding semantics allowed coexistence.
+So `bindable_now` is proven only for the instant that probe finished. It doesn't
+reserve the endpoint or promise anything later. `address_in_use` proves the
+exact bind failed for that reason at that time; who owns the port, or which
+policy blocked it, still comes from the earlier snapshot and its gaps. A
+successful probe can contradict an earlier snapshot without either being wrong:
+the socket may have closed in between, or the OS's bind rules may let both
+coexist.
 
-## Interpreting certainty safely
+## Reading certainty
 
-- `proven` applies only to the specific stated claim and its observation time and
-  scope. It does not make adjacent ownership, identity, timing, or future-state
-  claims proven.
-- `estimated` is derived from a polling interval or timer conversion. A Linux TCP
-  timer estimate is not a release time and does not promise future bindability.
-- `heuristic` is a plausible interpretation that authoritative facts do not
+- `proven` covers only the specific claim, at its observation time and within
+  its scope. It doesn't make nearby claims about ownership, identity, timing, or
+  the future proven too.
+- `estimated` comes from a polling interval or a timer conversion. A Linux TCP
+  timer estimate isn't a release time and doesn't promise a later bind will
+  work.
+- `heuristic` is a plausible reading that the authoritative facts don't
   establish.
-- `unknown` is the correct result when permissions, scope, races, unsupported
-  native fields, or conflicting evidence prevent a reliable conclusion.
+- `unknown` is the right answer when permissions, scope, races, unsupported
+  native fields, or conflicting evidence rule out a reliable conclusion.
 
-The safest reading is conjunctive: use the verdict together with certainty,
-scope, completeness, owner completeness, evidence gaps, and capture/probe times.
-Never promote a complete in-scope snapshot to a machine-wide claim, a verified
-socket to verified ownership, an estimated interval to an exact event time, or a
-successful bind probe to a reservation.
+Read a verdict together with its certainty, scope, completeness, owner
+completeness, evidence gaps, and capture and probe times. Never stretch a
+complete in-scope snapshot into a machine-wide claim, a verified socket into
+verified ownership, an estimated interval into an exact time, or a successful
+probe into a reservation.
 
 ## Related documentation
 

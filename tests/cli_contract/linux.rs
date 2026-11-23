@@ -10,6 +10,8 @@ mod inspect;
 mod kill;
 #[path = "linux/list.rs"]
 mod list;
+#[path = "linux/tui.rs"]
+mod tui;
 #[path = "linux/watch.rs"]
 mod watch;
 #[path = "linux/why.rs"]

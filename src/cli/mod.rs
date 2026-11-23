@@ -403,7 +403,7 @@ pub(crate) fn run(
                 args.filter.as_deref().unwrap_or_default(),
                 crate::query::QueryCapabilities::LIST,
             ) {
-                eprintln!("error: invalid filter: {error}");
+                stderr_println!("error: invalid filter: {error}");
                 return ExitReason::InvalidArguments;
             }
             OneShotCommand::List(args)
@@ -411,7 +411,7 @@ pub(crate) fn run(
         Command::Kill(command) => match command.targets() {
             Ok(targets) => OneShotCommand::Kill(targets),
             Err(message) => {
-                eprintln!("error: {message}");
+                stderr_println!("error: {message}");
                 return ExitReason::InvalidArguments;
             }
         },
@@ -431,7 +431,7 @@ pub(crate) fn run(
     let snapshot = match collector::collect_snapshot(profile) {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            eprintln!("error: collecting ports failed: {error}");
+            stderr_println!("error: collecting ports failed: {error}");
             return ExitReason::Failure;
         }
     };
@@ -454,7 +454,7 @@ pub(crate) fn run(
             ) {
                 Ok(descriptors) => descriptors,
                 Err(error) => {
-                    eprintln!("error: projecting collected ports failed: {error}");
+                    stderr_println!("error: projecting collected ports failed: {error}");
                     return ExitReason::Failure;
                 }
             };
@@ -473,7 +473,7 @@ pub(crate) fn run(
             if let Some(port) = args.port
                 && let Some(message) = hidden_port_owner_message(&snapshot, port)
             {
-                eprintln!("error: {message}");
+                stderr_println!("error: {message}");
                 return ExitReason::PermissionDenied;
             }
             run_inspect(args, config, &snapshot)
@@ -583,7 +583,7 @@ fn redirect_port_to_verified_owner(
     else {
         return args;
     };
-    eprintln!(
+    stderr_println!(
         "note: {}; targeting the verified owner of port {port}, PID {pid} ({name}), and checking afterwards that the port closed",
         OwnerVisibility::of(snapshot).unreadable_clause(),
     );
@@ -604,7 +604,7 @@ fn refuse_unprovable_port_kill(
     entries: &[PortEntryView<'_>],
 ) -> Option<ExitReason> {
     let message = unprovable_port_kill_message(args, port, snapshot, entries)?;
-    eprintln!("error: {message}");
+    stderr_println!("error: {message}");
     Some(ExitReason::PermissionDenied)
 }
 
@@ -631,7 +631,7 @@ fn write_stdout(text: &str) -> Option<ExitReason> {
         Ok(()) => None,
         Err(error) if error.kind() == ErrorKind::BrokenPipe => Some(ExitReason::Success),
         Err(error) => {
-            eprintln!("error: writing stdout failed: {error}");
+            stderr_println!("error: writing stdout failed: {error}");
             Some(ExitReason::Failure)
         }
     }
@@ -646,7 +646,7 @@ pub(super) fn maybe_print_no_match_diagnostic<'a>(
     };
     let hints = platform::collect_related_process_hints(port);
     if let Some(message) = diagnostic::diagnostic_message(port, &hints) {
-        eprint!("{message}");
+        stderr_print!("{message}");
     }
 }
 
@@ -703,7 +703,7 @@ fn run_inspect(
     ) {
         Ok(descriptors) => descriptors,
         Err(error) => {
-            eprintln!("error: projecting inspect target failed: {error}");
+            stderr_println!("error: projecting inspect target failed: {error}");
             return ExitReason::Failure;
         }
     };
@@ -714,7 +714,7 @@ fn run_inspect(
     let target_pid = match resolve_inspect_target(args, &initial_entries) {
         Ok(pid) => pid,
         Err(KillTargetError::NoMatch) => {
-            eprintln!("error: no open port matches the requested target");
+            stderr_println!("error: no open port matches the requested target");
             // Same evidence-only hint `list` prints: a command line naming the
             // port often identifies the process the user was looking for.
             maybe_print_no_match_diagnostic(args.port, initial_entries.iter().copied());
@@ -731,7 +731,7 @@ fn run_inspect(
     let snapshot = match crate::platform::windows::collect_tree_process_infos() {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            eprintln!(
+            stderr_println!(
                 "error: enumerating the process table failed: {}",
                 crate::display::sanitize(&error.to_string())
             );
@@ -744,7 +744,7 @@ fn run_inspect(
     let snapshot = match snapshot_result {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            eprintln!(
+            stderr_println!(
                 "error: enumerating the process table failed: {}",
                 sanitize(&error)
             );
@@ -753,7 +753,7 @@ fn run_inspect(
     };
 
     if !inspect_port_owner_matches_snapshot(args, target_pid, &initial_entries, &snapshot) {
-        eprintln!(
+        stderr_println!(
             "error: the port owner changed or could not be identity-verified before inspection"
         );
         return ExitReason::NoMatch;
@@ -771,7 +771,7 @@ fn run_inspect(
     ) {
         Ok(entries) => entries,
         Err(error) => {
-            eprintln!("error: projecting inspect report ports failed: {error}");
+            stderr_println!("error: projecting inspect report ports failed: {error}");
             return ExitReason::Failure;
         }
     };
@@ -794,7 +794,7 @@ fn run_inspect(
     ) {
         Ok(report) => write_stdout(&report).unwrap_or(ExitReason::Success),
         Err(inspect::InspectError::TargetMissing) => {
-            eprintln!("error: PID {target_pid} is not running");
+            stderr_println!("error: PID {target_pid} is not running");
             ExitReason::NoMatch
         }
     }

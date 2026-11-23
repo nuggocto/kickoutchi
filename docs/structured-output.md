@@ -1,4 +1,4 @@
-# Structured Output Reference
+# Structured output reference
 
 Kickoutchi exposes four machine-readable contracts:
 
@@ -17,11 +17,15 @@ The `schema`/`version` pairs carried in-band are:
 | `kickoutchi.watch_event/1` | `kickoutchi.watch_event` | `1` |
 | `kickoutchi.why/1` | `kickoutchi.why` | `1` |
 
-`kickoutchi.list/1` is the compatibility exception: it remains a top-level array and has no in-band `schema` or `version` fields.
+`kickoutchi.list/1` is the compatibility exception: it remains a top-level array
+and has no in-band `schema` or `version` fields.
 
-All field names and stable enum values use lowercase `snake_case`. JSON whitespace is not part of any contract. JSON documents end with a newline; each watch line is independently valid compact JSON and includes its newline in the record-size bound.
+All field names and stable enum values use lowercase `snake_case`. JSON
+whitespace is not part of any contract. JSON documents end with a newline; each
+watch line is independently valid compact JSON and includes its newline in the
+record-size bound.
 
-## Common Rules
+## Common rules
 
 ### Integer domains
 
@@ -37,13 +41,20 @@ Unless a narrower range is stated on a field:
 | Native socket-state code | `u32`, `0..=4294967295` |
 | Raw OS error | `i32`, `-2147483648..=2147483647` |
 
-Values outside a public domain are operational errors. They are never wrapped, clamped, or emitted through a lossy cast. Consumers whose JSON implementation cannot exactly represent all 64-bit integers should use an integer-preserving parser.
+Values outside a public domain are operational errors. They are never wrapped,
+clamped, or emitted through a lossy cast. Consumers whose JSON implementation
+cannot exactly represent all 64-bit integers should use an integer-preserving
+parser.
 
-Structured timestamps are unsigned Unix milliseconds. Capture and probe completion never precede the corresponding start. Watch observation times identify capture windows, not exact kernel event times.
+Structured timestamps are unsigned Unix milliseconds. Capture and probe
+completion never precede the corresponding start. Watch observation times
+identify capture windows, not exact kernel event times.
 
 ### Resource bounds
 
-These limits bound collection, retention, and serialization. A lower native-platform limit applies when an OS API cannot safely represent the shared maximum.
+These limits bound collection, retention, and serialization. A lower
+native-platform limit applies when an OS API cannot safely represent the shared
+maximum.
 
 | Resource | Limit and over-limit behavior |
 | --- | --- |
@@ -81,21 +92,28 @@ These limits bound collection, retention, and serialization. A lower native-plat
 | Evidence and gaps per Why result | 16 of each, with separate omitted counts. |
 | Evidence, gap, probe, and operational message | 512 UTF-8 bytes after sanitization. |
 
-Counts use checked arithmetic. Limits that preserve data through an omitted count do not change the underlying completeness classification unless stated; limits that make identity-critical or socket-set data unreliable fail rather than emit a misleading result.
+Counts use checked arithmetic. Limits that preserve data through an omitted
+count do not change the underlying completeness classification unless stated;
+limits that make identity-critical or socket-set data unreliable fail rather
+than emit a misleading result.
 
 ### Null, empty, and omitted values
 
-Fields shown in this document are always present unless a union selects a different data shape. Nullable fields are serialized as JSON `null`; they are not omitted.
+Every field shown here is always present, unless a union selects a different
+shape. Nullable fields appear as JSON `null`; they are never omitted.
 
-- `null` means the value is unavailable or not applicable according to that field's rules.
+- `null` means the value is unavailable or not applicable according to that
+  field's rules.
 - `[]` means a known empty collection.
-- An empty complete owner set is an affirmative observation that no owner was observed after complete attribution.
+- An empty complete owner set is an affirmative observation that no owner was
+  observed after complete attribution.
 - An empty partial owner set does not claim that no owner exists.
-- An omitted-count field reports items not retained after the corresponding array cap. It is `0` when nothing was omitted.
+- An omitted-count field reports items not retained after the corresponding
+  array cap. It is `0` when nothing was omitted.
 
 ### Reusable shapes
 
-The following shapes are shared by the versioned contracts.
+The versioned contracts share these shapes.
 
 #### `Endpoint`
 
@@ -112,9 +130,14 @@ The following shapes are shared by the versioned contracts.
 }
 ```
 
-`address` is canonical Rust `IpAddr` text without a zone suffix. IPv4-mapped IPv6 addresses are normalized to IPv4. `ipv6_scope` is `null` if and only if `address` is IPv4. Every IPv6 endpoint has exactly one non-null scope object. `interface_index` is non-null only for `kind: "interface_index"`.
+`address` is canonical Rust `IpAddr` text without a zone suffix. IPv4-mapped
+IPv6 addresses are normalized to IPv4. `ipv6_scope` is `null` if and only if
+`address` is IPv4. Every IPv6 endpoint has exactly one non-null scope object.
+`interface_index` is non-null only for `kind: "interface_index"`.
 
-`unscoped` means scope ID zero is part of the endpoint identity. `unavailable` means the native source could not report scope; it is not equivalent to unscoped.
+`unscoped` means scope ID zero is part of the endpoint identity. `unavailable`
+means the native source could not report scope; it is not equivalent to
+unscoped.
 
 #### `ProcessIdentity`
 
@@ -135,7 +158,9 @@ The following shapes are shared by the versioned contracts.
 }
 ```
 
-The macOS `seconds` and `microseconds` pair cannot both be zero. A process identity is the complete PID-and-marker pair; PID alone is not stable across process reuse.
+The macOS `seconds` and `microseconds` pair cannot both be zero. A process
+identity is the complete PID-and-marker pair; PID alone is not stable across
+process reuse.
 
 #### `SocketState`
 
@@ -149,7 +174,8 @@ The macOS `seconds` and `microseconds` pair cannot both be zero. A process ident
 }
 ```
 
-`native_code` is non-null if and only if `kind` is `unknown`. `bound` is the UDP state. The other known values are TCP states.
+`native_code` is non-null if and only if `kind` is `unknown`. `bound` is the UDP
+state. The other known values are TCP states.
 
 #### `OwnerObservation`
 
@@ -167,7 +193,8 @@ or:
 }
 ```
 
-An unverified PID was observed but could not be paired with a reliable process-start marker. Its `reason` uses the stable evidence-gap vocabulary.
+An unverified PID was observed but could not be paired with a reliable
+process-start marker. Its `reason` uses the stable evidence-gap vocabulary.
 
 #### `OwnerSet`
 
@@ -180,13 +207,18 @@ An unverified PID was observed but could not be paired with a reliable process-s
 }
 ```
 
-At most 64 owners are serialized. Additional owners increment `omitted_owner_count` without changing `completeness`. `reasons` is socket-local, deduplicated, lexicographically sorted, and capped at eight distinct codes. A ninth reason is an `owner_reason_limit_exceeded` operational failure, not silent truncation.
+At most 64 owners are serialized. Additional owners increment
+`omitted_owner_count` without changing `completeness`. `reasons` is
+socket-local, deduplicated, lexicographically sorted, and capped at eight
+distinct codes. A ninth reason is an `owner_reason_limit_exceeded` operational
+failure, not silent truncation.
 
 - `complete` normally has an empty `reasons` array.
 - `partial` contains the actual local reason codes.
 - `raced` has exactly `reasons: ["observation_raced"]`.
 
-Snapshot-global ownership gaps remain in the snapshot's evidence-gap fields and are not copied into arbitrary owner sets.
+Snapshot-global ownership gaps remain in the snapshot's evidence-gap fields and
+are not copied into arbitrary owner sets.
 
 #### `EvidenceGap`
 
@@ -201,18 +233,19 @@ Snapshot-global ownership gaps remain in the snapshot's evidence-gap fields and 
 }
 ```
 
-`endpoint: null` means the gap may affect the whole observation scope rather than
-one endpoint. `affected_pid_count` is non-null only for an aggregated PID-scoped
-loss: the positive count is bounded by the 131,072 candidate-PID scan limit, and
-`pid` is always `null`. A gap tied to one exact PID instead uses `pid` and has
-`affected_pid_count: null`. When consistency passes repeat the same aggregate
-observation, Kickoutchi keeps the maximum count; it does not sum counts that may
-describe overlapping PID sets. `omitted_evidence_gap_count` is separate: it
-counts gap records not retained after an array cap, never PIDs represented by
-`affected_pid_count`. When both PID fields are `null`, the gap is not confined to
-a known PID and is not a PID-count aggregate. `message` is sanitized and limited
-to 512 UTF-8 bytes. It is explanatory text, not a stable programmatic value; use
-`code`, `impact`, `endpoint`, `pid`, and `affected_pid_count` for logic.
+`endpoint: null` means the gap may affect the whole observation scope rather
+than one endpoint. `affected_pid_count` is non-null only for an aggregated
+PID-scoped loss: the positive count is bounded by the 131,072 candidate-PID scan
+limit, and `pid` is always `null`. A gap tied to one exact PID instead uses
+`pid` and has `affected_pid_count: null`. When consistency passes repeat the
+same aggregate observation, Kickoutchi keeps the maximum count; it does not sum
+counts that may describe overlapping PID sets. `omitted_evidence_gap_count` is
+separate: it counts gap records not retained after an array cap, never PIDs
+represented by `affected_pid_count`. When both PID fields are `null`, the gap is
+not confined to a known PID and is not a PID-count aggregate. `message` is
+sanitized and limited to 512 UTF-8 bytes. It is explanatory text, not a stable
+programmatic value; use `code`, `impact`, `endpoint`, `pid`, and
+`affected_pid_count` for logic.
 
 #### `Scope`
 
@@ -226,9 +259,14 @@ to 512 UTF-8 bytes. It is explanatory text, not a stable programmatic value; use
 }
 ```
 
-Scope kinds currently map to Linux, macOS, and Windows respectively. On Linux, `identifier` is a bounded, sanitized `/proc/self/ns/net` link in `net:[decimal]` form when available. It is `null` on macOS and Windows and when the Linux identifier is unavailable. An identifier over 256 UTF-8 bytes is not truncated: collection retains `null`, records a scope gap, and makes the snapshot partial.
+Scope kinds currently map to Linux, macOS, and Windows respectively. On Linux,
+`identifier` is a bounded, sanitized `/proc/self/ns/net` link in `net:[decimal]`
+form when available. It is `null` on macOS and Windows and when the Linux
+identifier is unavailable. An identifier over 256 UTF-8 bytes is not truncated:
+collection retains `null`, records a scope gap, and makes the snapshot partial.
 
-`limitations` is deduplicated and ordered by the stable vocabulary order below, with at most eight values.
+`limitations` is deduplicated and ordered by the stable vocabulary order below,
+with at most eight values.
 
 #### `Evidence`
 
@@ -241,7 +279,8 @@ Scope kinds currently map to Linux, macOS, and Windows respectively. On Linux, `
 }
 ```
 
-`message` is sanitized and limited to 512 UTF-8 bytes. It is explanatory, not stable. The stable fields are `code`, `source`, and `certainty`.
+`message` is sanitized and limited to 512 UTF-8 bytes. It is explanatory, not
+stable. The stable fields are `code`, `source`, and `certainty`.
 
 ### Stable vocabularies
 
@@ -260,7 +299,8 @@ Certainty meanings:
 | `heuristic` | The interpretation is plausible but not established by authoritative data. |
 | `unknown` | Permission, scope, race, platform, or other evidence limits prevent the claim. |
 
-Certainty applies to the specific claim carrying it. It does not make every fact in the same record equally certain.
+Certainty applies to the specific claim carrying it. It does not make every fact
+in the same record equally certain.
 
 #### Evidence-gap codes
 
@@ -291,7 +331,8 @@ The stable values, in serialization order, are:
 - `native_field_unavailable`
 - `polling_interval_blind_spot`
 
-As a scope limitation, `native_field_unavailable` is reserved and is not emitted today. The evidence-gap code of the same name is emitted.
+As a scope limitation, `native_field_unavailable` is reserved and is not emitted
+today. The evidence-gap code of the same name is emitted.
 
 #### Evidence sources
 
@@ -306,7 +347,8 @@ The stable values, in canonical source order, are:
 - `docker`
 - `analysis`
 
-`docker` is a reserved value and is never emitted; Kickoutchi does not run Docker.
+`docker` is a reserved value and is never emitted; Kickoutchi does not run
+Docker.
 
 #### Evidence codes
 
@@ -328,7 +370,8 @@ The stable `EvidenceCode` values are:
 - `potential_scope_overlap`
 - `observation_probe_conflict`
 
-Some codes are reserved by the public vocabulary but are not emitted by every command or host. `docker_context` is reserved and never emitted.
+Some codes are reserved by the public vocabulary but are not emitted by every
+command or host. `docker_context` is reserved and never emitted.
 
 #### Operational codes
 
@@ -350,22 +393,37 @@ The stable public operational codes are:
 - `event_limit_exceeded`
 - `writer_failed`
 
-Watch `collection_gap` records contain collection-related codes only. A failed writer cannot reliably describe itself through that writer, so writer failures use stderr prose when possible rather than emitting a partial NDJSON record. `writer_failed` and `event_limit_exceeded` are stable classifications reserved for consumers of public operational errors; the current CLI does not promise those code strings in stderr text.
+Watch `collection_gap` records contain collection-related codes only. A failed
+writer cannot reliably describe itself through that writer, so writer failures
+use stderr prose when possible rather than emitting a partial NDJSON record.
+`writer_failed` and `event_limit_exceeded` are stable classifications reserved
+for consumers of public operational errors; the current CLI does not promise
+those code strings in stderr text.
 
-`native_data_oversized` is for oversized source buffers or malformed native counts. Socket-row, process-identity, owner-edge, and legacy-projection limits use their more specific codes.
+`native_data_oversized` is for oversized source buffers or malformed native
+counts. Socket-row, process-identity, owner-edge, and legacy-projection limits
+use their more specific codes.
 
 ### Canonical ordering
 
-Reusable values use these ordering rules wherever a contract calls for canonical sorting:
+Reusable values use these ordering rules wherever a contract calls for canonical
+sorting:
 
 - Protocol: `tcp`, then `udp`.
 - Address: IPv4 before IPv6, then numeric address bytes.
-- Endpoint scope: IPv4/no scope, IPv6 `unscoped`, IPv6 `interface_index` numerically, then IPv6 `unavailable`.
-- State: `closed`, `listen`, `syn_sent`, `syn_received`, `established`, `fin_wait1`, `fin_wait2`, `close_wait`, `closing`, `last_ack`, `time_wait`, `delete_tcb`, `new_syn_received`, `bound`, then `unknown` by `native_code`.
-- Process marker kind: Linux, macOS, then Windows, followed by each variant's numeric fields.
-- Owner: verified before unverified, then PID, marker kind/value with an absent marker last, then reason bytes.
-- Owner set: completeness `complete`, `partial`, `raced`; reasons lexicographically; omitted count; then owner array lexicographically.
-- Socket token: `linux_inode`, then `macos_socket_id`, each by value; `null` after present tokens.
+- Endpoint scope: IPv4/no scope, IPv6 `unscoped`, IPv6 `interface_index`
+  numerically, then IPv6 `unavailable`.
+- State: `closed`, `listen`, `syn_sent`, `syn_received`, `established`,
+  `fin_wait1`, `fin_wait2`, `close_wait`, `closing`, `last_ack`, `time_wait`,
+  `delete_tcb`, `new_syn_received`, `bound`, then `unknown` by `native_code`.
+- Process marker kind: Linux, macOS, then Windows, followed by each variant's
+  numeric fields.
+- Owner: verified before unverified, then PID, marker kind/value with an absent
+  marker last, then reason bytes.
+- Owner set: completeness `complete`, `partial`, `raced`; reasons
+  lexicographically; omitted count; then owner array lexicographically.
+- Socket token: `linux_inode`, then `macos_socket_id`, each by value; `null`
+  after present tokens.
 - Filter result: `not_applied`, `matched`, `indeterminate`.
 - Certainty: `proven`, `estimated`, `heuristic`, `unknown`.
 
@@ -373,7 +431,8 @@ No public array relies on hash-map iteration order.
 
 ## `kickoutchi.list/1`
 
-Run `kick list --json`. The result is the stable legacy top-level array used by existing scripts. It deliberately has no envelope.
+Run `kick list --json`. The result is the stable legacy top-level array used by
+existing scripts. It deliberately has no envelope.
 
 Each array element has exactly these fields:
 
@@ -395,18 +454,28 @@ Each array element has exactly these fields:
 | `permission` | `"full" \| "partial"` | Legacy completeness flag. `full` means owner verification and optional process metadata were complete; `partial` means either was incomplete for any reason. The historical field name does not prove permission denial; use snapshot evidence gaps for the cause. |
 | `label` | `string \| null` | Resolved configured endpoint label, or `null` when no selector matches. |
 
-Process names and command lines preserve the established lossy decoding behavior: invalid Unix bytes or Windows UTF-16 sequences become U+FFFD. Executable paths do not use lossy conversion; invalid UTF-8 becomes `null` and makes metadata partial.
+Process names and command lines preserve the established lossy decoding
+behavior: invalid Unix bytes or Windows UTF-16 sequences become U+FFFD.
+Executable paths do not use lossy conversion; invalid UTF-8 becomes `null` and
+makes metadata partial.
 
 Human output appends `%<interface-index>` to IPv6 addresses when the interface
 index is known. That display convention does not change this legacy JSON
 contract: `local_addr` remains bare canonical IP text, and consumers that need
 structured scope identity should use snapshot JSON.
 
-The array order follows the selected `--sort` mode, or the configured default sort when `--sort` is absent. Filtering occurs before serialization. An empty result is exactly `[]\n`. An empty result from an explicit selection or filter exits `3`; an unfiltered empty host is successful.
+The array order follows the selected `--sort` mode, or the configured default
+sort when `--sort` is absent. Filtering occurs before serialization. An empty
+result is exactly `[]\n`. An empty result from an explicit selection or filter
+exits `3`; an unfiltered empty host is successful.
 
-`label` is the only additive field introduced into this legacy contract. Exact protocol/address/port label selectors take precedence over explicit wildcard-address selectors. Exact IPv6 labels include scope identity; wildcard selectors deliberately ignore scope. Labels are validated visible Unicode, at most 128 UTF-8 bytes, and are not clipped in JSON.
+`label` is the only additive field introduced into this legacy contract. Exact
+protocol/address/port label selectors take precedence over explicit
+wildcard-address selectors. Exact IPv6 labels include scope identity; wildcard
+selectors deliberately ignore scope. Labels are validated visible Unicode, at
+most 128 UTF-8 bytes, and are not clipped in JSON.
 
-**Illustrative example:** process metadata and labels vary by host.
+Example (process metadata and labels vary by host):
 
 ```json
 [
@@ -432,7 +501,11 @@ The array order follows the selected `--sort` mode, or the configured default so
 
 ## `kickoutchi.snapshot/1`
 
-Run `kick list --snapshot-json`. This mode is mutually exclusive with `--json`, `--port`, `--process`, `--filter`, and `--sort`. It emits a complete within-scope native observation rather than the legacy visible-row projection. `hide_system_processes` does not remove snapshot data; validated labels still annotate endpoints.
+Run `kick list --snapshot-json`. This mode is mutually exclusive with `--json`,
+`--port`, `--process`, `--filter`, and `--sort`. It emits a complete
+within-scope native observation rather than the legacy visible-row projection.
+`hide_system_processes` does not remove snapshot data; validated labels still
+annotate endpoints.
 
 ```text
 {
@@ -452,9 +525,12 @@ Run `kick list --snapshot-json`. This mode is mutually exclusive with `--json`, 
 }
 ```
 
-`completeness` describes the whole observation. `owner_completeness` separately describes global owner attribution. A failed collection does not become an empty snapshot; the command emits no JSON result and exits `1`.
+`completeness` describes the whole observation. `owner_completeness` separately
+describes global owner attribution. A failed collection does not become an empty
+snapshot; the command emits no JSON result and exits `1`.
 
-At most 4,096 snapshot evidence gaps are retained. Further gaps increment `omitted_evidence_gap_count` and force partial completeness.
+At most 4,096 snapshot evidence gaps are retained. Further gaps increment
+`omitted_evidence_gap_count` and force partial completeness.
 
 ### `SnapshotSocket`
 
@@ -469,7 +545,12 @@ At most 4,096 snapshot evidence gaps are retained. Further gaps increment `omitt
 }
 ```
 
-`timer` is non-null only for Linux TCP observations that expose timer data. `socket_token` is present only when the native source exposes a retained Linux inode or macOS socket ID. Tokens are opaque within-capture association and ordering values; they are not guaranteed unique across captures and do not prove replacement or socket persistence. `label` follows the label rules described for list output.
+`timer` is non-null only for Linux TCP observations that expose timer data.
+`socket_token` is present only when the native source exposes a retained Linux
+inode or macOS socket ID. Tokens are opaque within-capture association and
+ordering values; they are not guaranteed unique across captures and do not prove
+replacement or socket persistence. `label` follows the label rules described for
+list output.
 
 `TcpTimer` is:
 
@@ -484,7 +565,10 @@ At most 4,096 snapshot evidence gaps are retained. Further gaps increment `omitt
 }
 ```
 
-`native_code` is non-null if and only if `kind` is `unknown`. The remaining-time estimate is `null` if the host clock-tick rate is unavailable, nonpositive, or cannot be converted safely. Even when present, it is an estimate, not a release time or a promise that a future bind will succeed.
+`native_code` is non-null if and only if `kind` is `unknown`. The remaining-time
+estimate is `null` if the host clock-tick rate is unavailable, nonpositive, or
+cannot be converted safely. Even when present, it is an estimate, not a release
+time or a promise that a future bind will succeed.
 
 `SocketToken` is:
 
@@ -509,16 +593,27 @@ Token values are nonzero in current collectors.
 }
 ```
 
-`name`, `executable_path`, and `parent_pid` are `null` when unavailable. `metadata_completeness` describes optional metadata availability regardless of whether the cause was permission, a race, an unsupported native field, or a resource bound; details remain in `evidence_gaps`. Full command lines and parent process names are not included.
+`name`, `executable_path`, and `parent_pid` are `null` when unavailable.
+`metadata_completeness` describes optional metadata availability regardless of
+whether the cause was permission, a race, an unsupported native field, or a
+resource bound; details remain in `evidence_gaps`. Full command lines and parent
+process names are not included.
 
 ### Snapshot ordering
 
-- `sockets`: endpoint protocol, address family, address bytes, IPv6 scope, port, state, token with null last, owner-set key, then timer. A null timer sorts before a present timer. Present timers sort by kind (`none`, `retransmit`, `other`, `time_wait`, `zero_window_probe`, `unknown`), unknown native code, raw ticks, then estimated remaining milliseconds with null before a value.
+- `sockets`: endpoint protocol, address family, address bytes, IPv6 scope, port,
+  state, token with null last, owner-set key, then timer. A null timer sorts
+  before a present timer. Present timers sort by kind (`none`, `retransmit`,
+  `other`, `time_wait`, `zero_window_probe`, `unknown`), unknown native code,
+  raw ticks, then estimated remaining milliseconds with null before a value.
 - `processes`: PID, marker kind, marker value.
-- `evidence_gaps`: impact in `socket_set`, `ownership`, `metadata`, `scope` order; code lexicographically; endpoint key; PID; affected PID count; message. For equal impact and code, a null endpoint sorts before concrete endpoints.
-- Owner, reason, limitation, state, token, and endpoint subarrays use the common canonical rules.
+- `evidence_gaps`: impact in `socket_set`, `ownership`, `metadata`, `scope`
+  order; code lexicographically; endpoint key; PID; affected PID count; message.
+  For equal impact and code, a null endpoint sorts before concrete endpoints.
+- Owner, reason, limitation, state, token, and endpoint subarrays use the common
+  canonical rules.
 
-**Illustrative example:** scope, timestamps, PIDs, markers, sockets, and metadata vary by host.
+Example (scope, timestamps, PIDs, markers, sockets, and metadata vary by host):
 
 ```json
 {
@@ -582,7 +677,8 @@ Token values are nonzero in current collectors.
 
 ## `kickoutchi.watch_event/1`
 
-Run `kick watch --json`. Stdout is NDJSON, not one JSON array. Parse and process each line independently.
+Run `kick watch --json`. Stdout is NDJSON, not one JSON array. Parse and process
+each line independently.
 
 Every line has this envelope:
 
@@ -602,7 +698,11 @@ Every line has this envelope:
 }
 ```
 
-`sequence` starts at `0` and increments by one for each emitted record. Checked sequence overflow is an operational failure. `previous_completed_unix_ms` is `null` for baseline records and non-null for later polling attempts. The observation interval brackets collection; it is not the exact bind, release, or replacement time.
+`sequence` starts at `0` and increments by one for each emitted record. Checked
+sequence overflow is an operational failure. `previous_completed_unix_ms` is
+`null` for baseline records and non-null for later polling attempts. The
+observation interval brackets collection; it is not the exact bind, release, or
+replacement time.
 
 ### Endpoint event data
 
@@ -636,25 +736,45 @@ Side rules are exact:
 | `release` | previous owners present; token may be present or `null` | owners and token are `null` |
 | `replacement` | previous owners present; token may be present or `null` | current owners present; token may be present or `null` |
 
-A tokenless replacement has both token fields `null`. `multiplicity` is the number added, removed, or replaced, not the total number currently observed at the endpoint.
+A tokenless replacement has both token fields `null`. `multiplicity` is the
+number added, removed, or replaced, not the total number currently observed at
+the endpoint.
 
-Watch diffs socket multiplicity, not owner edges. An owner descriptor disappearing while another owner retains the same native socket does not produce a release. A state transition is a release in the old state and a bind in the new state.
+Watch diffs socket multiplicity, not owner edges. An owner descriptor
+disappearing while another owner retains the same native socket does not produce
+a release. A state transition is a release in the old state and a bind in the
+new state.
 
-At most eight evidence items and eight applicable evidence gaps are retained per endpoint event; further items increment the corresponding omitted count. Current replacement events include `process_identity_changed` analysis evidence. Evidence gaps are attached when filtering is indeterminate; definite non-matches are suppressed.
+At most eight evidence items and eight applicable evidence gaps are retained per
+endpoint event; further items increment the corresponding omitted count. Current
+replacement events include `process_identity_changed` analysis evidence.
+Evidence gaps are attached when filtering is indeterminate; definite non-matches
+are suppressed.
 
 `filter_result` is:
 
 - `not_applied` when no selector or user filter is active.
 - `matched` when the selected event side is a definite match.
-- `indeterminate` when missing ownership or metadata prevents a definite answer. The event is emitted with applicable gaps so incomplete data cannot silently hide a possible match. With `--matched-only`, these events are suppressed like definite non-matches, so a consumer that opts in never receives `indeterminate`.
+- `indeterminate` when missing ownership or metadata prevents a definite answer.
+  The event is emitted with applicable gaps so incomplete data cannot silently
+  hide a possible match. With `--matched-only`, these events are suppressed like
+  definite non-matches, so a consumer that opts in never receives
+  `indeterminate`.
 
-Baseline and bind evaluate the current side, release evaluates the previous side, and replacement matches when either complete side matches. Process-related AND terms must all match one conceptual owner row rather than different owners.
+Baseline and bind evaluate the current side, release evaluates the previous
+side, and replacement matches when either complete side matches. Owner terms
+must all hold for the same owner, not for different owners.
 
-Baseline, bind, and release are `proven` within a diff-safe reported scope. Replacement is deliberately narrow:
+Baseline, bind, and release are `proven` within a diff-safe reported scope.
+Replacement is deliberately narrow:
 
-- `proven` when previous and current multiplicity are exactly one, both owner sets are complete and contain exactly one verified owner, the PIDs are equal, and process-start markers differ.
-- `heuristic` under the same complete exact-one conditions when verified identities differ but the same-PID rule does not hold.
-- Not emitted when verified identities are equal, when ownership is incomplete or shared, or when multiplicity is greater than one.
+- `proven` when previous and current multiplicity are exactly one, both owner
+  sets are complete and contain exactly one verified owner, the PIDs are equal,
+  and process-start markers differ.
+- `heuristic` under the same complete exact-one conditions when verified
+  identities differ but the same-PID rule does not hold.
+- Not emitted when verified identities are equal, when ownership is incomplete
+  or shared, or when multiplicity is greater than one.
 
 Opaque token equality never proves persistence or replacement.
 
@@ -676,7 +796,10 @@ Opaque token equality never proves persistence or replacement.
 }
 ```
 
-`error.message` is sanitized and limited to 512 UTF-8 bytes; use `error.code` for program logic. `completeness` is `partial` or `raced` when collection returned an unusable snapshot, and `null` when collection returned an error instead of a snapshot. At most eight gaps are retained.
+`error.message` is sanitized and limited to 512 UTF-8 bytes; use `error.code`
+for program logic. `completeness` is `partial` or `raced` when collection
+returned an unusable snapshot, and `null` when collection returned an error
+instead of a snapshot. At most eight gaps are retained.
 
 ### Watch ordering and bounds
 
@@ -684,38 +807,64 @@ Within a successful attempt, endpoint events sort by:
 
 1. Protocol, address family, address bytes, IPv6 scope, and port.
 2. State order.
-3. Event kind: `release`, `replacement`, `bind`; baseline uses the same key position.
-4. Event token key. Replacement compares previous then current token; other events use their active side.
+3. Event kind: `release`, `replacement`, `bind`; baseline uses the same key
+   position.
+4. Event token key. Replacement compares previous then current token; other
+   events use their active side.
 5. Event-side owner-set key. Replacement compares previous then current sets.
 6. Label bytes.
 7. Filter result.
 8. Certainty.
 
-A failed poll emits only its `collection_gap` record. Collection gaps bypass endpoint filters.
+A failed poll emits only its `collection_gap` record. Collection gaps bypass
+endpoint filters.
 
-Watch retains no more than the previous valid snapshot, the current snapshot, and a 4,096-event streaming batch. A poll may produce at most 524,288 events. Event 524,289, checked overflow, or an oversized diff is an `event_limit_exceeded` operational failure. Starting a new batch after 4,096 records is normal and does not fail.
+Watch retains no more than the previous valid snapshot, the current snapshot,
+and a 4,096-event streaming batch. A poll may produce at most 524,288 events.
+Event 524,289, checked overflow, or an oversized diff is an
+`event_limit_exceeded` operational failure. Starting a new batch after 4,096
+records is normal and does not fail.
 
-Each compact NDJSON record is built in a fresh buffer capped at 64 KiB, including its newline. If a record would exceed 65,536 bytes, watch emits no partial line for that record and exits `1` with a diagnostic on stderr when possible. This is classified as `event_limit_exceeded`, but stderr text is explanatory rather than a machine-readable contract. Valid records are never truncated.
+Each compact NDJSON record is built in a fresh buffer capped at 64 KiB,
+including its newline. If a record would exceed 65,536 bytes, watch emits no
+partial line for that record and exits `1` with a diagnostic on stderr when
+possible. This is classified as `event_limit_exceeded`, but stderr text is
+explanatory rather than a machine-readable contract. Valid records are never
+truncated.
 
 ### Watch collection failures
 
-- Initial collection failure, an initial raced snapshot, or an initial snapshot with a `socket_set` gap emits no baseline or NDJSON record, writes a sanitized diagnostic to stderr, and exits `1`.
-- After a valid baseline, each failed collection or unusable raced/partial-socket-set snapshot emits and flushes one `collection_gap`, retains the last valid snapshot, and waits before retrying. Recovery therefore cannot fabricate releases from a failed snapshot.
-- A partial snapshot containing only metadata, scope, or ownership gaps may advance the baseline and reset the failure counter. Replacement still requires complete global and local ownership evidence.
-- The third consecutive collection failure flushes its gap, writes `error: watch stopped after 3 consecutive collection failures` to stderr, and exits `1`. A fourth attempt is not made. Exhaustion takes precedence over cancellation or duration expiry observed during the third failed poll.
-- A wall-clock failure cannot produce conforming timestamps. It writes a diagnostic, emits no record for that attempt, and exits `1` immediately without consuming the three-failure budget.
+- Initial collection failure, an initial raced snapshot, or an initial snapshot
+  with a `socket_set` gap emits no baseline or NDJSON record, writes a sanitized
+  diagnostic to stderr, and exits `1`.
+- After a valid baseline, each failed collection or unusable
+  raced/partial-socket-set snapshot emits and flushes one `collection_gap`,
+  retains the last valid snapshot, and waits before retrying. Recovery therefore
+  cannot fabricate releases from a failed snapshot.
+- A partial snapshot containing only metadata, scope, or ownership gaps may
+  advance the baseline and reset the failure counter. Replacement still requires
+  complete global and local ownership evidence.
+- The third consecutive collection failure flushes its gap, writes `error: watch
+  stopped after 3 consecutive collection failures` to stderr, and exits `1`. A
+  fourth attempt is not made. Exhaustion takes precedence over cancellation or
+  duration expiry observed during the third failed poll.
+- A wall-clock failure cannot produce conforming timestamps. It writes a
+  diagnostic, emits no record for that attempt, and exits `1` immediately
+  without consuming the three-failure budget.
 - Ctrl-C, duration expiry, and a broken stdout pipe exit `0`.
-- Intervals are `100ms..=60s`, default `1s`; explicit durations are `100ms..=7d`. Invalid values exit `2` before collection.
+- Intervals are `100ms..=60s`, default `1s`; explicit durations are
+  `100ms..=7d`. Invalid values exit `2` before collection.
 
-Watch never runs an external tool in its polling loop. It uses native socket/process observations and configured labels only.
+Watch never runs an external tool in its polling loop. It uses native
+socket/process observations and configured labels only.
 
-**Illustrative baseline record:** endpoint facts vary by host.
+Example baseline record (endpoint facts vary by host):
 
 ```json
 {"schema":"kickoutchi.watch_event","version":1,"sequence":0,"event":"baseline","observation":{"previous_completed_unix_ms":null,"attempt_started_unix_ms":1750000000000,"attempt_completed_unix_ms":1750000000002},"data":{"endpoint":{"protocol":"tcp","address":"127.0.0.1","port":3000,"ipv6_scope":null},"state":{"kind":"listen","native_code":null},"previous_owners":null,"current_owners":{"owners":[],"omitted_owner_count":0,"completeness":"complete","reasons":[]},"previous_socket_token":null,"current_socket_token":null,"multiplicity":1,"label":null,"filter_result":"not_applied","certainty":"proven","evidence":[],"omitted_evidence_count":0,"evidence_gaps":[],"omitted_evidence_gap_count":0}}
 ```
 
-**Illustrative collection-gap record:** the error and timestamps vary by attempt.
+Example collection-gap record (the error and timestamps vary by attempt):
 
 ```json
 {"schema":"kickoutchi.watch_event","version":1,"sequence":1,"event":"collection_gap","observation":{"previous_completed_unix_ms":1750000000002,"attempt_started_unix_ms":1750000001000,"attempt_completed_unix_ms":1750000001001},"data":{"error":{"code":"socket_table_unavailable","message":"socket table was unavailable"},"certainty":"unknown","consecutive_failures":1,"completeness":null,"evidence_gaps":[],"omitted_evidence_gap_count":0}}
@@ -723,7 +872,9 @@ Watch never runs an external tool in its polling loop. It uses native socket/pro
 
 ## `kickoutchi.why/1`
 
-Run `kick why PORT --json`. Why collects one snapshot, then probes every exact endpoint sequentially. It emits one document only after all endpoints have been evaluated.
+Run `kick why PORT --json`. Why collects one snapshot, then probes every exact
+endpoint sequentially. It emits one document only after all endpoints have been
+evaluated.
 
 ```text
 {
@@ -749,22 +900,33 @@ Run `kick why PORT --json`. Why collects one snapshot, then probes every exact e
 }
 ```
 
-`query` records the validated matrix inputs. `scope_id` is non-null only for one explicit IPv6 address. Addresses are canonical IP text without zones. Why has no general filter expression.
+`query` records the validated matrix inputs. `scope_id` is non-null only for one
+explicit IPv6 address. Addresses are canonical IP text without zones. Why has no
+general filter expression.
 
 ### Query matrix and result order
 
-- Bare `kick why PORT` evaluates TCP on `127.0.0.1:PORT`, then TCP on `[::1]:PORT`.
-- `--tcp` selects TCP, `--udp` selects UDP, and `--all-protocols` selects TCP then UDP. These selectors are mutually exclusive.
+- Bare `kick why PORT` evaluates TCP on `127.0.0.1:PORT`, then TCP on
+  `[::1]:PORT`.
+- `--tcp` selects TCP, `--udp` selects UDP, and `--all-protocols` selects TCP
+  then UDP. These selectors are mutually exclusive.
 - Without an address option, addresses are `127.0.0.1`, then `::1`.
-- `--address ADDRESS` evaluates one literal IP address of at most 64 bytes. Zone text such as `%eth0` or `%3` is rejected; use `--scope-id`.
-- `--all-addresses` means exactly `127.0.0.1`, `0.0.0.0`, `::1`, then `::`. It does not enumerate interfaces.
-- `--scope-id` must be `1..=4294967295`, requires one explicit IPv6 address, and is invalid for IPv4, default addresses, and `--all-addresses`.
-- `--ipv6-only` and `--dual-stack` are mutually exclusive and require every selected address to be IPv6. Otherwise `ipv6_mode` is `system_default`.
+- `--address ADDRESS` evaluates one literal IP address of at most 64 bytes. Zone
+  text such as `%eth0` or `%3` is rejected; use `--scope-id`.
+- `--all-addresses` means exactly `127.0.0.1`, `0.0.0.0`, `::1`, then `::`. It
+  does not enumerate interfaces.
+- `--scope-id` must be `1..=4294967295`, requires one explicit IPv6 address, and
+  is invalid for IPv4, default addresses, and `--all-addresses`.
+- `--ipv6-only` and `--dual-stack` are mutually exclusive and require every
+  selected address to be IPv6. Otherwise `ipv6_mode` is `system_default`.
 - `--reuse-address` sets `reuse_address: true`; the default is `false`.
-- The Cartesian product is capped at eight endpoints. An empty or larger matrix exits `2` before collection or probing.
-- An unavailable IPv6 family remains an explicit result; it is never silently removed.
+- The Cartesian product is capped at eight endpoints. An empty or larger matrix
+  exits `2` before collection or probing.
+- An unavailable IPv6 family remains an explicit result; it is never silently
+  removed.
 
-`results` preserves protocol-major, address-minor query order. It is not re-sorted into snapshot order.
+`results` preserves protocol-major, address-minor query order. It is not
+re-sorted into snapshot order.
 
 ### `WhyResult`
 
@@ -789,9 +951,14 @@ Run `kick why PORT --json`. Why collects one snapshot, then probes every exact e
 }
 ```
 
-`label` is the resolved endpoint label or `null`. `probe.raw_os_error` and `probe.message` are `null` when the OS supplied neither. The message is sanitized and limited to 512 UTF-8 bytes and is not stable; use `outcome` and `raw_os_error` for program logic.
+`label` is the resolved endpoint label or `null`. `probe.raw_os_error` and
+`probe.message` are `null` when the OS supplied neither. The message is
+sanitized and limited to 512 UTF-8 bytes and is not stable; use `outcome` and
+`raw_os_error` for program logic.
 
-Each result contains at most 16 evidence items and 16 applicable evidence gaps. Additional items increment the separate omitted counts. Full command lines are never included.
+Each result contains at most 16 evidence items and 16 applicable evidence gaps.
+Additional items increment the separate omitted counts. Full command lines are
+never included.
 
 Stable verdicts are:
 
@@ -808,7 +975,8 @@ Stable verdicts are:
 
 ### Verdict decision table
 
-The exact bind probe is later than the snapshot and is authoritative for bindability at probe completion. The first matching row wins:
+The exact bind probe is later than the snapshot and is authoritative for
+bindability at probe completion. The first matching row wins:
 
 | Probe outcome and usable snapshot evidence | Verdict | Certainty |
 | --- | --- | --- |
@@ -824,11 +992,22 @@ The exact bind probe is later than the snapshot and is authoritative for bindabi
 | Address in use plus matching non-listening TCP state | `kernel_state_observed` | `proven`; timer evidence remains estimated |
 | Address in use without an authoritative explanation | `reservation_or_policy_unknown` | `unknown`; the failed bind remains proven separately |
 
-An active socket is an exact or same-family wildcard TCP listener or bound UDP socket from a socket-set-stable snapshot.
+An active socket is an exact or same-family wildcard TCP listener or bound UDP
+socket from a socket-set-stable snapshot.
 
-An empty owner set proves that no process holds the socket only when every process could be read. When snapshot-wide attribution is incomplete, for example because other users' processes are unreadable, any of those processes could hold it, so the verdict is `owner_hidden` and its `visible_unreadable_owner` evidence names the UID that created the socket when Linux reports one. Relevant non-listening TCP states can explain address-in-use without claiming a visible listener.
+An empty owner set proves that no process holds the socket only when every
+process could be read. When snapshot-wide attribution is incomplete, for example
+because other users' processes are unreadable, any of those processes could hold
+it, so the verdict is `owner_hidden` and its `visible_unreadable_owner` evidence
+names the UID that created the socket when Linux reports one. Relevant
+non-listening TCP states can explain address-in-use without claiming a visible
+listener.
 
-IPv6 authoritative exact and wildcard relationships require known equal scopes. Unavailable or different scope information contributes only `potential_scope_overlap` unknown evidence. Potential IPv4/IPv6 dual-stack overlap is supporting context only unless a native source proves the relevant socket option. Address shape alone never proves dual-stack behavior.
+IPv6 authoritative exact and wildcard relationships require known equal scopes.
+Unavailable or different scope information contributes only
+`potential_scope_overlap` unknown evidence. Potential IPv4/IPv6 dual-stack
+overlap is supporting context only unless a native source proves the relevant
+socket option. Address shape alone never proves dual-stack behavior.
 
 ### Evidence order
 
@@ -841,15 +1020,27 @@ Why preserves this presentation order rather than canonical source sorting:
 5. Platform, namespace, or container supporting evidence.
 6. Explicit evidence gaps and scope limitations.
 
-This is presentation order only. Verdict selection uses the probe-first decision table.
+This is presentation order only. Verdict selection uses the probe-first decision
+table.
 
 ### Probe warning
 
-Why binds each exact endpoint and immediately closes it. It does not listen, accept, send, or receive. Probes run sequentially to avoid interfering with one another.
+Why binds each exact endpoint and immediately closes it. It does not listen,
+accept, send, or receive. Probes run sequentially to avoid interfering with one
+another.
 
-`bindable_now` means the exact probe succeeded at its recorded completion time. It does not reserve the endpoint, guarantee that a later process will bind first, or promise future availability. The host may change after the probe. Conversely, a successful probe can coexist with an earlier snapshot observation because that socket may have closed or host bind semantics may allow coexistence; the earlier observation remains evidence but does not override the successful later probe.
+`bindable_now` means the exact probe succeeded at its recorded completion time.
+It does not reserve the endpoint, guarantee that a later process will bind
+first, or promise future availability. The host may change after the probe.
+Conversely, a successful probe can coexist with an earlier snapshot observation
+because that socket may have closed or host bind semantics may allow
+coexistence; the earlier observation remains evidence but does not override the
+successful later probe.
 
-Without `--json`, Why prints one line per endpoint, such as `TCP 127.0.0.1:3000  in use by PID 4242 (node)`. That summary is for people and is not a stable format. Global `--verbose` prints every probe result, evidence item, and gap instead.
+Without `--json`, Why prints one line per endpoint, such as `TCP 127.0.0.1:3000
+in use by PID 4242 (node)`. That summary is for people and is not a stable
+format. Global `--verbose` prints every probe result, evidence item, and gap
+instead.
 
 ### Verdict exits and aggregation
 
@@ -860,9 +1051,12 @@ Without `--json`, Why prints one line per endpoint, such as `TCP 127.0.0.1:3000 
 | `owned`, `owner_hidden`, `kernel_state_observed`, `address_unavailable`, `reservation_or_policy_unknown`, `unsupported` | 3 |
 | `permission_denied` | 4 |
 
-After mapping every completed endpoint, `aggregate_exit_code` uses fixed precedence: `1`, then `4`, then `3`, then `0`. It is `0` only when every endpoint is proven bindable now. An operational failure that prevents complete evaluation exits `1` and emits no incomplete Why document.
+After mapping every completed endpoint, `aggregate_exit_code` uses fixed
+precedence: `1`, then `4`, then `3`, then `0`. It is `0` only when every
+endpoint is proven bindable now. An operational failure that prevents complete
+evaluation exits `1` and emits no incomplete Why document.
 
-**Illustrative example:** host scope, evidence, timestamps, probe errors, and verdicts vary.
+Example (host scope, evidence, timestamps, probe errors, and verdicts vary):
 
 ```json
 {
@@ -928,7 +1122,7 @@ After mapping every completed endpoint, `aggregate_exit_code` uses fixed precede
 }
 ```
 
-## Exit Codes and Streams
+## Exit codes and streams
 
 The process-wide exit contract is:
 
@@ -942,39 +1136,71 @@ The process-wide exit contract is:
 | 5 | Kill was cancelled; not produced by the structured commands in this document. |
 | 6 | A protected process requires confirmation; not produced by the structured commands in this document. |
 
-Stdout contains only the requested JSON, NDJSON, or human result. Diagnostics, warnings, parse errors, and operational errors use stderr. Structured stdout is never mixed with prose.
+Stdout contains only the requested JSON, NDJSON, or human result. Diagnostics,
+warnings, parse errors, and operational errors use stderr. Structured stdout is
+never mixed with prose.
 
-A broken stdout pipe is successful consumer termination for list, snapshot, and watch. Why evaluates all endpoints before writing, so a broken pipe preserves the already-computed aggregate exit code rather than converting an unavailable endpoint into success. Any other write or flush failure exits `1`.
+A broken stdout pipe is successful consumer termination for list, snapshot, and
+watch. Why evaluates all endpoints before writing, so a broken pipe preserves
+the already-computed aggregate exit code rather than converting an unavailable
+endpoint into success. Any other write or flush failure exits `1`.
 
-Invalid argument combinations fail before native collection, write diagnostics only to stderr, and exit `2`. This includes incompatible snapshot options and invalid Why matrices. Watch initial failures and Why failures that prevent complete evaluation emit no partial structured document.
+Invalid argument combinations fail before native collection, write diagnostics
+only to stderr, and exit `2`. This includes incompatible snapshot options and
+invalid Why matrices. Watch initial failures and Why failures that prevent
+complete evaluation emit no partial structured document.
 
-## Privacy and Trust
+## Privacy and trust
 
 Treat all structured output as sensitive local-system data.
 
-- `kickoutchi.list/1` can contain process names, executable paths, parent metadata, and complete command lines. Command lines commonly contain tokens, credentials, URLs, file paths, and user data.
-- Snapshot, watch, and Why omit complete command lines, but still expose endpoints, PIDs, stable process-start markers, names, executable paths where applicable, ownership, labels, scope identifiers, evidence, and OS errors.
+- `kickoutchi.list/1` can contain process names, executable paths, parent
+  metadata, and complete command lines. Command lines commonly contain tokens,
+  credentials, URLs, file paths, and user data.
+- Snapshot, watch, and Why omit complete command lines, but still expose
+  endpoints, PIDs, stable process-start markers, names, executable paths where
+  applicable, ownership, labels, scope identifiers, evidence, and OS errors.
 - Configured labels may reveal project names, service roles, or local topology.
-- JSON escaping prevents malformed JSON; it is not redaction. Host metadata remains raw structured data subject to the documented byte and decoding rules.
-- Evidence and operational messages are sanitized and bounded, but they may still reveal host facts. Message text is not a stable API.
-- Human terminal sanitization is independent from structured output and does not make JSON safe to publish.
-- Global `--verbose`/`-v` changes only Why's human output and never changes structured stdout.
+- JSON escaping prevents malformed JSON; it is not redaction. Host metadata
+  remains raw structured data subject to the documented byte and decoding rules.
+- Evidence and operational messages are sanitized and bounded, but they may
+  still reveal host facts. Message text is not a stable API.
+- Human terminal sanitization is independent from structured output and does not
+  make JSON safe to publish.
+- Global `--verbose`/`-v` changes only Why's human output and never changes
+  structured stdout.
 
-Redact structured output before sharing it. See [Security Policy](../SECURITY.md) for private vulnerability reporting.
+Redact structured output before sharing it. See the [security
+policy](../SECURITY.md) for private vulnerability reporting.
 
 ## Compatibility
 
-`kickoutchi.list/1` remains a top-level array throughout the `1.x` series. Its approved additive change is the always-present nullable `label` field; it does not gain a version envelope. Existing fields retain their meanings, including null metadata and legacy `permission` semantics.
+`kickoutchi.list/1` remains a top-level array throughout the `1.x` series. Its
+approved additive change is the always-present nullable `label` field; it does
+not gain a version envelope. Existing fields retain their meanings, including
+null metadata and legacy `permission` semantics.
 
-The versioned contracts identify themselves with exact `schema` and integer `version` pairs. Consumers should reject unsupported schema/version pairs rather than guessing. Within a supported version:
+The versioned contracts identify themselves with exact `schema` and integer
+`version` pairs. Consumers should reject unsupported schema/version pairs rather
+than guessing. Within a supported version:
 
-- Existing field meanings, null rules, stable codes, enum values, and ordering rules do not change incompatibly.
-- New stable evidence or operational codes are additive. Consumers should preserve or tolerate unknown additive codes where their application can do so safely.
-- Additive fields may be introduced only when compatible with the contract's versioning policy; parsers should generally ignore unknown object fields.
-- Consumers must not infer behavior from explanatory `message` text, JSON formatting, object field order, host-specific examples, or currently unused vocabulary values.
-- A future incompatible shape or semantic change requires a new integer version and documentation for the new schema/version pair.
+- Existing field meanings, null rules, stable codes, enum values, and ordering
+  rules do not change incompatibly.
+- New stable evidence or operational codes are additive. Consumers should
+  preserve or tolerate unknown additive codes where their application can do so
+  safely.
+- Additive fields may be introduced only when compatible with the contract's
+  versioning policy; parsers should generally ignore unknown object fields.
+- Consumers must not infer behavior from explanatory `message` text, JSON
+  formatting, object field order, host-specific examples, or currently unused
+  vocabulary values.
+- A future incompatible shape or semantic change requires a new integer version
+  and documentation for the new schema/version pair.
 
-Resource-bound safety behavior is part of compatibility: values over their documented limits become explicit null/partial evidence where specified, increment omitted counts where specified, or fail operationally. They are never silently truncated into a value that appears complete.
+Resource-bound safety behavior is part of compatibility: values over their
+documented limits become explicit null/partial evidence where specified,
+increment omitted counts where specified, or fail operationally. They are never
+silently truncated into a value that appears complete.
 
 ## Related documentation
 

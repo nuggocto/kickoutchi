@@ -13,6 +13,7 @@ use std::any::Any;
 use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::io::{self, Stdout};
+use std::mem::ManuallyDrop;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 #[cfg(unix)]
 use std::sync::atomic::AtomicI32;
@@ -203,10 +204,18 @@ extern "C" fn record_termination_signal(signal: libc::c_int) {
     record_first_signal(&TERMINATION_SIGNAL, signal);
 }
 
+/// Catches `SIGTERM` so the TUI restores the terminal before it exits.
+///
+/// `SIGHUP` keeps its default action on purpose. It arrives when the terminal
+/// closes, and there is nothing left to restore then. crossterm 0.29's input
+/// reader also loops forever on a hung-up terminal, so a handled `SIGHUP`
+/// could never be acted on, and the process would outlive its window. Kills
+/// stay safe: the kill owner blocks `SIGHUP` with `KillCancellationGuard` and
+/// TUI workers block it from their start, so a hangup mid-kill is held until
+/// the targets are thawed.
 #[cfg(unix)]
 struct TuiSignalGuard {
     previous_term: libc::sigaction,
-    previous_hup: libc::sigaction,
     installed: bool,
 }
 
@@ -214,9 +223,9 @@ struct TuiSignalGuard {
 impl TuiSignalGuard {
     fn install() -> io::Result<Self> {
         TERMINATION_SIGNAL.store(0, Ordering::Relaxed);
-        // SAFETY: both actions are fully initialized before installation. The
-        // handler only performs a lock-free atomic operation, and both previous
-        // dispositions are retained for normal teardown.
+        // SAFETY: the action is fully initialized before installation. The
+        // handler only performs a lock-free atomic operation, and the previous
+        // disposition is retained for normal teardown.
         unsafe {
             let mut action: libc::sigaction = std::mem::zeroed();
             action.sa_sigaction = record_termination_signal as *const () as usize;
@@ -228,20 +237,8 @@ impl TuiSignalGuard {
                 return Err(io::Error::last_os_error());
             }
 
-            let mut previous_hup: libc::sigaction = std::mem::zeroed();
-            if libc::sigaction(libc::SIGHUP, &raw const action, &raw mut previous_hup) != 0 {
-                let error = io::Error::last_os_error();
-                libc::sigaction(
-                    libc::SIGTERM,
-                    &raw const previous_term,
-                    std::ptr::null_mut(),
-                );
-                return Err(error);
-            }
-
             Ok(Self {
                 previous_term,
-                previous_hup,
                 installed: true,
             })
         }
@@ -252,24 +249,17 @@ impl TuiSignalGuard {
             return Ok(());
         }
 
-        // SAFETY: these actions were returned by successful `sigaction` calls
-        // and remain valid for the lifetime of the guard.
-        unsafe {
-            let term_result = libc::sigaction(
+        // SAFETY: this action was returned by a successful `sigaction` call
+        // and remains valid for the lifetime of the guard.
+        let result = unsafe {
+            libc::sigaction(
                 libc::SIGTERM,
                 &raw const self.previous_term,
                 std::ptr::null_mut(),
-            );
-            let term_error = (term_result != 0).then(io::Error::last_os_error);
-            let hup_result = libc::sigaction(
-                libc::SIGHUP,
-                &raw const self.previous_hup,
-                std::ptr::null_mut(),
-            );
-            let hup_error = (hup_result != 0).then(io::Error::last_os_error);
-            if let Some(error) = term_error.or(hup_error) {
-                return Err(error);
-            }
+            )
+        };
+        if result != 0 {
+            return Err(io::Error::last_os_error());
         }
         self.installed = false;
         Ok(())
@@ -278,7 +268,6 @@ impl TuiSignalGuard {
     fn previous_disposition(&self, signal: libc::c_int) -> usize {
         match signal {
             libc::SIGTERM => self.previous_term.sa_sigaction,
-            libc::SIGHUP => self.previous_hup.sa_sigaction,
             _ => libc::SIG_DFL,
         }
     }
@@ -366,8 +355,13 @@ impl Drop for BlockedTerminationSignals {
 }
 
 /// Owns raw mode and alternate-screen state, restoring both on drop.
+///
+/// The terminal is `ManuallyDrop` because ratatui's `Terminal::drop` reports a
+/// failed cursor restore with `eprintln!`, which panics when stderr is a
+/// hung-up tty. `Drop` restores the cursor itself and skips that destructor
+/// when the restore fails.
 struct TerminalGuard {
-    terminal: Tui,
+    terminal: ManuallyDrop<Tui>,
 }
 
 impl TerminalGuard {
@@ -379,7 +373,9 @@ impl TerminalGuard {
         enable_raw_mode()?;
         TERMINAL_ACTIVE.store(true, Ordering::Release);
         match Self::enter_alternate_screen() {
-            Ok(terminal) => Ok(Self { terminal }),
+            Ok(terminal) => Ok(Self {
+                terminal: ManuallyDrop::new(terminal),
+            }),
             Err(error) => {
                 restore_terminal_if_active();
                 Err(error)
@@ -400,6 +396,14 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         restore_terminal_if_active();
+        // SAFETY: `terminal` is taken exactly once, here, and never used again.
+        let mut terminal = unsafe { ManuallyDrop::take(&mut self.terminal) };
+        if terminal.show_cursor().is_err() {
+            // The terminal is gone, and its destructor would retry showing the
+            // cursor and panic. Teardown only runs as the TUI exits, so leaking
+            // the stdout handle and screen buffers is harmless.
+            std::mem::forget(terminal);
+        }
     }
 }
 
@@ -472,7 +476,8 @@ pub(crate) fn run_owned<T>(operation: impl FnOnce() -> T) -> io::Result<T> {
     }
 }
 
-/// Spawn a TUI worker with SIGTERM/SIGHUP blocked from its first instruction.
+/// Spawn a TUI worker with SIGTERM/SIGHUP blocked from its first instruction,
+/// so both reach the owner thread, which defers them while a kill runs.
 /// The child waits behind a gate until the owner thread's exact prior mask has
 /// been restored, so a failed restore never starts background work.
 pub(crate) fn spawn_worker<T: Send + 'static>(
@@ -681,7 +686,7 @@ fn finalize_unix_after_block(
         // Re-raise with the embedder's exact disposition while blocked. Restoring
         // the old mask below delivers default/custom handlers atomically; an
         // ignored disposition discards the signal.
-        // SAFETY: `signal` is one of SIGTERM/SIGHUP recorded by our handler.
+        // SAFETY: `signal` is the SIGTERM recorded by our handler.
         if unsafe { libc::raise(signal) } != 0 {
             return Err(io::Error::last_os_error().into());
         }

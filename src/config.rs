@@ -201,12 +201,7 @@ impl Config {
             required_owner,
         } in candidates
         {
-            let text = match required_owner {
-                #[cfg(any(target_os = "linux", target_os = "macos"))]
-                Some(owner) => read_config_file_owned_by(&path, owner),
-                _ => read_config_file(&path),
-            };
-            match text {
+            match read_config_file(&path, required_owner) {
                 Ok(text) => return Self::parse(&text, &path),
                 // Read directly to avoid an existence-check race.
                 Err(ConfigError::Read { source, .. })
@@ -219,7 +214,7 @@ impl Config {
 
     /// Load an explicitly selected file. A missing file is an error.
     fn load_from(path: &Path) -> Result<Self, ConfigError> {
-        let text = read_config_file(path)?;
+        let text = read_config_file(path, None)?;
         Self::parse(&text, path)
     }
 
@@ -296,24 +291,40 @@ impl Config {
     }
 }
 
-fn read_config_file(path: &Path) -> Result<String, ConfigError> {
-    let file = std::fs::File::open(path).map_err(|source| ConfigError::Read {
-        path: path.to_path_buf(),
-        source,
-    })?;
+fn read_config_file(path: &Path, required_owner: Option<u32>) -> Result<String, ConfigError> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let file = open_unix_config_file(path, required_owner)?;
+    #[cfg(windows)]
+    let file = {
+        debug_assert!(required_owner.is_none(), "sudo config exists only on Unix");
+        std::fs::File::open(path).map_err(|source| ConfigError::Read {
+            path: path.to_path_buf(),
+            source,
+        })?
+    };
     read_config_from(file, path)
 }
 
-/// Read the invoking user's config while running as root for them.
+/// Open a Unix config file without letting its type hang startup.
 ///
-/// That user controls the path, so a symlink there could point root at a file
-/// the user cannot read, and a TOML error would then echo part of it. The
-/// opened file must therefore be a regular file owned by that user. The check
-/// runs on the open descriptor, so the path cannot be swapped after it.
-/// Non-blocking open keeps a planted FIFO from hanging the process.
+/// A regular file, a symlink to one, or a character device such as
+/// `/dev/null` is accepted. A FIFO, socket, directory, or block device is
+/// rejected: opening a FIFO blocks until a writer appears, and reading one
+/// without a writer would silently yield an empty config, dropping configured
+/// protected names. The open is non-blocking and every check runs on the open
+/// descriptor, so the path cannot be swapped after them. `O_NONBLOCK` stays
+/// set, so a character device read fails or ends instead of waiting.
+///
+/// `required_owner` is set when root reads the config of the user who ran
+/// sudo. That user controls the path, so a symlink there could point root at
+/// a file the user cannot read, and a TOML error would then echo part of it.
+/// That file must therefore be a regular file owned by that user.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn read_config_file_owned_by(path: &Path, owner: u32) -> Result<String, ConfigError> {
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+fn open_unix_config_file(
+    path: &Path,
+    required_owner: Option<u32>,
+) -> Result<std::fs::File, ConfigError> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 
     let read_error = |source| ConfigError::Read {
         path: path.to_path_buf(),
@@ -325,7 +336,9 @@ fn read_config_file_owned_by(path: &Path, owner: u32) -> Result<String, ConfigEr
         .open(path)
         .map_err(read_error)?;
     let metadata = file.metadata().map_err(read_error)?;
-    if !metadata.is_file() || metadata.uid() != owner {
+    if let Some(owner) = required_owner
+        && (!metadata.is_file() || metadata.uid() != owner)
+    {
         return Err(ConfigError::Invalid {
             path: path.to_path_buf(),
             detail: format!(
@@ -333,7 +346,13 @@ fn read_config_file_owned_by(path: &Path, owner: u32) -> Result<String, ConfigEr
             ),
         });
     }
-    read_config_from(file, path)
+    if !metadata.is_file() && !metadata.file_type().is_char_device() {
+        return Err(ConfigError::Invalid {
+            path: path.to_path_buf(),
+            detail: "not a regular file".to_owned(),
+        });
+    }
+    Ok(file)
 }
 
 fn read_config_from(mut reader: impl Read, path: &Path) -> Result<String, ConfigError> {
@@ -1002,7 +1021,7 @@ label = "web"
     fn sudo_user_config_must_be_a_regular_file_owned_by_that_user() {
         use std::os::unix::fs::MetadataExt;
 
-        use super::read_config_file_owned_by;
+        use super::read_config_file;
 
         let directory =
             std::env::temp_dir().join(format!("kickoutchi-config-owner-{}", std::process::id()));
@@ -1013,10 +1032,10 @@ label = "web"
         std::os::unix::fs::symlink("/etc/passwd", &link).expect("symlink must be created");
         let owner = fs::metadata(&file).expect("fixture must exist").uid();
 
-        let accepted = read_config_file_owned_by(&file, owner);
-        let wrong_owner = read_config_file_owned_by(&file, owner.wrapping_add(1));
-        let foreign_target = read_config_file_owned_by(&link, owner.wrapping_add(1));
-        let not_a_file = read_config_file_owned_by(&directory, owner);
+        let accepted = read_config_file(&file, Some(owner));
+        let wrong_owner = read_config_file(&file, Some(owner.wrapping_add(1)));
+        let foreign_target = read_config_file(&link, Some(owner.wrapping_add(1)));
+        let not_a_file = read_config_file(&directory, Some(owner));
 
         fs::remove_dir_all(directory).expect("test directory must be removed");
         assert_eq!(
@@ -1032,6 +1051,50 @@ label = "web"
             assert!(!detail.contains("root:"), "detail: {detail}");
         }
         assert!(not_a_file.is_err());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn config_path_rejects_a_fifo_without_blocking_and_accepts_files_and_dev_null() {
+        use super::read_config_file;
+
+        let directory =
+            std::env::temp_dir().join(format!("kickoutchi-config-type-{}", std::process::id()));
+        fs::create_dir(&directory).expect("test directory must be created");
+        let file = directory.join("config.toml");
+        let link = directory.join("link.toml");
+        let fifo = directory.join("fifo.toml");
+        fs::write(&file, "refresh_interval_seconds = 7").expect("fixture must be written");
+        std::os::unix::fs::symlink(&file, &link).expect("symlink must be created");
+        let fifo_path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes())
+            .expect("temporary path has no NUL");
+        // SAFETY: the path is NUL terminated and mkfifo does not retain it.
+        assert_eq!(unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o600) }, 0);
+
+        // A FIFO with no writer blocks a blocking open forever. Run the read
+        // on a thread so a regression fails this test instead of hanging it.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let fifo_for_reader = fifo.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(read_config_file(&fifo_for_reader, None));
+        });
+        let from_fifo = receiver.recv_timeout(std::time::Duration::from_secs(10));
+        let through_link = read_config_file(&link, None);
+        let from_directory = read_config_file(&directory, None);
+        let from_dev_null = read_config_file(Path::new("/dev/null"), None);
+
+        fs::remove_dir_all(directory).expect("test directory must be removed");
+        let from_fifo = from_fifo.expect("opening a FIFO config must not block");
+        assert_eq!(
+            invalid_detail(from_fifo.map(|_| Config::default())),
+            "not a regular file"
+        );
+        assert_eq!(
+            through_link.expect("a symlink to a regular file loads"),
+            "refresh_interval_seconds = 7"
+        );
+        assert!(from_directory.is_err());
+        assert_eq!(from_dev_null.expect("/dev/null is an empty config"), "");
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

@@ -184,7 +184,7 @@ pub(super) fn run_watch(
     let options = match WatchOptions::parse(args) {
         Ok(options) => options,
         Err(error) => {
-            eprintln!("error: {}", sanitize(&error));
+            stderr_println!("error: {}", sanitize(&error));
             return ExitReason::InvalidArguments;
         }
     };

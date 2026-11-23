@@ -1,18 +1,17 @@
-# Configuration and Filters
+# Configuration and filters
 
-Kickoutchi uses a TOML configuration file for persistent policy, display, and
-label settings. The `list` command, TUI search, and `watch` command also expose
-command-local filters. This document is the complete reference for both.
+Kickoutchi reads one TOML file for settings that persist: protection policy,
+display defaults, and endpoint labels. `list`, the TUI search, and `watch` also
+take filters on the command line. This page is the full reference for both.
 
-Both executable names, `kickoutchi` and `kick`, have identical behavior.
+`kickoutchi` and `kick` behave the same.
 
 ## Configuration file
 
 ### Path selection and loading
 
-Without `--config`, Kickoutchi reads `kickoutchi/config.toml` below the
-platform configuration directory returned by the operating system. Typical
-locations are:
+Without `--config`, Kickoutchi reads `kickoutchi/config.toml` inside the
+configuration directory your OS reports:
 
 | Platform | Default path |
 | --- | --- |
@@ -20,13 +19,12 @@ locations are:
 | macOS | `~/Library/Application Support/kickoutchi/config.toml` |
 | Windows | `%APPDATA%\kickoutchi\config.toml` |
 
-If the OS does not provide a configuration directory, Kickoutchi uses built-in
-defaults. A missing file at the default path is also normal and uses built-in
-defaults. Other failures at the default path, including permission and I/O
-errors, are fatal.
+If the OS reports no configuration directory, or the file doesn't exist,
+Kickoutchi uses its built-in defaults. Any other problem reading the default
+file, such as a permission or I/O error, is fatal.
 
-Use the global option `--config FILE` to select an exact path. It may appear
-before or after a subcommand:
+`--config FILE` selects an exact path. It can go before or after the
+subcommand:
 
 ```sh
 kick --config ./kickoutchi.toml list
@@ -41,39 +39,46 @@ Kickoutchi runs as root and `SUDO_UID` names another user, it first looks for
 that user's file below the home directory in the account database:
 `~/.config/kickoutchi/config.toml` on Linux and
 `~/Library/Application Support/kickoutchi/config.toml` on macOS. If that file
-does not exist, it reads root's default path as before. Your protected names,
-labels, and confirmation settings therefore still apply to `sudo kick`.
+doesn't exist, it reads root's default path. Your protected names, labels, and
+confirmation settings still apply to `sudo kick`.
 
-Root reads that file only if it is a regular file owned by the user who ran
+Root reads that file only if it's a regular file owned by the user who ran
 sudo. Anything else there, such as a symlink to another user's file, is an
-error instead of being read with root's permissions. `--config FILE` reads
+error, so root never reads it with its own permissions. `--config FILE` reads
 exactly the file you name.
 
 The user's own `XDG_CONFIG_HOME` is not visible under sudo. If your file lives
 there, pass it with `--config`. `SUDO_UID` is ignored unless the process is
 running as root.
 
-An explicitly selected file must exist and be readable. A missing explicit
-file is an error; Kickoutchi does not fall back to the default path or built-in
+A file you name with `--config` must exist and be readable. If it's missing,
+that's an error; Kickoutchi doesn't fall back to the default path or to built-in
 defaults.
+
+On Linux and macOS, a configuration file, explicit or default, must be a
+regular file, a symlink to one, or a character device such as `/dev/null`,
+which reads as an empty file. A FIFO, socket, directory, or block device is an
+error, including process substitution such as `--config <(...)`. The file is
+opened without blocking, so a FIFO with no writer fails at once instead of
+stalling startup.
 
 Configuration input must be valid UTF-8 and no larger than 65,536 bytes (64
 KiB). Exactly 65,536 bytes is accepted; byte 65,537 is rejected. Reads stop
-after the first excess byte, although the host OS may still block while opening
-or reading a regular or special file. Invalid TOML, wrong value types, unknown
-top-level keys, and unknown keys inside `[[ports]]` are fatal and identify the
-configuration path.
+after the first excess byte, although a slow filesystem can still delay
+reading a regular file. Invalid TOML, wrong value types, unknown top-level
+keys, and unknown keys inside `[[ports]]` are fatal, and the error names the
+file.
 
 ### Precedence
 
-Resolved settings use this order, from lowest to highest precedence:
+Settings resolve in this order, lowest priority first:
 
 1. Built-in defaults.
 2. Values present in the selected configuration file.
 3. Applicable CLI overrides.
 
-Omitted TOML keys leave the lower-precedence value unchanged. An empty file is
-valid and therefore selects all built-in defaults.
+A key you leave out keeps the value from the layer below. An empty file is
+valid and gives you every built-in default.
 
 `--refresh-interval SECONDS` is the global CLI override for
 `refresh_interval_seconds`; it accepts `1..=3600`. For `list`, `--sort MODE`
@@ -94,25 +99,26 @@ The watch polling interval is separate: `watch --interval` does not use
 | --- | --- | --- | --- |
 | `refresh_interval_seconds` | integer | `3` | `1..=3600`. Controls TUI automatic recollection. The global `--refresh-interval` overrides it. |
 | `default_sort` | string | `"port"` | Exactly `"port"`, `"pid"`, `"protocol"`, `"process"`, `"parent"`, or `"scope"`. Sets the initial TUI sort and the `list` sort when `--sort` is absent. |
-| `hide_system_processes` | boolean | `false` | When `true`, conservatively classified system/service rows are hidden from normal `list` and TUI views. It does not affect `watch` or `list --snapshot-json`. A row whose owner is hidden has no PID to classify and stays visible, so this hides more rows under `sudo` than for a normal user. |
+| `hide_system_processes` | boolean | `false` | When `true`, `list` and the TUI hide rows that Kickoutchi classifies, conservatively, as system or service processes. It does not affect `watch` or `list --snapshot-json`. A row whose owner is hidden has no PID to classify and stays visible, so this hides more rows under `sudo` than for a normal user. |
 | `confirm_force_kill` | boolean | `true` | When `true`, force kill uses stronger typed confirmation unless `--yes` applies. It does not weaken protected-process confirmation. |
 | `docker_enrichment` | boolean | N/A | Deprecated compatibility key. Docker details were removed; both `true` and `false` are accepted and ignored so older configuration files still load. Non-boolean values remain invalid. |
 | `check_for_updates` | boolean | N/A | Deprecated compatibility key. Both `true` and `false` are accepted and ignored so older configuration files still load. Kickoutchi performs no automatic update check. Non-boolean values remain invalid. |
 | `protected_processes` | array of strings | `[]` as a configured extension | Adds names to the built-in protected set; it never replaces that set. Empty names are invalid. The merged, exactly deduplicated set may contain at most 256 names. |
 | `ports` | array of tables | empty | Defines up to 256 validated endpoint label selectors. See [Endpoint labels](#endpoint-labels). |
 
-`default_sort` ordering is deterministic. In particular, `scope` orders public,
-then local-interface, then loopback endpoints. The TUI can cycle away from its
-configured initial sort interactively.
+Every sort mode gives a stable order. `scope` puts public endpoints first, then
+local-interface, then loopback. In the TUI, `s` cycles away from the configured
+starting sort.
 
-No other top-level keys are accepted. Internal event-loop timing is not a
-configuration option.
+Kickoutchi accepts no other top-level keys. Its internal event-loop timing
+isn't configurable.
 
 ### Environment
 
 Setting `NO_COLOR` to any non-empty value removes colors from the TUI. Bold and
-reverse video remain, so the selected row and row emphasis stay readable. `sudo` drops `NO_COLOR` unless its policy keeps it; use
-`sudo NO_COLOR=1 kick` or `sudo --preserve-env=NO_COLOR kick`.
+reverse video remain, so the selected row and row emphasis stay readable. `sudo`
+drops `NO_COLOR` unless its policy keeps it; use `sudo NO_COLOR=1 kick` or
+`sudo --preserve-env=NO_COLOR kick`.
 
 ### Protected process extension
 
@@ -144,11 +150,11 @@ dwm.exe
 WindowServer
 ```
 
-Configured values extend this list. Exact duplicates of an existing built-in or
-earlier configured string are removed before enforcing the 256-name merged
-limit. An empty configured array is valid; an empty string is not. Other strings,
-including strings containing whitespace, pass configuration validation, although
-matching is always against the exact process name rather than a substring.
+Your names extend this list. Exact duplicates, of a built-in name or of one
+earlier in your list, are dropped before the 256-name limit applies to the
+merged list. An empty array is valid; an empty string isn't. Any other string
+passes validation, including one with spaces, but it only ever matches a whole
+process name, never part of one.
 
 Matching follows platform process-name conventions:
 
@@ -171,14 +177,14 @@ A protected process is confirmed by typing its PID, or its process name as the
 prompt shows it. When the displayed name is empty or starts or ends with
 whitespace, the prompt offers only the PID, and an empty answer never confirms.
 
-Adding a name changes protection policy everywhere it is evaluated, including
-kill confirmation and `protected:` filtering. It cannot remove protection from
-a built-in name.
+An added name counts everywhere protection matters, including kill
+confirmation and the `protected:` filter. Nothing you add can remove protection
+from a built-in name.
 
 ## Endpoint labels
 
-Each `[[ports]]` table associates a label with either one exact endpoint or all
-addresses for one protocol and port.
+Each `[[ports]]` table gives a label to one exact endpoint, or to every address
+for one protocol and port.
 
 ```toml
 [[ports]]
@@ -214,46 +220,46 @@ label = "scoped discovery"
 Unknown selector fields and missing required fields are errors naming the zero-based
 selector index, such as `ports[0]`. At most 256 selectors are accepted.
 
-A label consisting only of whitespace is invalid. Control characters and
-default-ignorable Unicode scalars, including terminal escapes, bidi controls,
-zero-width characters, and soft hyphens, are rejected. Stored and structured
-labels retain their validated text. Human table/TUI labels are sanitized again
-and clipped to at most 32 terminal columns with an ellipsis when necessary.
+A label of only whitespace is invalid. Kickoutchi rejects control characters
+and default-ignorable Unicode, which covers terminal escapes, bidi controls,
+zero-width characters, and soft hyphens. JSON keeps the validated label as
+written. Tables and the TUI sanitize it again and clip it to 32 terminal
+columns, with an ellipsis when it's cut.
 
 ### Address and scope normalization
 
-IPv4-mapped IPv6 addresses are normalized to IPv4. Consequently,
-`::ffff:127.0.0.1` and `127.0.0.1` identify the same selector, and a
-`scope_id` is invalid for either spelling. An exact IPv4 selector has no scope.
+Kickoutchi turns IPv4-mapped IPv6 addresses into IPv4, so `::ffff:127.0.0.1`
+and `127.0.0.1` are the same selector, and neither spelling can take a
+`scope_id`. An exact IPv4 selector has no scope.
 An exact IPv6 selector without `scope_id` matches only an observed unscoped IPv6
 endpoint; one with `scope_id` matches only that interface index.
 
-IPv6 interface scope is currently available from the Windows collector. Linux
-and macOS report it as unavailable, so exact IPv6 selectors, including unscoped
-ones, do not match those unavailable-scope observations. A wildcard selector
+Only the Windows collector reports IPv6 interface scope. Linux and macOS report
+it as unavailable, so exact IPv6 selectors, unscoped ones included, never match
+their IPv6 rows. A wildcard selector
 does not inspect address or scope and is the portable choice when protocol and
 port alone identify the service.
 
 ### Duplicate and resolution rules
 
-Selectors are duplicate-checked after address normalization:
+Kickoutchi checks for duplicate selectors after normalizing addresses:
 
 - Two wildcard selectors with the same protocol and port are duplicates.
 - Two exact selectors with the same normalized protocol, address, port, and IPv6
   scope are duplicates.
-- IPv4 and its IPv4-mapped IPv6 spelling are therefore duplicates.
+- So IPv4 and its IPv4-mapped IPv6 spelling are duplicates.
 - TCP and UDP selectors, different ports, different exact addresses, and
   different IPv6 scope IDs remain distinct.
 
-Duplicate selectors are rejected; declaration order is not a tie-breaker.
+A duplicate is an error; file order never breaks a tie.
 
-Resolution first looks for an exact normalized endpoint selector. If none
-matches, it looks for the wildcard selector with the same protocol and port.
-Thus an exact selector always takes precedence over its wildcard fallback,
-regardless of their order in the file.
+To find a row's label, Kickoutchi first looks for an exact selector for the
+normalized endpoint. If none matches, it uses the wildcard selector with the
+same protocol and port. So an exact selector always wins over its wildcard
+fallback, wherever each sits in the file.
 
-Configuring at least one selector enables the `LABEL` column in CLI tables and
-sufficiently wide TUI tables even when no current row has a matching label.
+Once you configure any selector, CLI tables and wide enough TUI tables show a
+`LABEL` column, even when no current row has a label.
 Labels also appear in legacy list JSON, snapshot JSON, watch output, plain
 search, and `label:` filters.
 
@@ -261,8 +267,8 @@ search, and `label:` filters.
 
 `list --filter TEXT`, TUI search, and `watch --filter TEXT` share one parser.
 The filter expression is at most 256 UTF-8 bytes. Exactly 256 bytes is accepted;
-257 bytes is rejected. The TUI simply stops accepting characters that would
-cross the limit, while CLI commands report invalid arguments.
+257 bytes is rejected. The TUI stops accepting characters at the limit; the
+CLI reports invalid arguments.
 
 The parser splits on Unicode whitespace. There is no quoting or escaping layer:
 
@@ -270,24 +276,22 @@ The parser splits on Unicode whitespace. There is no quoting or escaping layer:
 kick list --filter 'proto:tcp scope:loopback node'
 ```
 
-This expression has three terms. Every term must match: terms use **AND**
-semantics. Repeating a field also means AND, so contradictory exact terms match
-nothing. `list --port`, `list --process`, configuration-driven system hiding,
-and all `--filter` terms are likewise combined.
+This expression has three terms, and every term must match. Repeating a field
+also means AND, so contradictory exact terms match nothing. `list --port`,
+`list --process`, `hide_system_processes`, and every `--filter` term combine
+the same way.
 
-A token whose text before the first colon is a recognized field is parsed and
-validated as structured syntax. A token without a colon is plain search. An
+If the text before a token's first colon is a known field name, the token is a
+structured term and must be valid. A token without a colon is plain search. An
 unrecognized `name:value` token is also plain search using the entire token, so
 `localhost:3000` and `future:value` search for that literal text. The exception
 is a lowercase name within two edits of a recognized field: `prot:tcp` or
 `lable:web` is rejected with a suggestion (`proto`, `label`) instead of
 silently searching for text that will never match.
 
-Recognized fields are reserved. If a recognized field is unsupported by a
-command, the command reports an invalid-arguments error rather than treating it
-as plain text. CLI filter syntax and command capability are validated before
-socket collection begins, so an unsupported `state:` on `list` cannot trigger a
-collection first.
+Known field names are reserved. Using one a command doesn't support, such as
+`state:` on `list`, is an invalid-arguments error rather than a plain search.
+The CLI checks this before it collects anything.
 
 ### Capability matrix
 
@@ -393,8 +397,8 @@ result to "rows whose process name was readable" rather than filter it; that is
 rejected as an invalid argument (exit `2`). Whitespace is accepted, because a
 space is a legitimate substring of a process title.
 
-Watch deliberately collects the `Display` metadata profile rather than the
-legacy list/TUI profile. Watch plain search includes:
+Watch collects a different set of process details from `list` and the TUI.
+Its plain search covers:
 
 - endpoint port, address, unscoped and scoped endpoint text forms, protocol, full
   state, scope, and label;
@@ -404,15 +408,14 @@ legacy list/TUI profile. Watch plain search includes:
 - the derived words `protected` or `unprotected` when protection can be
   determined.
 
-Watch does **not** collect or search complete process command lines. List and TUI
-do. Conversely, watch plain search can match full socket states and the
-protection-classification words; list/TUI plain search is limited to their
-legacy rows and does not add those protection words as synthetic searchable
-metadata.
+Watch never collects or searches full command lines; `list` and the TUI do.
+In return, watch plain search covers every socket state, where `list` and the
+TUI only have `listen` and `bound`. It also matches the words `protected` and
+`unprotected`, which `list` and the TUI don't search.
 
-Missing metadata is a simple non-match for a list/TUI row. Watch preserves
-uncertainty: unavailable owner or process metadata can make an otherwise
-possible owner-dependent expression `indeterminate` rather than false.
+For a `list` or TUI row, missing metadata is simply a non-match. Watch keeps the
+doubt instead: when owner or process details are unreadable, an owner-dependent
+expression that might match becomes `indeterminate`, not false.
 
 ### Watch selectors and event semantics
 
@@ -427,13 +430,12 @@ Watch has endpoint selectors in addition to `--filter`:
 | `--port PORT` | Any port | Exact nonzero port in `1..=65535`. |
 | `--filter TEXT` | No terms | Shared expression, with watch capabilities. |
 
-All active watch selectors and filter terms use AND semantics. Endpoint-only
-terms must match the socket. Owner-dependent terms (`pid:`, `parent:`,
-`protected:`, and owner metadata portions of plain search) must all be
-satisfied by the same conceptual owner row; separate owners cannot each satisfy
-half of one expression. If at least one owner satisfies the whole expression,
-the event matches. Incomplete ownership or metadata may instead produce an
-indeterminate result.
+Every active watch selector and filter term must match. Endpoint terms must
+match the socket. Owner terms (`pid:`, `parent:`, `protected:`, and the owner
+parts of plain search) must all hold for the same owner; two different owners
+can't each satisfy half of the expression. If at least one owner satisfies the
+whole expression, the event matches. Incomplete ownership or metadata can make
+the result indeterminate instead.
 
 Baseline and bind events evaluate the current observation. Release events
 evaluate the previous observation. A replacement event is retained when the
@@ -445,9 +447,8 @@ applicable evidence gaps. `kick watch --matched-only` suppresses
 matches behind unreadable facts. With no selector or filter, emitted endpoint
 events use `not_applied`.
 
-`collection_gap` records describe polling failure rather than an endpoint and
-bypass endpoint/filter selection. Filters therefore cannot hide the fact that
-collection failed.
+`collection_gap` records describe a failed poll, not an endpoint, so selectors
+and filters never hide them.
 
 Watch timing is command-local. `--interval` defaults to `1s` and accepts
 `100ms..=60s`; `--duration`, when present, accepts `100ms..=7d`. A time token is
@@ -455,9 +456,8 @@ one unsigned integer immediately followed by `ms`, `s`, `m`, `h`, or `d`.
 
 ## Snapshot JSON mode
 
-`kick list --snapshot-json` emits the complete versioned network snapshot rather
-than the legacy list projection. Clap rejects any invocation that combines it
-with:
+`kick list --snapshot-json` prints the full versioned network snapshot instead
+of the legacy list rows. It can't be combined with:
 
 - `--json`;
 - `--port`;
@@ -465,16 +465,15 @@ with:
 - `--filter`;
 - `--sort`.
 
-These conflicts are argument errors before collection. Global options such as
-`--config` and `--refresh-interval` do not conflict, although the refresh value
-does not alter a one-shot snapshot.
+Combining them is an argument error, reported before collection. Global options
+such as `--config` and `--refresh-interval` are allowed, although the refresh
+value has no effect on a one-shot snapshot.
 
-Snapshot mode intentionally ignores `hide_system_processes` and does not apply
-the configured/default list sort. It bypasses list/TUI visibility filtering and
-the listening-TCP/bound-UDP legacy projection, so it can include system-owned
-sockets and non-listening full-state sockets. Configured endpoint labels are
-still resolved into snapshot output. This behavior prevents a display preference
-from silently removing evidence from the complete snapshot contract.
+Snapshot mode ignores `hide_system_processes` and the list sort on purpose. It
+skips list and TUI filtering and the listening-TCP/bound-UDP view, so it
+includes system-owned sockets and sockets in every TCP state. Endpoint labels
+still appear. A display preference should never remove evidence from the full
+snapshot.
 
 ## Complete example
 

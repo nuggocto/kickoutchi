@@ -53,7 +53,7 @@ fn run_list_snapshot_buffered(
                 ExitReason::Success
             }
             Err(error) => {
-                eprintln!("error: rendering snapshot JSON failed: {error}");
+                stderr_println!("error: rendering snapshot JSON failed: {error}");
                 ExitReason::Failure
             }
         };
@@ -62,7 +62,7 @@ fn run_list_snapshot_buffered(
     let descriptors = match snapshot.port_entry_descriptors(&config.protected_processes) {
         Ok(descriptors) => descriptors,
         Err(error) => {
-            eprintln!("error: projecting collected ports failed: {error}");
+            stderr_println!("error: projecting collected ports failed: {error}");
             return ExitReason::Failure;
         }
     };
@@ -93,7 +93,7 @@ fn run_list_snapshot_buffered(
     ) {
         Ok(result) => result,
         Err(error) => {
-            eprintln!("error: invalid filter: {error}");
+            stderr_println!("error: invalid filter: {error}");
             return ExitReason::InvalidArguments;
         }
     };
@@ -106,7 +106,7 @@ fn run_list_snapshot_buffered(
                 return ExitReason::Success;
             }
             Err(error) => {
-                eprintln!("error: rendering JSON failed: {error}");
+                stderr_println!("error: rendering JSON failed: {error}");
                 return ExitReason::Failure;
             }
         }
@@ -161,7 +161,7 @@ fn print_owner_notes(
         )
     });
     for note in OwnerVisibility::of(snapshot).table_notes(rows) {
-        eprintln!("{note}");
+        stderr_println!("{note}");
     }
     let deleted = deleted_executable_rows(
         visible_indices
@@ -170,7 +170,7 @@ fn print_owner_notes(
         crate::platform::deleted_executable,
     );
     for note in deleted_executable_notes(&deleted) {
-        eprintln!("{note}");
+        stderr_println!("{note}");
     }
 }
 
@@ -235,7 +235,7 @@ fn output_error_reason(error: &io::Error) -> ExitReason {
     if error.kind() == ErrorKind::BrokenPipe {
         ExitReason::Success
     } else {
-        eprintln!("error: writing output failed: {error}");
+        stderr_println!("error: writing output failed: {error}");
         ExitReason::Failure
     }
 }

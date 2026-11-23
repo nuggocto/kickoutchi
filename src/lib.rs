@@ -19,6 +19,45 @@ macro_rules! warn_stderr {
     }};
 }
 
+/// `eprint!` without its panic on a failed write.
+///
+/// stderr is often the terminal, and a closed terminal window turns every
+/// write into `EIO`. A diagnostic that cannot be shown must not replace the
+/// command's real outcome with a panic.
+macro_rules! stderr_print {
+    ($($argument:tt)*) => {{
+        use std::io::Write as _;
+        let _ = write!(std::io::stderr(), $($argument)*);
+    }};
+}
+
+/// `eprintln!` without its panic on a failed write. See [`stderr_print!`].
+macro_rules! stderr_println {
+    ($($argument:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($argument)*);
+    }};
+}
+
+/// Write text that a kill decision depends on, such as the target banner and
+/// the confirmation prompt, and return the write error from the enclosing
+/// function. Unlike [`stderr_print!`], a failed write must stop the kill: a
+/// person cannot confirm a target they were never shown.
+macro_rules! required_stderr_print {
+    ($($argument:tt)*) => {{
+        use std::io::Write as _;
+        write!(std::io::stderr(), $($argument)*)?;
+    }};
+}
+
+/// [`required_stderr_print!`] with a trailing newline.
+macro_rules! required_stderr_println {
+    ($($argument:tt)*) => {{
+        use std::io::Write as _;
+        writeln!(std::io::stderr(), $($argument)*)?;
+    }};
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod account;
 mod app;
@@ -81,13 +120,13 @@ pub fn run() -> ExitCode {
                 return match write_cli_stdout(io::stdout().lock(), &rendered) {
                     Ok(()) => ExitReason::Success.into(),
                     Err(error) => {
-                        eprintln!("error: writing stdout failed: {error}");
+                        stderr_println!("error: writing stdout failed: {error}");
                         ExitReason::Failure.into()
                     }
                 };
             }
             let rendered = sanitize_multiline(&error.to_string());
-            eprintln!("{}", rendered.trim_end());
+            stderr_println!("{}", rendered.trim_end());
             return ExitReason::InvalidArguments.into();
         }
     };
@@ -95,7 +134,7 @@ pub fn run() -> ExitCode {
         match WatchSignalGuard::install() {
             Ok(guard) => Some(guard),
             Err(error) => {
-                eprintln!(
+                stderr_println!(
                     "error: installing Ctrl-C handler failed: {}",
                     sanitize_multiline(&error.to_string())
                 );
@@ -112,7 +151,7 @@ pub fn run() -> ExitCode {
             if watch_signal_guard.is_some() && WatchSignalGuard::cancelled() {
                 return ExitReason::Success.into();
             }
-            eprintln!("error: {}", error.render_terminal());
+            stderr_println!("error: {}", error.render_terminal());
             return ExitReason::Failure.into();
         }
     };
@@ -146,7 +185,7 @@ fn run_tui(config: &Config) -> ExitCode {
         Ok(()) => ExitReason::Success.into(),
         Err(error) => {
             // The terminal is restored before this branch.
-            eprintln!("error: {}", sanitize_multiline(&error.to_string()));
+            stderr_println!("error: {}", sanitize_multiline(&error.to_string()));
             ExitReason::Failure.into()
         }
     }

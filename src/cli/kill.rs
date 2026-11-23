@@ -108,7 +108,7 @@ fn run_kill_with<Handle>(
         Ok(requirement) => requirement,
         Err(outcome) => {
             // Only `--yes` on a protected target is refused before confirmation.
-            eprintln!(
+            stderr_println!(
                 "error: {}; --yes cannot bypass protected-process confirmation",
                 outcome.status_description(&target, mode),
             );
@@ -117,15 +117,17 @@ fn run_kill_with<Handle>(
     };
 
     // Print identity, ports, equivalent command, and warnings before handling
-    // confirmation. `--yes` skips the prompt but not safety warnings.
-    print_kill_banner(&target, mode);
+    // confirmation. `--yes` skips the prompt but not safety warnings, so a
+    // banner that cannot be shown stops the kill either way.
+    if let Err(error) = print_kill_banner(&target, mode) {
+        return refuse_unshown_kill(&error);
+    }
 
     if let Some(requirement) = requirement {
         let confirmed = match prompt(&target, mode, requirement) {
             Ok(confirmed) => confirmed,
             Err(error) => {
-                eprintln!("error: reading confirmation failed: {error}");
-                return ExitReason::Failure;
+                return refuse_unshown_kill(&error);
             }
         };
         if !confirmed {
@@ -173,7 +175,7 @@ pub(super) fn print_post_kill_refresh_status(
     collect_snapshot: &mut dyn FnMut() -> Result<NetworkSnapshot, collector::CollectorError>,
 ) {
     if let Some(message) = settle::ports_only_status_message(target, collect_snapshot) {
-        eprintln!("{message}");
+        stderr_println!("{message}");
     }
 }
 
@@ -200,7 +202,7 @@ fn print_single_settle_report(
         },
     );
     for line in settle::single_report_lines(target, mode, identity.is_some(), &report) {
-        eprintln!("{line}");
+        stderr_println!("{line}");
     }
 }
 
@@ -291,11 +293,11 @@ where
             return Err(TerminationOutcome::OwnershipUnavailable);
         }
         Err(KillTargetError::AmbiguousPort { port, candidates }) => {
-            eprintln!(
+            stderr_println!(
                 "error: port {port} became ambiguous before termination; refusing to guess. Use --pid with one of:",
             );
             for candidate in candidates {
-                eprintln!("  {candidate}");
+                stderr_println!("  {candidate}");
             }
             return Err(TerminationOutcome::TargetChanged);
         }
@@ -500,9 +502,9 @@ where
 fn print_refusal_lines(lines: &[String]) {
     for (index, line) in lines.iter().enumerate() {
         if index == 0 {
-            eprintln!("error: {line}");
+            stderr_println!("error: {line}");
         } else {
-            eprintln!("  {line}");
+            stderr_println!("  {line}");
         }
     }
 }
@@ -535,11 +537,18 @@ pub(super) fn target_error_lines(error: KillTargetError) -> (Vec<String>, ExitRe
     }
 }
 
-fn print_kill_banner(target: &KillTarget, mode: KillMode) {
-    eprintln!("{} {}", mode.action_label(), target.identity());
-    eprintln!("Scope: process");
-    eprintln!("Ports: {}", sanitize(&target.ports_text()));
-    eprintln!(
+/// Refuse a kill whose banner or prompt could not be shown, or whose answer
+/// could not be read. Nothing has been signalled at this point.
+pub(super) fn refuse_unshown_kill(error: &io::Error) -> ExitReason {
+    stderr_println!("error: kill confirmation failed: {error}; no signal was sent");
+    ExitReason::Failure
+}
+
+fn print_kill_banner(target: &KillTarget, mode: KillMode) -> std::io::Result<()> {
+    required_stderr_println!("{} {}", mode.action_label(), target.identity());
+    required_stderr_println!("Scope: process");
+    required_stderr_println!("Ports: {}", sanitize(&target.ports_text()));
+    required_stderr_println!(
         "Command: {}",
         sanitize(&command::render_kill_command(
             target.platform,
@@ -548,17 +557,18 @@ fn print_kill_banner(target: &KillTarget, mode: KillMode) {
         )),
     );
     if let Some(warning) = mode.force_warning(target.platform) {
-        eprintln!("Warning: {}", sanitize(warning));
+        required_stderr_println!("Warning: {}", sanitize(warning));
     }
     for warning in target.warnings() {
-        eprintln!(
+        required_stderr_println!(
             "Warning: {}.",
             sanitize(&warning.text(WarningScope::Process))
         );
     }
     if let Some(note) = deleted_executable_note(target) {
-        eprintln!("{note}");
+        required_stderr_println!("{note}");
     }
+    Ok(())
 }
 
 /// A banner note when the target runs a deleted or replaced executable.
@@ -581,14 +591,16 @@ fn prompt_confirmation(
     requirement: ConfirmationRequirement,
 ) -> std::io::Result<bool> {
     match requirement {
-        ConfirmationRequirement::Yes => eprint!("Type y to confirm, or press Enter to cancel: "),
+        ConfirmationRequirement::Yes => {
+            required_stderr_print!("Type y to confirm, or press Enter to cancel: ");
+        }
         ConfirmationRequirement::ForceWord => {
-            eprint!(
+            required_stderr_print!(
                 "Type force to confirm {}: ",
                 mode.delivery_label(target.platform)
             );
         }
-        ConfirmationRequirement::ProtectedProcess => eprint!(
+        ConfirmationRequirement::ProtectedProcess => required_stderr_print!(
             "Protected process: type {} to confirm: ",
             target.protected_confirmation_choices(),
         ),
@@ -640,13 +652,13 @@ fn print_termination_outcome(target: &KillTarget, mode: KillMode, outcome: &Term
     match outcome {
         TerminationOutcome::Success
         | TerminationOutcome::AlreadyExited
-        | TerminationOutcome::Cancelled => eprintln!("{description}"),
-        TerminationOutcome::PermissionDenied => eprintln!(
+        | TerminationOutcome::Cancelled => stderr_println!("{description}"),
+        TerminationOutcome::PermissionDenied => stderr_println!(
             "error: {description}; {}",
             process::permission_denied_hint(target.platform),
         ),
         TerminationOutcome::ProtectedProcess => {
-            eprintln!(
+            stderr_println!(
                 "error: {description}; it became protected after confirmation, so no termination was sent; rerun to confirm the protected process"
             );
         }
@@ -654,7 +666,7 @@ fn print_termination_outcome(target: &KillTarget, mode: KillMode, outcome: &Term
         | TerminationOutcome::TargetChanged
         | TerminationOutcome::UnsafePid(_)
         | TerminationOutcome::UnknownFailure(_)
-        | TerminationOutcome::ThawFailed { .. } => eprintln!("error: {description}"),
+        | TerminationOutcome::ThawFailed { .. } => stderr_println!("error: {description}"),
     }
 }
 

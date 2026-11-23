@@ -28,8 +28,9 @@
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
 
-            cargoBuildFlags = [ "--all-features" ];
-            cargoTestFlags = [ "--all-features" "--lib" ];
+            # Integration tests drive host processes and sockets; keep the
+            # sandboxed Nix check to the unit tests.
+            cargoTestFlags = [ "--lib" ];
 
             # `kick` is the same program; a symlink avoids a second copy.
             postInstall = ''

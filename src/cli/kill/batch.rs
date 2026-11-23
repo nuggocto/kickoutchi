@@ -23,7 +23,7 @@ use crate::process::{
 
 use super::{
     POST_KILL_VISIBILITY_PROFILE, deleted_executable_note, exit_reason_for_outcome,
-    read_confirmation_line, resolve_kill_target, revalidate_single_cli_target,
+    read_confirmation_line, refuse_unshown_kill, resolve_kill_target, revalidate_single_cli_target,
     target_refusal_lines,
 };
 use crate::cli::{ExitReason, KillArgs, KillSelector, settle, unprovable_port_kill_message};
@@ -103,7 +103,7 @@ pub(in crate::cli) fn run_batch_kill(
 fn prompt_line(text: &str) -> io::Result<String> {
     use std::io::Write as _;
 
-    eprint!("{text}");
+    required_stderr_print!("{text}");
     io::stderr().flush()?;
     read_confirmation_line(CONFIRMATION_INPUT_MAX_BYTES)
 }
@@ -129,7 +129,9 @@ pub(super) fn run_batch_kill_with<Handle>(
         Err(refusals) => return report_refusals(&refusals, targets.len()),
     };
 
-    print_banner(&planned, mode);
+    if let Err(error) = print_banner(&planned, mode) {
+        return refuse_unshown_kill(&error);
+    }
     if let Some(reason) = confirm(&planned, config, mode, first.yes, &mut io) {
         return reason;
     }
@@ -183,7 +185,7 @@ pub(super) fn run_batch_kill_with<Handle>(
         settled: &settled,
         failures: &failures,
     }) {
-        eprintln!("{line}");
+        stderr_println!("{line}");
     }
     aggregate_exit(
         outcomes
@@ -212,7 +214,7 @@ fn deliver<Handle>(
         }
     }
     let fresh = (io.fresh_snapshot)().map_err(|error| {
-        eprintln!("error: collecting ports before kill failed: {error}; no signal was sent");
+        stderr_println!("error: collecting ports before kill failed: {error}; no signal was sent");
         ExitReason::Failure
     })?;
     for (index, handle) in &handles {
@@ -340,24 +342,24 @@ fn selector_text(args: &KillArgs) -> String {
 }
 
 fn report_refusals(refusals: &[Refusal], total: usize) -> ExitReason {
-    eprintln!(
+    stderr_println!(
         "error: {} of {total} target(s) cannot be killed, so no signal was sent:",
         refusals.len()
     );
     for refusal in refusals {
         let mut lines = refusal.lines.iter();
         if let Some(first) = lines.next() {
-            eprintln!("  {}: {first}", refusal.selector);
+            stderr_println!("  {}: {first}", refusal.selector);
         }
         for line in lines {
-            eprintln!("    {line}");
+            stderr_println!("    {line}");
         }
     }
     aggregate_exit(refusals.iter().map(|refusal| refusal.reason))
 }
 
-fn print_banner(planned: &[Planned<'_>], mode: KillMode) {
-    eprintln!("{} {} processes:", mode.action_label(), planned.len());
+fn print_banner(planned: &[Planned<'_>], mode: KillMode) -> std::io::Result<()> {
+    required_stderr_println!("{} {} processes:", mode.action_label(), planned.len());
     for planned in planned {
         let mut ports = planned.target.ports.clone();
         ports.extend(planned.extra_ports());
@@ -372,25 +374,26 @@ fn print_banner(planned: &[Planned<'_>], mode: KillMode) {
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        eprintln!("  {}: {}", planned.target.identity(), sanitize(&ports));
+        required_stderr_println!("  {}: {}", planned.target.identity(), sanitize(&ports));
     }
     if let Some(platform) = planned.first().map(|planned| planned.target.platform)
         && let Some(warning) = mode.force_warning(platform)
     {
-        eprintln!("Warning: {}", sanitize(warning));
+        required_stderr_println!("Warning: {}", sanitize(warning));
     }
     for planned in planned {
         for warning in planned.target.warnings() {
-            eprintln!(
+            required_stderr_println!(
                 "Warning: {}: {}.",
                 planned.target.identity(),
                 sanitize(&warning.text(WarningScope::Process))
             );
         }
         if let Some(note) = deleted_executable_note(&planned.target) {
-            eprintln!("{note}");
+            required_stderr_println!("{note}");
         }
     }
+    Ok(())
 }
 
 /// Ask once for the whole set. `None` means confirmed or skipped by `--yes`.
@@ -425,13 +428,10 @@ fn confirm<Handle>(
     match (io.prompt)(&text) {
         Ok(answer) if process::confirmation_input_matches(&answer, first, requirement) => None,
         Ok(_) => {
-            eprintln!("kill cancelled");
+            stderr_println!("kill cancelled");
             Some(ExitReason::KillCancelled)
         }
-        Err(error) => {
-            eprintln!("error: reading confirmation failed: {error}");
-            Some(ExitReason::Failure)
-        }
+        Err(error) => Some(refuse_unshown_kill(&error)),
     }
 }
 

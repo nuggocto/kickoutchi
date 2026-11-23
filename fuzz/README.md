@@ -1,18 +1,16 @@
 # Bounded parser campaigns
 
-These Linux-only targets exercise pure byte-to-data adapters:
+These Linux-only targets feed raw bytes to the parsers:
 
-- `config`: bounded config reads, UTF-8 decoding, TOML parsing, and semantic
-  validation;
-- `linux_proc`: synthetic process-stat, process-status, and socket-table text.
+- `config`: bounded config reads, UTF-8 decoding, TOML parsing, and validation.
+- `linux_proc`: synthetic `/proc` stat, status, and socket-table text.
 
-They do not terminate processes, inspect the host, or use the network. Each
-entry point rejects input beyond its stated byte limit before parsing, and the
-workflow also enforces per-input time, total campaign time, and resident-memory
-limits.
+They never stop processes, inspect the host, or touch the network. Each entry
+point rejects input over its byte limit before parsing, and the workflow also
+caps time per input, total campaign time, and memory.
 
-The small checked-in corpora are replayed by ordinary Rust tests on every CI
-run. Longer mutation campaigns run weekly or through manual workflow dispatch:
+Ordinary Rust tests replay the small checked-in corpora on every CI run. Longer
+mutation campaigns run weekly, or when you dispatch the workflow by hand:
 
 ```console
 (
@@ -24,12 +22,13 @@ run. Longer mutation campaigns run weekly or through manual workflow dispatch:
 )
 ```
 
-The auxiliary crate and its exact dependency lock are checked by cargo-deny in
-ordinary CI. Campaign build output, coverage, and failure artifacts are ignored
-by git, and the working corpus above is deleted when the campaign ends. When a
-scheduled campaign fails, the workflow uploads `fuzz/artifacts/<target>/` as
-`parser-campaign-failure-<target>` for 14 days. The upload includes
-`REPRODUCE.txt` with the commit, toolchain, and replay command. To keep a
-failure, minimize the input from `fuzz/artifacts/config/` and copy only the
-chosen regression fixture into `fuzz/corpus/config/`. Substitute the matching
-target and saved-corpus directory when running the other campaigns.
+Regular CI runs cargo-deny on this crate and its exact dependency lock. Git
+ignores campaign build output, coverage, and failure artifacts, and the command
+above deletes its working corpus when it ends.
+
+When a scheduled campaign fails, the workflow uploads `fuzz/artifacts/<target>/`
+as `parser-campaign-failure-<target>` for 14 days, with a `REPRODUCE.txt` that
+records the commit, toolchain, and replay command. To keep a failure, minimize
+the input from `fuzz/artifacts/config/` and copy only the chosen regression
+fixture into `fuzz/corpus/config/`. For the other target, swap in its name and
+corpus directory.

@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Closing the terminal window of a running TUI ends it again. Since 1.3.1 the
+  TUI caught `SIGHUP` to restore the terminal first, but crossterm 0.29's input
+  reader loops forever once the terminal hangs up, so the TUI never acted on
+  that signal. It stayed in the background spinning a CPU core and ignoring
+  `SIGTERM`, which held up reboot and shutdown until systemd's stop timeout
+  sent `SIGKILL`. See Changed.
+- The TUI and CLI no longer panic with exit code `101` when stderr is a closed
+  terminal or a full device. Cursor restoration and ordinary diagnostics now
+  ignore a failed stderr write.
+- A kill whose target banner or confirmation prompt can't be written to stderr
+  now refuses with exit `1` and signals nothing, for single, batch, tree, and
+  group kills, with or without `--yes`. Before, the write failure panicked; a
+  confirmation you were never shown can't authorize a kill.
+- On Linux and macOS, Kickoutchi rejects a configuration path that names a
+  FIFO, socket, directory, or block device at once. Before, a FIFO with no
+  writer, explicit or at the default path, blocked startup indefinitely.
+  Regular files, symlinks to them, and `/dev/null` still work. Process
+  substitution such as `--config <(...)` is a pipe and is no longer accepted.
+
+### Changed
+
+- On Linux and macOS, the TUI no longer catches `SIGHUP`, so a closed terminal
+  ends it at once by `SIGHUP`, as before 1.3.1. There is nothing left to
+  restore when the terminal is gone. The TUI still catches `SIGTERM`, restores
+  the terminal, and then exits by `SIGTERM`. A `SIGHUP` that arrives during a
+  kill is held until the kill's cleanup has run, so it can't cut a kill off
+  between freezing and thawing its targets. If a cleanup step itself fails, a
+  process can still be left stopped, as before. A `SIGHUP` sent while the
+  terminal is still open now ends the TUI without restoring the terminal. A TUI
+  started with `SIGHUP` ignored, for example under `nohup`, can still outlive a
+  closed terminal until crossterm ships the upstream fix
+  ([crossterm#1067](https://github.com/crossterm-rs/crossterm/pull/1067)).
+- Release builds use `opt-level = "z"` and strip symbols, cutting each binary
+  from 2.21 MB (stripped) to 1.97 MB. On Linux, `kick list` took a 14.3 ms
+  median against 14.2 ms before, within run-to-run noise. `cargo install`
+  builds are now stripped like release archives.
+
 ## [1.7.1] - 2026-11-22
 
 ### Fixed

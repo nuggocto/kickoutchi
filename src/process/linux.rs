@@ -126,20 +126,20 @@ pub(super) fn parse_linux_process_state(bytes: &[u8]) -> std::io::Result<UnixPro
                 "missing stat comm terminator",
             )
         })?;
-    let fields = bytes
+    // Walk the fields in place: this runs on every stop-acknowledgement poll.
+    let mut fields = bytes
         .get(close + 1..)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "truncated stat"))?
         .split(u8::is_ascii_whitespace)
-        .filter(|field| !field.is_empty())
-        .collect::<Vec<_>>();
+        .filter(|field| !field.is_empty());
     let state = fields
-        .first()
+        .next()
         .and_then(|field| (field.len() == 1).then_some(field[0]))
         .ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::InvalidData, "missing process state")
         })?;
-    // `fields[0]` is proc stat field 3; starttime is field 22.
-    let start_ticks = std::str::from_utf8(fields.get(19).copied().ok_or_else(|| {
+    // The state is proc stat field 3; starttime is field 22, 19 fields later.
+    let start_ticks = std::str::from_utf8(fields.nth(18).ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "missing process start time",

@@ -1,36 +1,36 @@
-# Kickoutchi ༼⁠ ⁠つ⁠ ⁠◕⁠‿⁠◕⁠ ⁠༽⁠つ
+# Kickoutchi ༼⁠ ⁠つ⁠ ⁠◕⁠‿⁠◕⁠ ⁠༽⁠つ
 
 **"What are you doing in my swamp?!"**, but for whatever is squatting on your
 local ports.
 
-Kickoutchi is a native TUI and CLI for finding local TCP/UDP sockets, understanding
-who owns them, and safely evicting stale development processes. Use `kickoutchi`
-for the full name or `kick` when every keystroke counts.
+Kickoutchi is a terminal UI and CLI that lists local TCP and UDP sockets, shows
+which process owns each one, and stops stale development servers without
+touching the wrong process. Type `kickoutchi` or the short alias `kick`; both
+run the same program.
 
 Website: <https://kickoutchi.com>
 
-## Highlights
+## What it does
 
-- Browse listening TCP and bound UDP sockets in a terminal UI.
-- Script port discovery with human tables, legacy JSON, or a complete versioned
-  native snapshot.
-- Attach names such as `web dev` or `local postgres` to exact or wildcard
-  endpoints.
-- Stream bind, release, replacement, and collection-gap events with `kick watch`.
-- Ask whether exact endpoints are bindable now with `kick why`.
-- Inspect process families before acting.
-- Terminate one verified process, a process tree, or a POSIX process group with
-  explicit confirmation and fail-closed revalidation.
-- Collect through native OS APIs. Core socket discovery does not parse `ss`,
-  `netstat`, or `lsof` output.
+- Lists listening TCP and bound UDP sockets in a terminal UI.
+- Prints the same data as a table, as legacy JSON, or as a versioned snapshot
+  for scripts.
+- Lets you name endpoints, such as `web dev` for `127.0.0.1:3000`.
+- Streams bind and release events with `kick watch`.
+- Tells you whether a port is free right now with `kick why`.
+- Shows a process's parent and children before you act on it.
+- Stops one process, a process tree, or a POSIX process group, after asking.
+- Reads sockets through each OS's native API. It never parses `ss`, `netstat`,
+  or `lsof` output.
 
-Kickoutchi asks before terminating anything unless you pass `--yes`. It refuses
-ambiguous ownership, unsafe PIDs, changed identities, incomplete destructive
-evidence, and protected processes that were not explicitly confirmed.
+Kickoutchi asks before it terminates anything, unless you pass `--yes`. It
+refuses when it can't tell who owns a port, when the PID is unsafe, when the
+process changed since you confirmed, and when the target is a protected process
+you didn't confirm by name or PID.
 
 ## Install
 
-### Package Managers
+### Package managers
 
 ```sh
 # Homebrew (Linux and macOS)
@@ -39,7 +39,7 @@ brew install nuggocto/tap/kickoutchi
 # Arch (AUR), prebuilt binary
 yay -S kickoutchi-bin
 
-# Cargo from Git
+# Cargo, from Git
 cargo install --locked --git https://github.com/nuggocto/kickoutchi
 
 # Nix (Linux only)
@@ -53,21 +53,14 @@ scoop bucket add nuggocto https://github.com/nuggocto/scoop-bucket
 scoop install kickoutchi
 ```
 
-Stable releases publish their generated Homebrew formula to
-[`nuggocto/homebrew-tap`](https://github.com/nuggocto/homebrew-tap) as the final
-required release job. [`nuggocto/scoop-bucket`](https://github.com/nuggocto/scoop-bucket)
-checks GitHub Releases every four hours with Scoop Excavator. Those repositories
-are the package-manager sources of truth.
+The release workflow updates the [Homebrew tap](https://github.com/nuggocto/homebrew-tap)
+itself. The [Scoop bucket](https://github.com/nuggocto/scoop-bucket) checks for
+new releases every four hours, and the AUR package is updated only once a
+release's assets exist, so both can trail a release for a while. Nix builds from
+this repository's flake. The AUR package source lives in
+[`packaging/arch/`](packaging/arch/README.md).
 
-The Arch package is maintained from `packaging/arch/kickoutchi-bin/` and pushed
-to the AUR after a GitHub Release exists, because its `pkgver` and checksums are
-taken from the real published assets. It installs the prebuilt Linux archive.
-
-Scoop and AUR publish independently and can briefly lag a GitHub Release. The
-Homebrew tap update is part of the release workflow, while Nix installs directly
-from this repository's flake.
-
-### GitHub Release
+### Installer script
 
 Linux and macOS:
 
@@ -81,42 +74,40 @@ Windows PowerShell:
 powershell -ExecutionPolicy Bypass -NoProfile -Command "irm https://kickoutchi.com/install.ps1 | iex"
 ```
 
-`kickoutchi.com/install.sh` serves an exact copy of the current release's
-`kickoutchi-installer.sh`; the website build refuses any other bytes.
+Both installers put `kick`, `kickoutchi`, and the `kickoutchi-update` updater in
+`~/.cargo/bin` and add that directory to your PATH. Open a new terminal before
+running `kick`. The prebuilt Linux binaries need glibc 2.31 or newer.
+
+Each installer checks the archive and the updater against SHA-256 digests baked
+into it, and stops if it can't verify them. `kickoutchi.com/install.sh` is a
+byte-for-byte copy of the current release's `kickoutchi-installer.sh`;
 `install.ps1` redirects to `kickoutchi-installer.ps1` on the latest GitHub
-Release. Both installers place the binaries in `~/.cargo/bin` and add it to
-your PATH, so open a new terminal before running `kick`. Prebuilt Linux
-binaries need glibc 2.31 or newer.
-Installer-based installs include `kickoutchi-update` for later upgrades.
-The Unix and Windows installers verify both the archive and the updater against
-embedded release SHA-256 checksums before installing them, refusing installation
-if verification is unavailable or mismatched.
-Release pages also provide direct archives, per-archive `.sha256` files, and a
-release-wide `sha256.sum`. Same-release checksums detect corruption; they are not
-an independent signature.
+Release.
+
+Release pages also offer the archives directly, with a `.sha256` file per
+archive and a `sha256.sum` for the whole release. Those checksums catch a
+corrupted download. They come from the same GitHub repository as the archives,
+so they are not an independent signature.
 
 ### Updating
 
-Installer-based installs update through the generated updater:
+Kickoutchi never checks for updates on its own. Update with whatever installed
+it:
 
 ```sh
+# Installer script
 kickoutchi-update
-```
 
-Package-manager installs should use the same manager that installed Kickoutchi:
-
-```sh
 # Homebrew
-brew update
-brew upgrade nuggocto/tap/kickoutchi
+brew update && brew upgrade nuggocto/tap/kickoutchi
 
-# Arch (AUR): a normal full-system upgrade covers it
+# Arch (AUR): a normal system upgrade covers it
 yay -Syu
 
-# Nix profile installed from the repository flake (Linux only)
+# Nix profile (Linux only)
 nix profile upgrade kickoutchi
 
-# Cargo from Git
+# Cargo, from Git
 cargo install --force --locked --git https://github.com/nuggocto/kickoutchi
 ```
 
@@ -126,37 +117,30 @@ scoop update
 scoop update kickoutchi
 ```
 
-Kickoutchi does not perform automatic release checks. The deprecated boolean
-configuration key `check_for_updates` is accepted and ignored so older strict
-configuration files continue to load. Use the generated standalone updater or
-the package manager commands above when you choose to check for an update.
+A Git or Nix install without a tag follows the default branch, which can be
+ahead of the latest release. To pin a release, name its tag: add `--tag v1.7.1`
+to `cargo install`, or use `github:nuggocto/kickoutchi/v1.7.1` with Nix. Replace
+a direct-archive install by hand, after checking the new archive's checksum.
 
-An unqualified Git or Linux Nix GitHub source follows the repository's default branch,
-which can contain changes newer than the latest stable release. For a
-reproducible stable source install, select an explicit tag such as `v1.7.1` and
-replace that tag deliberately when upgrading. Direct-archive installs must be
-replaced manually after verifying the new archive.
-
-## Quick Start
+## Quick start
 
 ```sh
 kickoutchi                              # open the TUI
 kick list                               # list visible ports
-kick list --port 3000                   # select one port
+kick list --port 3000                   # one port
 kick list --process node --sort pid     # match a process name, sort by PID
-kick list --json                        # stable script-friendly array
-kick list --snapshot-json               # complete within-scope snapshot
-kick inspect --port 3000                # inspect the owning process family
+kick list --json                        # stable array for scripts
+kick list --snapshot-json               # full versioned snapshot
+kick inspect --port 3000                # the owner's process family
 kick watch --port 3000 --duration 30s   # stream socket changes
-kick why 3000                            # probe TCP loopback bindability
-kick kill --port 3000                    # confirm, then terminate one owner
-kick kill --pid 4242,4243,4244 --yes     # several processes, one summary
-kick kill --pid 12345 --tree             # terminate a verified process tree
-kick kill --pid 12345 --group            # Linux/macOS process group
+kick why 3000                           # is TCP 3000 free on loopback?
+kick kill --port 3000                   # confirm, then stop the owner
+kick kill --pid 4242,4243,4244 --yes    # several processes, one summary
+kick kill --pid 12345 --tree            # a process and its descendants
+kick kill --pid 12345 --group           # a process group (Linux, macOS)
 ```
 
-`kick` and `kickoutchi` expose the same commands. Running either without a
-subcommand opens the TUI.
+Running `kick` or `kickoutchi` with no subcommand opens the TUI.
 
 ### TUI keys
 
@@ -174,100 +158,99 @@ subcommand opens the TUI.
 | `Esc` | Clear the search, close a modal, or quit |
 | `q`, `Ctrl+C` | Quit |
 
-The automatic refresh interval comes from `refresh_interval_seconds` or
-`--refresh-interval SECONDS`.
+The table refreshes every `refresh_interval_seconds` (3 by default), or at the
+rate you pass with `--refresh-interval SECONDS`.
+
+On Linux and macOS, closing the terminal window ends the TUI at once, by
+`SIGHUP`, unless it was started with `SIGHUP` ignored (for example under
+`nohup`). `SIGTERM`, as sent at shutdown, restores the terminal first and then
+ends it.
 
 Row colors tell you what you can act on:
 
-- Bold rows have an owner Kickoutchi could read. These are usually your own
+- Bold rows have an owner Kickoutchi could read, usually one of your own
   processes.
-- Plain rows have a hidden owner. The socket is visible, but the process holding
-  it could not be read, usually because it belongs to another user.
-- Yellow rows have a known PID whose details could not all be read.
+- Plain rows have a hidden owner: the socket is visible, but its process
+  belongs to someone Kickoutchi can't read, usually another user.
+- Yellow rows have a known PID with some details unreadable.
 - Red rows are protected processes. Killing one asks you to type its PID or
   name.
 
-Set `NO_COLOR` to drop the colors; bold and reverse video remain. Bold and plain
-rows use your terminal's default foreground, and yellow and red come from its
-ANSI palette, so the table follows your terminal theme.
+Set `NO_COLOR` to drop the colors. Bold and reverse video stay. The colors come
+from your terminal's palette, so the table follows your theme.
 
 ### Running with sudo
 
-As a normal user, most system sockets show `-` for PID and process, and you can
-only kill your own processes. `sudo kick` shows every owner, so the plain
-rows turn bold and protected services such as `postgres` or `docker-proxy` show in
-red.
+As a normal user you see `-` for the PID and process of most system sockets,
+and you can only stop your own processes. Under `sudo kick` every owner shows,
+the plain rows turn bold, and protected services such as `postgres` or
+`docker-proxy` show in red.
 
-`sudo kick` still reads your configuration file, not root's. On Linux and macOS
-it looks in the home directory of the user who ran sudo first, and reads the
-file only if that user owns it. See
-[`docs/configuration.md`](docs/configuration.md#running-under-sudo) for the
-exact rule.
+`sudo kick` still reads your configuration, not root's. On Linux and macOS it
+looks in the home directory of the user who ran sudo, and reads the file only if
+that user owns it. [`docs/configuration.md`](docs/configuration.md#running-under-sudo)
+has the details.
 
-### Direct PID safety policy
+### What `kill` will and won't target
 
-A plain `kill --pid PID` targets one process only when a fresh socket snapshot
-verifies that the PID owns at least one visible open port. It does not fall back
-to the process table for a live, portless PID. Use `--tree` (or `--group` on
-Linux and macOS) when the root process owns no visible port; those scoped modes
-can resolve a live root from a fresh process-table snapshot. A plain kill of a
-PID that still exists but owns no port says so and names the `--tree` command,
-instead of reporting that nothing matched.
+A plain `kill --pid PID` acts only if a fresh socket snapshot shows that the
+PID owns at least one visible open port. If the process is alive but owns no
+port, Kickoutchi says so and suggests `--tree`. `--tree` and `--group` (Linux
+and macOS) can target a portless process, because they look it up in the
+process table instead.
 
-On a normal desktop, many root and service processes cannot be read, so Kickoutchi
-cannot prove that nobody else shares a port's socket. When the port has one
-verified owner, `kill --port` prints a note and targets that owner while keeping
-the original port selector for revalidation: unrelated permission gaps elsewhere
-on the host are still tolerated, but a second visible owner or a port-specific
-ownership gap appearing before delivery is refused. If a hidden process does
-share the socket, the after-kill report says the port is still visible. A port
-whose owner is itself unreadable is refused with the reason, for example that
-the socket belongs to another user.
+On a normal desktop Kickoutchi can't read root and service processes, so it
+can't prove nobody else shares a port's socket. When the port has exactly one
+owner it can verify, `kill --port` prints a note and targets that owner. Before
+sending anything it checks the port again, and refuses if a second visible
+owner, or a gap in what it can see for that port, has appeared. If a hidden
+process did share the socket, the report afterwards says the port is still
+open. A port whose owner it can't read at all is refused, with the reason, such
+as "the socket belongs to another user".
 
-Treat `--yes` as authorization for exactly the resolved target or scope. It
-skips the prompt, but it does not broaden target resolution or bypass safety
-checks.
+`--yes` skips the prompt for exactly the target that was resolved. It doesn't
+widen the target or skip any check.
 
-Kickoutchi always refuses PID 0, PID 1, Windows System PID 4, and its own current
-PID. Tree and group kills also refuse a scope containing Kickoutchi itself so
-the safety pipeline cannot terminate midway through revalidation or cleanup.
+Kickoutchi always refuses PID 0, PID 1, the Windows System process (PID 4), and
+itself. Tree and group kills also refuse any scope that contains Kickoutchi, so
+it can't stop itself halfway through its own cleanup.
 
 ### Several targets
 
-Repeat `--pid` or `--port`, or separate values with commas, to terminate up to
-128 processes with one command. Each target goes through the single-process
-checks: resolution, a retained handle, revalidation against a fresh snapshot,
-and identity-checked delivery. Kickoutchi resolves every target first. If any
-target cannot be resolved, is protected, or cannot be proven to own its port,
-it lists each refusal and sends nothing. Otherwise it shows one banner, asks
-once, and prints one summary line, for example:
+Repeat `--pid` or `--port`, or separate values with commas, to stop up to 128
+processes in one command. Each target gets the same checks as a single kill.
+Kickoutchi resolves every target first. If any target is unresolved, protected,
+or can't be shown to own its port, it lists every refusal and sends nothing.
+Otherwise it shows one banner, asks once, and prints one summary:
 
 ```text
 summary: sent SIGTERM to 31 of 31 process(es); 31 exited; 31 of 31 confirmed port(s) no longer visible; 0 failed
 ```
 
-Failures, survivors, and ports that stayed visible get their own lines below
-the summary. The exit code is the most serious outcome across targets: 1, then
-4, then 6, then 3. `--tree` and `--group` take one target, and PIDs and ports
-cannot be mixed in one command.
+Failures, survivors, and ports still open get their own lines below. The exit
+code is the most serious outcome across all targets, in the order 1, 4, 6, 3.
+`--tree` and `--group` take a single target, and one command can't mix PIDs and
+ports.
 
-### After termination
+### After the signal
 
-A delivered signal is not an exit, and a closed listener is not an exit either.
-After delivery, `kill` waits up to two seconds and reports two facts on their
-own lines: whether each signalled process exited, and whether the confirmed
-ports are still visible. A process that closes its listener but keeps running
-gets a warning with the exact command that sends `SIGKILL` on Linux and macOS.
-While the process still owns its port, that is `kick kill --pid PID --force`.
-Once its ports are closed, a plain `--pid` kill no longer applies (see above), so
-the hint is `kick kill --pid PID --tree --force`, which also stops the process's
-children. Tree and group kills report how many signalled members exited and
-name the PIDs still running. Exit code 0 still means the signal was accepted;
-read the report lines to learn whether the process is gone.
+A delivered signal doesn't mean the process exited, and a closed listener
+doesn't either. After delivery, `kill` waits up to two seconds and reports, on
+separate lines, whether each process exited and whether the ports are still
+open.
 
-## Watch Changes
+If a process closes its port but keeps running, Kickoutchi warns you and prints
+the command to force it on Linux and macOS: `kick kill --pid PID --force` while
+it still owns a port, or `kick kill --pid PID --tree --force` once its ports are
+closed (that also stops its children). Tree and group kills report how many
+members exited and list the PIDs still running.
 
-`kick watch` polls full-state native snapshots and reports deterministic changes:
+Exit code 0 means the signal was accepted. Read the report to learn whether the
+process is gone.
+
+## Watching changes
+
+`kick watch` takes a snapshot on every interval and reports what changed:
 
 ```sh
 kick watch
@@ -277,33 +260,34 @@ kick watch --filter state:established --duration 30s --json
 kick watch --filter pid:4242 --matched-only
 ```
 
-Intervals are `100ms..=60s` and default to `1s`. Explicit durations are
-`100ms..=7d`. JSON mode writes one `kickoutchi.watch_event/1` object per line.
+The interval is 1 second by default and accepts `100ms` to `60s`. `--duration`
+accepts `100ms` to `7d`. With `--json`, each line is one
+`kickoutchi.watch_event/1` object.
 
-Watch is polling, not a kernel event feed. Activity entirely between polls can be
-missed, and event times describe capture intervals rather than exact kernel event
-times. Failed polls emit `collection_gap`; three consecutive failures stop the
-command. Ctrl-C, duration expiry, and a closed stdout consumer exit successfully.
+Watch polls; it doesn't receive kernel events. A socket that opens and closes
+between two polls is never seen, and event times are the capture window, not
+the exact moment. A failed poll prints a `collection_gap`; three failures in a
+row stop the command. Ctrl-C, the end of `--duration`, and a closed stdout all
+exit successfully.
 
-When a filter depends on a fact Kickoutchi cannot read, such as the owner of
-another user's socket, the event is emitted as `indeterminate` so a possible
-match is never hidden. A PID filter can therefore print events for unrelated
-sockets. `--matched-only` drops those and keeps only definite matches; a match
-behind a permission boundary is then not reported. Collection gaps are always
-emitted.
+When a filter depends on something Kickoutchi can't read, such as the owner of
+another user's socket, watch reports the event as `indeterminate` rather than
+hiding a possible match. That means a PID filter can print events for unrelated
+sockets. `--matched-only` keeps only definite matches, at the cost of missing a
+match behind a permission boundary. Collection gaps always print.
 
-## Explain Availability
+## Is a port free?
 
-`kick why PORT` combines one native snapshot with immediate, sequential bind
-probes and prints one line per endpoint. It never terminates a process.
+`kick why PORT` takes one snapshot, then tries an exact bind on each endpoint in
+turn, and prints one line per endpoint. It never stops a process.
 
 ```text
 TCP 127.0.0.1:3000  in use by PID 4242 (node)
 TCP [::1]:3000      free
 ```
 
-Add `--verbose` for every probe result, evidence item, and collection gap, or
-`--json` for the `kickoutchi.why/1` document.
+`--verbose` prints every probe result, piece of evidence, and collection gap.
+`--json` prints a `kickoutchi.why/1` document.
 
 ```sh
 kick why 3000
@@ -312,17 +296,18 @@ kick why 3000 --tcp --address :: --ipv6-only --json
 kick why 3000 --all-protocols --all-addresses --json
 ```
 
-A successful probe temporarily occupies and then releases the endpoint. It proves
-only that the exact bind succeeded at that moment; it does not reserve the port or
-eliminate a later race.
+A successful probe holds the port for an instant and then lets it go. It shows
+the bind worked at that moment; it doesn't reserve the port, and another process
+can take it right after.
 
 ## Configuration
 
-The default file is `~/.config/kickoutchi/config.toml` on Linux and the native
-platform config directory on macOS and Windows. Use `--config FILE` to select a
-different file. Unknown keys and files larger than 64 KiB are rejected.
-A copy-ready [`config.example.toml`](config.example.toml) is included in the
-repository.
+The file lives at `~/.config/kickoutchi/config.toml` on Linux, and in the
+platform config directory on macOS and Windows. `--config FILE` picks another
+file. On Linux and macOS that file must be a regular file, a symlink to one, or
+`/dev/null`; a FIFO is rejected. Unknown keys, and files over 64 KiB, are
+errors. [`config.example.toml`](config.example.toml) is a ready-to-copy
+starting point.
 
 ```toml
 refresh_interval_seconds = 3
@@ -344,124 +329,114 @@ port = 8080
 label = "local web services"
 ```
 
-The `docker_enrichment` key from older versions is still accepted and ignored.
+- `hide_system_processes` hides rows Kickoutchi classifies as system or service
+  processes from `list` and the TUI. It can't classify a row whose owner is
+  hidden, so those stay visible, and the option hides more under `sudo`.
+- `protected_processes` adds names to the built-in list; it never replaces it.
+- An exact endpoint label wins over a wildcard (`"*"`) label for the same port.
+- The old `docker_enrichment` and `check_for_updates` keys are still accepted
+  and ignored, so older files keep loading.
 
-`hide_system_processes` hides rows classified as system or service processes
-from `list` and the TUI. A row with a hidden owner cannot be classified and
-stays visible, so the option hides more under `sudo`.
+`list`, the TUI search, and `watch` accept plain search words plus `pid:`,
+`port:`, `proto:`, `scope:`, `protected:`, `parent:`, `label:`, `address:`,
+`scope_id:`, and `family:` terms; `watch` also takes `state:`. Every term must
+match. A misspelled field such as `prot:tcp` is an error that suggests `proto:`,
+while other text with a colon, such as `localhost:3000`, is a plain search.
 
-Configured protected names extend the built-in safety list. Exact endpoint labels
-take precedence over wildcard labels. See [`docs/configuration.md`](docs/configuration.md)
-for paths, precedence, validation, and the complete filter reference.
+[`docs/configuration.md`](docs/configuration.md) covers paths, precedence,
+validation, and every filter field.
 
-List, TUI search, and watch support plain search plus structured `pid:`, `port:`,
-`proto:`, `scope:`, `protected:`, `parent:`, `label:`, `address:`, `scope_id:`, and
-`family:` terms. Watch also supports `state:`. Terms compose with AND semantics.
-A near-miss field name such as `prot:tcp` is an error that suggests `proto:`;
-other text with a colon, such as `localhost:3000`, is still a plain search.
+## Structured output
 
-## Structured Output
+- `list --json` prints the `kickoutchi.list/1` array. It can include process
+  names, paths, parent details, and full command lines.
+- `list --snapshot-json` prints one `kickoutchi.snapshot/1` object: everything
+  the collector saw, within its platform's limits.
+- `watch --json` prints `kickoutchi.watch_event/1` lines (NDJSON).
+- `why --json` prints one `kickoutchi.why/1` document.
 
-- `list --json` emits the stable `kickoutchi.list/1` top-level array. It can
-  include process names, paths, parent data, and complete command lines.
-- `list --snapshot-json` emits one `kickoutchi.snapshot/1` object containing the
-  bounded full-state native observation within the declared platform scope.
-- `watch --json` emits `kickoutchi.watch_event/1` NDJSON.
-- `why --json` emits one `kickoutchi.why/1` result document.
+This output can contain sensitive local details: endpoints, PIDs, names,
+executable paths, labels, and command lines. JSON escaping and terminal
+sanitizing are not redaction, so review it before you share it. The schemas are
+in [`docs/structured-output.md`](docs/structured-output.md).
 
-Structured output can contain sensitive local information: endpoints, PIDs,
-process identities, names, executable paths, labels, and command lines. JSON
-escaping and terminal sanitization are not redaction. Review output before
-sharing it. Schema details live in
-[`docs/structured-output.md`](docs/structured-output.md).
-
-## Exit Codes
+## Exit codes
 
 | Code | Meaning |
 | ---: | --- |
-| 0 | Command completed and its requested positive condition holds |
+| 0 | The command finished and what you asked for holds |
 | 1 | Operational or internal failure |
 | 2 | Invalid arguments |
 | 3 | No match, or a requested endpoint is unavailable |
 | 4 | Permissions prevented a reliable answer |
-| 5 | Kill was cancelled |
-| 6 | A protected process requires confirmation |
+| 5 | You cancelled the kill |
+| 6 | A protected process needs confirmation |
 
-## Platform Support
+## Platform support
 
-Published archives target:
-
-| Platform | Targets | Notes |
+| Platform | Release targets | Notes |
 | --- | --- | --- |
-| Linux | `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` | Linux 5.3+ is required for identity-safe termination through pidfd |
+| Linux | `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` | Stopping processes needs Linux 5.3+ (pidfd) |
 | macOS | `x86_64-apple-darwin`, `aarch64-apple-darwin` | Intel and Apple Silicon |
-| Windows | `x86_64-pc-windows-msvc` | x64; hard termination through process handles and Job Objects |
+| Windows | `x86_64-pc-windows-msvc` | x64; termination through process handles and Job Objects |
 
-- Linux observes the current network namespace through `/proc`. PID namespace
-  and procfs permissions can separately limit owner attribution.
-- macOS uses process-first `libproc` collection. Sockets without a visible user
-  process descriptor are outside its declared scope.
-- Windows uses IP Helper and excludes the separate WSL network stack. Run the
-  Linux build inside WSL to inspect WSL sockets and processes.
-- `kick kill --tree` is supported on all three platforms. The TUI tree-kill
-  keys `t` and `T`, and process-group kill, are available only on Linux and
-  macOS.
+- Linux reads `/proc` and sees the current network namespace. The PID namespace
+  and procfs permissions can hide some owners.
+- macOS finds sockets through each visible process's file descriptors, so a
+  socket no visible process holds doesn't appear.
+- Windows reads the IP Helper tables and doesn't see WSL, which has its own
+  network stack. Run the Linux build inside WSL to see WSL sockets.
+- `kill --tree` works on all three. The TUI's `t` / `T` keys and `kill --group`
+  are Linux and macOS only.
 
-### Reading addresses and scope
+### Reading the output
 
-- `127.0.0.1` and `::1` are IPv4 and IPv6 loopback addresses.
-- `0.0.0.0` and `::` are wildcard addresses that bind every applicable
-  interface. Kickoutchi labels these `public`, but that classification alone
-  does not prove Internet reachability; firewall and network policy still apply.
-- `fe80::/10` addresses are IPv6 link-local and stay on their local network
-  link.
-- An IPv6 suffix such as `%3` is an interface index. Linux and macOS cannot
-  report the index, so their IPv6 addresses show without a suffix; JSON output
-  records the scope as `unavailable`.
-- `-` in the PID or process columns means ownership metadata was unavailable;
-  it does not mean the socket has no owner. `kick list` explains these rows on
-  stderr: sockets created by other users whose processes you cannot read
-  (named by account, from the Linux socket UID), sockets with no attributed
-  owner, and sockets that no readable process holds, such as kernel-held ones.
-- On Linux, a process whose executable file was deleted or replaced after it
-  started, often a stale build or a process left over from a package upgrade,
-  is called out under `kick list`, in the `kick inspect` report, and in the
-  kill banner. `kick inspect` also notes when init or a service manager
-  adopted the process, a sign that its launcher exited and it may be orphaned.
+- `127.0.0.1` and `::1` are loopback addresses.
+- `0.0.0.0` and `::` listen on every interface. Kickoutchi labels them
+  `public`, but your firewall still decides whether anything outside can reach
+  them.
+- `fe80::/10` addresses are IPv6 link-local and stay on the local link.
+- An IPv6 suffix such as `%3` is an interface index. Linux and macOS can't
+  report it, so their IPv6 addresses show no suffix and JSON records the scope
+  as `unavailable`.
+- `-` in the PID or process column means Kickoutchi couldn't read the owner,
+  not that there is none. `kick list` explains these rows on stderr: sockets of
+  other users' processes (named by account on Linux), sockets with no owner it
+  could attribute, and sockets no readable process holds, such as kernel-held
+  ones.
+- On Linux, a process whose executable was deleted or replaced after it started
+  (often a stale build, or a leftover from a package upgrade) is flagged in
+  `kick list`, `kick inspect`, and the kill banner. `kick inspect` also notes
+  when init or a service manager adopted the process, a hint that its launcher
+  exited and it may be orphaned.
 
-The TUI's `SCOPE` column, `--sort scope`, and the `scope:` filter label wildcard
+The TUI's `SCOPE` column, `--sort scope`, and the `scope:` filter call wildcard
 addresses `public`, loopback addresses `loopback`, and other concrete addresses
 `local`. The `kick list` table has no `SCOPE` column.
 
-Completeness is always relative to the declared native observation scope. See
-[`docs/platform-support.md`](docs/platform-support.md) for permanent limitations,
-permissions, WSL, polling, IPv6 scope, and certainty semantics.
+"Complete" always means complete within what the platform's collector can see.
+[`docs/platform-support.md`](docs/platform-support.md) explains those limits.
 
-## Security and Safety
+## Security
 
-Kickoutchi never elevates itself. Destructive commands require confirmation by
-default, reject ambiguous or incomplete ownership, and revalidate process
-identity immediately before termination. Linux retains pidfds and Windows
-retains process handles across final validation and delivery. macOS revalidates
-native process start identity but cannot eliminate the platform's final raw-PID
-signal race.
+Kickoutchi never raises its own privileges. Kills need confirmation by default,
+refuse unclear or incomplete ownership, and re-check the process's identity just
+before the signal. Linux keeps a pidfd and Windows keeps a process handle from
+that check through delivery, so a recycled PID can't redirect the signal. macOS
+has no equivalent, so a small race remains there between the last check and the
+signal.
 
-Socket visibility, owner visibility, and process metadata visibility are
-separate. An empty or partial result is not a machine-wide proof that an endpoint
-or owner does not exist. Structured and inspect output may contain sensitive
-local paths, command lines, labels, PIDs, endpoints, and process relationships;
-review and redact it before sharing.
+Seeing a socket, seeing its owner, and reading the owner's details are separate
+permissions. An empty or partial result doesn't prove that an endpoint or owner
+doesn't exist.
 
-Release archives include checksums for corruption detection, but the checksums
-and archives share the same GitHub repository trust boundary and are not an
-independent signature. Report suspected vulnerabilities privately through
+Report suspected vulnerabilities privately through
 [GitHub Security Advisories](https://github.com/nuggocto/kickoutchi/security/advisories/new).
-The full threat model, authority boundaries, output-handling guidance, and
-release controls are in [`SECURITY.md`](SECURITY.md).
+[`SECURITY.md`](SECURITY.md) has the full threat model and release controls.
 
-## Build From Source
+## Build from source
 
-Rust 1.95.0 or newer is required.
+You need Rust 1.95.0 or newer.
 
 ```sh
 git clone https://github.com/nuggocto/kickoutchi.git
@@ -471,7 +446,7 @@ cargo test --locked --all-features
 cargo run --bin kick -- list
 ```
 
-Install the local checkout with:
+Install your local checkout with:
 
 ```sh
 cargo install --path . --locked

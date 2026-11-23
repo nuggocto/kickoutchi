@@ -685,3 +685,73 @@ fn batch_kill_with_an_unknown_target_sends_nothing() {
     assert!(!text.contains("summary:"), "{text}");
     assert_helper_survived_refusal(&mut helper);
 }
+
+/// Run a kill whose stderr is `/dev/full`, so every banner and prompt write
+/// fails with `ENOSPC`, and answer the prompt anyway. A person never saw the
+/// target, so the answer must not authorize anything.
+fn kill_with_unwritable_stderr(args: &[&str], answer: &str) -> ExitStatus {
+    let config_home = isolated_config_home();
+    let _config = DirectoryGuard(config_home.clone());
+    let full = fs::File::options()
+        .write(true)
+        .open("/dev/full")
+        .expect("/dev/full must be writable");
+    let mut child = CommandChild(Some(
+        Command::new(kickoutchi_binary())
+            .env("XDG_CONFIG_HOME", &config_home)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(full)
+            .spawn()
+            .expect("kill must start"),
+    ));
+    if let Some(mut stdin) = child.child_mut().stdin.take() {
+        let _ = stdin.write_all(answer.as_bytes());
+    }
+    let deadline = Instant::now() + REAL_BINARY_EXIT_WAIT;
+    loop {
+        if let Some(status) = child.child_mut().try_wait().expect("kill status") {
+            child.disarm();
+            return status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "kill did not exit before its deadline"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn kill_refuses_when_its_confirmation_cannot_be_shown() {
+    let _host_observation = lock_host_observation();
+    let (mut helper, _port, ready_file) = spawn_listener_process();
+    let _ready_file = FileGuard(ready_file);
+    let pid = helper.id().to_string();
+
+    let interactive = kill_with_unwritable_stderr(&["kill", "--pid", &pid], "y\n");
+    let yes = kill_with_unwritable_stderr(&["kill", "--pid", &pid, "--yes"], "");
+    let tree = kill_with_unwritable_stderr(&["kill", "--pid", &pid, "--tree"], "tree\n");
+
+    assert_eq!(interactive.code(), Some(1), "{interactive:?}");
+    assert_eq!(yes.code(), Some(1), "{yes:?}");
+    assert_eq!(tree.code(), Some(1), "{tree:?}");
+    assert_helper_survived_refusal(&mut helper);
+}
+
+#[test]
+fn batch_kill_refuses_when_its_confirmation_cannot_be_shown() {
+    let _host_observation = lock_host_observation();
+    let (mut first, _first_port, first_ready) = spawn_listener_process();
+    let _first_ready = FileGuard(first_ready);
+    let (mut second, _second_port, second_ready) = spawn_listener_process();
+    let _second_ready = FileGuard(second_ready);
+    let pids = format!("{},{}", first.id(), second.id());
+
+    let status = kill_with_unwritable_stderr(&["kill", "--pid", &pids], "y\n");
+
+    assert_eq!(status.code(), Some(1), "{status:?}");
+    assert_helper_survived_refusal(&mut first);
+    assert_helper_survived_refusal(&mut second);
+}
