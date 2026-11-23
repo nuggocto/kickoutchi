@@ -11,12 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Closing the terminal window of a running TUI ends it again. Since 1.3.1 the
-  TUI caught `SIGHUP` to restore the terminal first, but crossterm 0.29's input
-  reader loops forever once the terminal hangs up, so the TUI never acted on
-  that signal. It stayed in the background spinning a CPU core and ignoring
-  `SIGTERM`, which held up reboot and shutdown until systemd's stop timeout
-  sent `SIGKILL`. See Changed.
+- On Linux and macOS, closing the terminal window now exits the TUI.
 - The TUI and CLI no longer panic with exit code `101` when stderr is a closed
   terminal or a full device. Cursor restoration and ordinary diagnostics now
   ignore a failed stderr write.
